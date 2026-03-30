@@ -27,9 +27,18 @@ from config import (
     get_delay_seconds,
 )
 from utils.file_io   import load_progress, save_progress, write_markdown, save_profiles
-from utils.string_helpers import is_junk_page, make_fingerprint, clean_chapter_text, normalize_title, slugify_filename, truncate
+from utils.string_helpers import (
+    is_junk_page, make_fingerprint, clean_chapter_text,
+    normalize_title, slugify_filename, truncate,
+)
 from ai.client  import AIRateLimiter
-from ai.agents  import ask_ai_for_story_id, ai_find_first_chapter_url, ai_classify_and_find, ask_ai_build_profile
+from ai.agents  import (
+    ask_ai_for_story_id,
+    ai_find_first_chapter_url,
+    ai_classify_and_find,
+    ask_ai_build_profile,
+    ask_ai_confirm_same_story,   # FIX Bug #4: import đã thiếu
+)
 from core.fetch       import fetch_page
 from core.navigator   import find_next_url, detect_page_type
 from core.html_filter import remove_hidden_elements
@@ -179,9 +188,9 @@ async def scrape_one_chapter(
             print(f"  [Profile] ✅ Đã lưu profile cho {domain}", flush=True)
 
     # ── Extract nội dung ──────────────────────────────────────────────
-    content = _extract_content(soup, clean_html, url, ai_limiter)
+    # FIX: Xóa ai_limiter khỏi _extract_content (dead parameter — hàm là sync)
+    content = _extract_content(soup)
     if content is None:
-        # Cần await vì ai_classify_and_find là coroutine
         content = await _extract_content_ai(soup, clean_html, url, ai_limiter)
 
     if not content or len(content.strip()) < 100:
@@ -270,6 +279,29 @@ async def scrape_one_chapter(
     if next_url in all_visited:
         print(f"  [Loop] ♻ URL đã thăm: {next_url[:60]}", flush=True)
         return None
+
+    # ── FIX Bug #4: Xác nhận next_url thuộc cùng truyện ─────────────
+    # Chỉ gọi khi đã có title của chương hiện tại để so sánh.
+    # Lấy tiêu đề dự kiến của chương tiếp theo từ URL (nhanh, không fetch).
+    # Dùng last_title làm đại diện cho chương hiện tại.
+    last_title = progress.get("last_title", "")
+    if last_title and next_url:
+        is_same = await ask_ai_confirm_same_story(
+            title1      = last_title,
+            url1        = url,
+            title2      = "",           # chưa fetch nên không có title — AI dùng URL
+            url2        = next_url,
+            ai_limiter  = ai_limiter,
+        )
+        if not is_same:
+            print(
+                f"  [Guard] ⛔ Next URL có vẻ thuộc truyện khác: {next_url[:60]}",
+                flush=True,
+            )
+            progress["completed"]        = True
+            progress["completed_at_url"] = url
+            await save_progress(progress_path, progress)
+            return None
 
     progress["current_url"] = next_url
     await save_progress(progress_path, progress)
@@ -361,8 +393,12 @@ async def run_novel_task(
 
 # ── Private helpers ───────────────────────────────────────────────────────────
 
-def _extract_content(soup: BeautifulSoup, clean_html: str, url: str, ai_limiter) -> str | None:
-    """Thử các CSS selector có sẵn để lấy nội dung chương. Sync, không gọi AI."""
+def _extract_content(soup: BeautifulSoup) -> str | None:
+    """
+    Thử các CSS selector có sẵn để lấy nội dung chương.
+
+    Sync, không gọi AI — ai_limiter đã bị xóa (dead parameter trước đây).
+    """
     for sel in CONTENT_SELECTORS:
         el = soup.select_one(sel)
         if el:

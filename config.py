@@ -14,7 +14,9 @@ from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# FIX: Dùng dirname 1 lần (thư mục chứa config.py = thư mục project)
+# Trước đây dùng dirname 2 lần → tìm .env ở grandparent directory (bug)
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_BASE_DIR, ".env"))
 
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
