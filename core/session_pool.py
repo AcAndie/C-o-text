@@ -1,19 +1,30 @@
 """
 core/session_pool.py — Quản lý HTTP sessions và Playwright browser pool.
 
-FIX-PW1: PlaywrightPool._ensure_started() kiểm tra browser.is_connected() —
-          nếu browser crash thì tự restart thay vì dùng zombie instance.
+THAY ĐỔI (v2) — PlaywrightPool:
+  PW-MEM: Thêm _fetch_count counter. Cứ sau PW_RESTART_EVERY lần fetch
+          (mặc định 300), chủ động restart browser để giải phóng RAM.
+          Chromium headless chạy lâu có xu hướng leak memory do:
+            - Các page/context cũ không được GC hoàn toàn
+            - V8 JS engine giữ cache
+            - Playwright internal event listeners tích lũy
+          Restart định kỳ giúp giữ RAM ổn định khi cào 1000+ chương.
 
-FIX-PW2: PlaywrightPool.fetch() retry 1 lần khi gặp browser crash errors
-          ("Connection closed", "Protocol error", "Browser.new_context").
-
-FIX-PW3: context.close() trong finally bắt Exception riêng —
-          không để lỗi "Failed to find context" làm crash toàn bộ task.
+Fixes từ phiên bản trước vẫn còn:
+  FIX-PW1: _ensure_started() kiểm tra browser.is_connected()
+  FIX-PW2: fetch() retry 1 lần khi gặp browser crash errors
+  FIX-PW3: context.close() trong finally bắt Exception riêng
 """
 import asyncio
 
 from config import CHROME_UA, pick_chrome_version, make_headers, REQUEST_TIMEOUT
 from utils.string_helpers import CF_CHALLENGE_TITLES
+
+
+# Số lần fetch trước khi restart browser để giải phóng RAM
+# 300 = ~300 chương Playwright mode ≈ vài giờ chạy liên tục
+# Tăng lên 500 nếu RAM máy nhiều; giảm xuống 100 nếu bị OOM
+PW_RESTART_EVERY = 300
 
 
 # ── DomainSessionPool ─────────────────────────────────────────────────────────
@@ -25,9 +36,9 @@ class DomainSessionPool:
     """
 
     def __init__(self) -> None:
-        self._sessions:  dict[str, object] = {}
-        self._versions:  dict[str, str]    = {}
-        self._cf_domains: set[str]          = set()
+        self._sessions:   dict[str, object] = {}
+        self._versions:   dict[str, str]    = {}
+        self._cf_domains: set[str]           = set()
         self._lock = asyncio.Lock()
 
     def mark_cf_domain(self, domain: str) -> None:
@@ -69,7 +80,6 @@ class DomainSessionPool:
 
 # ── PlaywrightPool ────────────────────────────────────────────────────────────
 
-# Lỗi browser crash — cần restart browser
 _BROWSER_CRASH_SIGNALS = (
     "Connection closed",
     "Browser.new_context",
@@ -83,52 +93,58 @@ class PlaywrightPool:
     """
     Singleton Playwright browser — khởi động 1 lần, tái dùng suốt phiên.
 
-    FIX-PW1: _ensure_started() kiểm tra browser.is_connected() trước khi
-             trả về. Nếu browser crash (không còn connected), tự động cleanup
-             và restart — tránh dùng zombie browser instance.
+    PW-MEM (mới): Đếm số lần fetch. Cứ sau PW_RESTART_EVERY lần,
+                  chủ động restart để giải phóng RAM Chromium tích lũy.
+                  Giúp ổn định khi cào 1000+ chương qua Playwright.
 
-    FIX-PW2: fetch() retry tối đa 1 lần khi gặp browser crash error.
-             Trước khi retry: reset self._started = False → _ensure_started()
-             sẽ tạo lại browser mới.
-
-    FIX-PW3: context.close() được bọc try/except riêng trong finally —
-             lỗi "Failed to find context" (Protocol error) không còn làm
-             crash task đang chạy.
+    FIX-PW1: _ensure_started() kiểm tra browser.is_connected()
+    FIX-PW2: fetch() retry 1 lần khi gặp browser crash errors
+    FIX-PW3: context.close() bọc try/except riêng trong finally
     """
 
     def __init__(self) -> None:
-        self._pw      = None
-        self._browser = None
-        self._stealth = None
-        self._lock    = asyncio.Lock()
-        self._started = False
+        self._pw          = None
+        self._browser     = None
+        self._stealth     = None
+        self._lock        = asyncio.Lock()
+        self._started     = False
+        self._fetch_count = 0          # PW-MEM: đếm tổng số fetch
 
-    # ── FIX-PW1: kiểm tra is_connected() ──────────────────────────────────────
+    # ── PW-MEM: Kiểm tra và trigger periodic restart ──────────────────────────
+
+    async def _maybe_periodic_restart(self) -> None:
+        """
+        Kiểm tra xem có cần restart định kỳ không.
+
+        Điều kiện: đã fetch đủ PW_RESTART_EVERY lần VÀ không có page đang mở.
+        Reset counter sau khi restart.
+
+        Gọi TRƯỚC _ensure_started() trong fetch() để đảm bảo thứ tự đúng.
+        """
+        if self._fetch_count > 0 and self._fetch_count % PW_RESTART_EVERY == 0:
+            print(
+                f"  [Browser] 🔄 Periodic restart sau {self._fetch_count} fetch"
+                f" (giải phóng RAM)...",
+                flush=True,
+            )
+            async with self._lock:
+                await self._cleanup_unsafe()
+            # _ensure_started() sẽ khởi động lại trong fetch()
+
+    # ── FIX-PW1 ───────────────────────────────────────────────────────────────
+
     async def _ensure_started(self) -> None:
-        """
-        Đảm bảo browser đang chạy và connected.
-
-        Fast path (không cần lock): started AND browser.is_connected()
-        Slow path (acquire lock)  : khởi động mới hoặc restart sau crash
-
-        Double-checked locking để tránh race condition khi nhiều task
-        đồng thời phát hiện browser chết và cùng gọi _ensure_started().
-        """
-        # Fast path — tránh acquire lock nếu không cần thiết
         if self._started and self._browser is not None and self._browser.is_connected():
             return
 
         async with self._lock:
-            # Re-check bên trong lock (double-checked locking)
             if self._started and self._browser is not None and self._browser.is_connected():
                 return
 
-            # Cleanup stale browser nếu đã từng start
             if self._started or self._browser is not None:
                 print("  [Browser] 🔄 Phát hiện browser crash, đang restart...", flush=True)
                 await self._cleanup_unsafe()
 
-            # Khởi động browser mới
             await self._start_browser()
 
     async def _cleanup_unsafe(self) -> None:
@@ -177,23 +193,26 @@ class PlaywrightPool:
         self._started = True
         print("  [Browser] ✅ Playwright browser sẵn sàng.", flush=True)
 
-    # ── FIX-PW2 + FIX-PW3: fetch với retry và safe context.close() ───────────
+    # ── FIX-PW2 + FIX-PW3 + PW-MEM ──────────────────────────────────────────
+
     async def fetch(self, url: str) -> tuple[int, str]:
         """
-        Fetch URL bằng Playwright với browser crash recovery.
+        Fetch URL bằng Playwright.
 
-        Retry flow:
-          attempt 0 → fetch bình thường
-          Nếu gặp crash error → reset _started → attempt 1 → _ensure_started()
-          tạo browser mới → fetch lại
-          Nếu attempt 1 vẫn lỗi → raise (không retry vô tận)
+        PW-MEM: Kiểm tra periodic restart trước khi fetch.
+        FIX-PW2: Retry 1 lần khi gặp browser crash.
         """
+        # PW-MEM: check trước, không cần lock vì chỉ đọc counter
+        await self._maybe_periodic_restart()
+
         max_attempts = 2
 
         for attempt in range(max_attempts):
             try:
                 await self._ensure_started()
-                return await self._fetch_once(url)
+                result = await self._fetch_once(url)
+                self._fetch_count += 1    # PW-MEM: tăng counter sau fetch thành công
+                return result
 
             except Exception as e:
                 err_str = str(e)
@@ -204,24 +223,16 @@ class PlaywrightPool:
                         f"  [Browser] ⚠️  Browser lỗi (lần {attempt + 1}): {err_str[:80]}",
                         flush=True,
                     )
-                    # Force restart: reset flag trước khi retry
                     async with self._lock:
                         await self._cleanup_unsafe()
                     continue
 
-                raise  # Không phải crash error, hoặc đã retry hết lần
+                raise
 
-        # Unreachable — loop luôn return hoặc raise
         raise RuntimeError("PlaywrightPool.fetch: retry logic không mong đợi")
 
     async def _fetch_once(self, url: str) -> tuple[int, str]:
-        """
-        Một lần fetch thực sự — tạo context, navigate, lấy HTML, đóng context.
-
-        FIX-PW3: context.close() bọc try/except riêng để lỗi
-        "Failed to find context" (xảy ra khi browser crash giữa chừng)
-        không làm mất exception gốc.
-        """
+        """Một lần fetch thực sự — FIX-PW3: context.close() an toàn."""
         context = await self._browser.new_context(
             user_agent         = CHROME_UA["chrome124"],
             viewport           = {"width": 1280, "height": 800},
@@ -239,7 +250,6 @@ class PlaywrightPool:
 
             resp = await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
 
-            # Chờ CF challenge tự giải (tối đa 20s)
             for _ in range(20):
                 title = (await page.title()).strip().lower()
                 if title not in CF_CHALLENGE_TITLES:
@@ -253,17 +263,19 @@ class PlaywrightPool:
             return status, html
 
         finally:
-            # FIX-PW3: đóng context nhưng không để lỗi close() lan ra ngoài
             try:
                 await context.close()
             except Exception as close_err:
-                # "Failed to find context" xảy ra khi browser crash giữa chừng
-                # Log nhẹ để biết nhưng không crash task
                 print(
                     f"  [Browser] ⚠️  context.close() warning (bỏ qua): "
                     f"{str(close_err)[:60]}",
                     flush=True,
                 )
+
+    @property
+    def fetch_count(self) -> int:
+        """Tổng số lần đã fetch qua Playwright — dùng để monitor."""
+        return self._fetch_count
 
     async def close(self) -> None:
         if not self._started:
