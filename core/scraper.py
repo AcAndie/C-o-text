@@ -1,17 +1,6 @@
 # core/scraper.py
 """
 core/scraper.py — Orchestration: fetch → parse → lưu → điều hướng.
-
-Module này chỉ chứa logic điều phối cao cấp.
-Các helper đã được tách ra:
-  core/fetch.py        — fetch_page (CF fallback)
-  core/navigator.py    — find_next_url, detect_page_type
-  core/html_filter.py  — remove_hidden_elements
-  core/extractors.py   — TitleExtractor, extract_story_title
-
-Tối ưu CPU: BeautifulSoup parsing + remove_hidden_elements là tác vụ
-CPU-bound (synchronous). Tất cả được chạy qua asyncio.to_thread() để
-tránh block Event Loop khi cào nhiều truyện song song.
 """
 from __future__ import annotations
 
@@ -55,35 +44,24 @@ from core.session_pool import DomainSessionPool, PlaywrightPool
 
 logger = logging.getLogger(__name__)
 
-# ── Collected URLs cap (chỉ cần để học story_id, không cần lưu mãi) ───────────
 _COLLECTED_URL_CAP = 20
 
 
-# ── CPU-bound helpers (chạy trong thread pool) ────────────────────────────────
+# ── CPU-bound helpers ─────────────────────────────────────────────────────────
 
 def _sync_parse_and_clean(html: str) -> tuple[BeautifulSoup, str]:
-    """
-    Parse HTML và xóa hidden elements — CPU-bound, chạy qua asyncio.to_thread().
-
-    Trả về tuple (soup, clean_html_string) để tránh serialize/deserialize
-    soup hai lần: caller dùng soup cho extract, dùng clean_html cho navigator/AI.
-    """
     soup = BeautifulSoup(html, "html.parser")
     remove_hidden_elements(soup)
     return soup, str(soup)
 
 
 def _sync_detect_page_type(html: str, url: str) -> str:
-    """Wrapper sync cho detect_page_type — gọi qua asyncio.to_thread()."""
-    return detect_page_type(html, url)
+    """Wrapper sync cho detect_page_type — parse html → soup rồi gọi."""
+    soup = BeautifulSoup(html, "html.parser")   # FIX: parse trước
+    return detect_page_type(soup, url)           # FIX: truyền soup
 
 
 def _sync_extract_content(soup: BeautifulSoup) -> str | None:
-    """
-    Thử các CSS selector có sẵn để lấy nội dung chương — CPU-bound.
-
-    Sync, không gọi AI. Chạy qua asyncio.to_thread() từ scrape_one_chapter.
-    """
     for sel in CONTENT_SELECTORS:
         el = soup.select_one(sel)
         if el:
@@ -109,7 +87,6 @@ async def _save_new_profile(
 # ── Story ID guard ────────────────────────────────────────────────────────────
 
 def _check_story_id_guard(url: str, progress: ProgressDict) -> bool:
-    """Trả về False nếu URL không khớp regex của truyện hiện tại."""
     if not progress.get("story_id_locked"):
         return True
     pattern = progress.get("story_id_regex")
@@ -137,6 +114,10 @@ async def check_and_find_start_chapter(
     - Resume: trả về current_url đã lưu trong progress
     - Index page: nhờ AI tìm chương đầu
     - Chapter page: trả về start_url thẳng
+
+    FIX: Sau khi detect "chapter", kiểm tra nhanh có nội dung không.
+    Nếu không có (ví dụ: RoyalRoad fiction index bị phân loại sai do JS),
+    fallback sang index logic để tìm chương đầu.
     """
     progress = await load_progress(progress_path)
 
@@ -155,12 +136,25 @@ async def check_and_find_start_chapter(
     if is_junk_page(html, status):
         raise RuntimeError(f"Trang khởi đầu trả về lỗi/rỗng: {start_url}")
 
-    # detect_page_type cũng parse HTML → đẩy xuống thread
     page_type = await asyncio.to_thread(_sync_detect_page_type, html, start_url)
 
     if page_type == "chapter":
-        print(f"  [Start] 📖 Bắt đầu từ chương: {start_url[:70]}", flush=True)
-        return start_url, progress
+        # Xác minh: thực sự có nội dung chương không?
+        # RoyalRoad fiction index bị detect sai do chapter list render bằng JS
+        soup_check, _ = await asyncio.to_thread(_sync_parse_and_clean, html)
+        content_check = await asyncio.to_thread(_sync_extract_content, soup_check)
+
+        if content_check and len(content_check.strip()) > 200:
+            print(f"  [Start] 📖 Bắt đầu từ chương: {start_url[:70]}", flush=True)
+            return start_url, progress
+
+        # Detect sai — không có nội dung → xử lý như index page
+        print(
+            f"  [Start] 🔄 Phát hiện là chương nhưng không có nội dung"
+            f" → thử tìm chương đầu...",
+            flush=True,
+        )
+        page_type = "index"
 
     print(f"  [Start] 📋 Trang index, tìm chương đầu...", flush=True)
     first_url = await ai_find_first_chapter_url(html, start_url, ai_limiter)
@@ -197,33 +191,24 @@ async def scrape_one_chapter(
     ai_limiter: AIRateLimiter,
     title_extractor: TitleExtractor,
 ) -> str | None:
-    """
-    Cào một chương: fetch → clean → extract → lưu .md → tìm URL tiếp.
-
-    Trả về URL chương tiếp theo, hoặc None nếu hết truyện / lỗi.
-    """
     all_visited: set[str] = set(progress.get("all_visited_urls") or [])
 
-    # ── Resume: URL đã cào, chỉ lấy next_url ─────────────────────────
     if url in all_visited:
         return await _advance_past_visited(url, all_visited, progress, progress_path,
                                            pool, pw_pool, profiles, ai_limiter)
 
-    # ── Fetch ─────────────────────────────────────────────────────────
     status, html = await fetch_page(url, pool, pw_pool)
     if is_junk_page(html, status):
         print(f"  [End] 🏁 Hết truyện hoặc trang lỗi: {url[:60]}", flush=True)
         return None
 
-    # ── CPU-bound: parse + clean trong thread pool ────────────────────
-    # Tránh block Event Loop khi HTML lớn (1–4MB không phải hiếm).
-    # Trả về cả soup (cho extract) và clean_html string (cho navigator/AI).
+    # CPU-bound: parse + clean
     soup, clean_html = await asyncio.to_thread(_sync_parse_and_clean, html)
 
     domain  = urlparse(url).netloc.lower()
 
-    # ── Profile: tạo mới nếu domain chưa biết ────────────────────────
-    profile: SiteProfileDict = profiles.get(domain, {})  # type: ignore[assignment]
+    # Profile
+    profile: SiteProfileDict = profiles.get(domain, {})
     if not profile:
         new_profile = await ask_ai_build_profile(clean_html, url, ai_limiter)
         if new_profile:
@@ -231,7 +216,7 @@ async def scrape_one_chapter(
             profile = new_profile
             print(f"  [Profile] ✅ Đã lưu profile cho {domain}", flush=True)
 
-    # ── Extract nội dung (sync, CPU-bound → thread pool) ─────────────
+    # Extract nội dung
     content = await asyncio.to_thread(_sync_extract_content, soup)
     if content is None:
         content = await _extract_content_ai(soup, clean_html, url, ai_limiter)
@@ -242,7 +227,7 @@ async def scrape_one_chapter(
 
     content = clean_chapter_text(content)
 
-    # ── Phát hiện vòng lặp nội dung ──────────────────────────────────
+    # Fingerprint
     fp           = make_fingerprint(content)
     fingerprints = set(progress.get("fingerprints") or [])
     if fp in fingerprints:
@@ -251,22 +236,22 @@ async def scrape_one_chapter(
     fingerprints.add(fp)
     progress["fingerprints"] = list(fingerprints)
 
-    # ── Tiêu đề ───────────────────────────────────────────────────────
-    title = normalize_title(await title_extractor.extract(html, url))
+    # FIX: truyền soup thay vì html (str)
+    title = normalize_title(await title_extractor.extract(soup, url))
 
-    # ── Lưu tên truyện (chỉ chương đầu tiên) ─────────────────────────
+    # Lưu tên truyện
     if progress.get("chapter_count", 0) == 0 and not progress.get("story_title"):
         story_title = extract_story_title(soup, url)
         if story_title:
             progress["story_title"] = story_title
 
-    # ── Ghi file .md ──────────────────────────────────────────────────
+    # Ghi file .md
     chapter_num  = progress.get("chapter_count", 0) + 1
     filename     = f"{chapter_num:04d}_{slugify_filename(title, max_len=60)}.md"
-    file_content = f"# {title}\n\n{content}\n\n<!-- {url} -->\n"
+    file_content = f"# {title}\n\n{content}\n"
     await write_markdown(os.path.join(output_dir, filename), file_content)
 
-    # ── Cập nhật progress ─────────────────────────────────────────────
+    # Cập nhật progress
     progress["chapter_count"]    = chapter_num
     progress["last_title"]       = title
     progress["last_scraped_url"] = url
@@ -274,14 +259,12 @@ async def scrape_one_chapter(
     all_visited.add(url)
     progress["all_visited_urls"] = list(all_visited)
 
-    # collected_urls: chỉ lưu khi chưa lock story_id, giới hạn kích thước
     if not progress.get("story_id_locked"):
         collected: list[str] = progress.get("collected_urls") or []
         if url not in collected:
             collected.append(url)
         progress["collected_urls"] = collected[-_COLLECTED_URL_CAP:]
 
-        # Học story_id sau đủ mẫu
         if (
             len(progress["collected_urls"]) >= STORY_ID_LEARN_AFTER
             and progress.get("story_id_attempts", 0) < STORY_ID_MAX_ATTEMPTS
@@ -303,8 +286,8 @@ async def scrape_one_chapter(
         flush=True,
     )
 
-    # ── Tìm URL tiếp theo ─────────────────────────────────────────────
-    next_url = find_next_url(clean_html, url, profile)
+    # FIX: truyền soup thay vì clean_html (str)
+    next_url = find_next_url(soup, url, profile)
     if not next_url:
         ai_result: AiClassifyResult | None = await ai_classify_and_find(
             clean_html, url, ai_limiter
@@ -327,13 +310,12 @@ async def scrape_one_chapter(
         print(f"  [Loop] ♻ URL đã thăm: {next_url[:60]}", flush=True)
         return None
 
-    # ── FIX Bug #4: Xác nhận next_url thuộc cùng truyện ─────────────
     last_title = progress.get("last_title", "")
     if last_title and next_url:
         is_same = await ask_ai_confirm_same_story(
             title1     = last_title,
             url1       = url,
-            title2     = "",       # chưa fetch → AI dùng URL để phán đoán
+            title2     = "",
             url2       = next_url,
             ai_limiter = ai_limiter,
         )
@@ -443,7 +425,6 @@ async def _extract_content_ai(
     url: str,
     ai_limiter: AIRateLimiter,
 ) -> str | None:
-    """Fallback: nhờ AI xác nhận đây là trang chương, rồi lấy body text."""
     result: AiClassifyResult | None = await ai_classify_and_find(clean_html, url, ai_limiter)
     if result and result.get("page_type") == "chapter":
         body = soup.find("body")
@@ -462,22 +443,18 @@ async def _advance_past_visited(
     profiles: dict[str, SiteProfileDict],
     ai_limiter: AIRateLimiter,
 ) -> str | None:
-    """
-    URL đã cào rồi (resume sau Ctrl+C).
-    Re-fetch để tìm next_url mà không lưu lại nội dung.
-    """
     print(f"  [Resume] ⏭ Đã cào rồi, bỏ qua: {url[:60]}", flush=True)
     try:
         _, html = await fetch_page(url, pool, pw_pool)
     except Exception:
         return None
 
-    # CPU-bound trong thread pool — nhất quán với scrape_one_chapter
     soup, clean = await asyncio.to_thread(_sync_parse_and_clean, html)
 
-    profile: SiteProfileDict = profiles.get(urlparse(url).netloc.lower(), {})  # type: ignore[assignment]
+    profile: SiteProfileDict = profiles.get(urlparse(url).netloc.lower(), {})
 
-    next_url = find_next_url(clean, url, profile)
+    # FIX: truyền soup thay vì clean (str)
+    next_url = find_next_url(soup, url, profile)
     if not next_url:
         result: AiClassifyResult | None = await ai_classify_and_find(clean, url, ai_limiter)
         if result:
