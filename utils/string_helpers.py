@@ -145,3 +145,66 @@ def truncate(text: str, max_len: int, ellipsis: str = "…") -> str:
     if len(text) <= max_len:
         return text
     return text[: max_len - len(ellipsis)] + ellipsis
+
+
+# ── Smart text extraction ─────────────────────────────────────────────────────
+
+from bs4 import NavigableString, Tag as _Tag
+
+_BLOCK_TAGS = frozenset({
+    "p", "div", "h1", "h2", "h3", "h4", "h5", "h6",
+    "li", "blockquote", "pre", "article", "section",
+    "tr", "td", "th", "dd", "dt", "figcaption",
+    "header", "footer", "aside", "nav",
+})
+
+_INLINE_BREAK_TAGS = frozenset({"br"})
+
+
+def extract_text_blocks(element) -> str:
+    """
+    Trích text từ BeautifulSoup element với logic phân biệt block/inline:
+      - Block tags (p, div, h1...) → chèn '\\n' trước và sau
+      - <br> → chèn '\\n'
+      - Inline tags (span, em, strong, a...) → nối liền, không thêm '\\n'
+
+    Thay thế get_text("\\n") để tránh lỗi ngắt dòng giữa chừng câu văn.
+    """
+    parts: list[str] = []
+
+    def _recurse(node) -> None:
+        if isinstance(node, NavigableString):
+            parts.append(str(node))
+            return
+        if not isinstance(node, _Tag):
+            return
+
+        tag = node.name
+        if tag is None:
+            return
+
+        if tag in _INLINE_BREAK_TAGS:
+            parts.append("\n")
+            return
+
+        is_block = tag in _BLOCK_TAGS
+        if is_block:
+            parts.append("\n")
+
+        for child in node.children:
+            _recurse(child)
+
+        if is_block:
+            parts.append("\n")
+
+    _recurse(element)
+
+    text = "".join(parts)
+    # Xóa trailing space cuối mỗi dòng
+    lines = [line.rstrip() for line in text.splitlines()]
+    text = "\n".join(lines)
+    # Gộp nhiều dòng trắng thành tối đa 2
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+

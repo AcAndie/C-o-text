@@ -26,6 +26,7 @@ from utils.file_io import load_progress, save_progress, write_markdown, save_pro
 from utils.string_helpers import (
     is_junk_page, make_fingerprint, clean_chapter_text,
     normalize_title, slugify_filename, truncate,
+    extract_text_blocks,
 )
 from utils.types import AiClassifyResult, ProgressDict, SiteProfileDict, StoryIdResult
 from ai.client  import AIRateLimiter
@@ -65,7 +66,7 @@ def _sync_extract_content(soup: BeautifulSoup) -> str | None:
     for sel in CONTENT_SELECTORS:
         el = soup.select_one(sel)
         if el:
-            text = el.get_text("\n", strip=False)
+            text = extract_text_blocks(el)
             if len(text.strip()) > 200:
                 return text
     return None
@@ -429,7 +430,7 @@ async def _extract_content_ai(
     if result and result.get("page_type") == "chapter":
         body = soup.find("body")
         if body:
-            return body.get_text("\n", strip=False)
+            return extract_text_blocks(body)
     return None
 
 
