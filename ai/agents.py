@@ -3,14 +3,18 @@
 ai/agents.py — Toàn bộ hàm gọi Gemini API.
 
 Pattern chung:
-  1. _generate_with_retry() → gọi AI, tự retry khi gặp 429
+  1. _generate_with_retry() → gọi AI async, tự retry khi gặp 429
   2. _parse_json_response()  → parse JSON từ response text
   3. Mỗi agent function chỉ build prompt + gọi helper trên
 
 Tối ưu: BeautifulSoup parsing bên trong agent được đẩy xuống thread pool
 qua asyncio.to_thread() để tránh block Event Loop.
 
-Retry policy: tối đa 3 lần, backoff 30 / 60 / 120 giây khi gặp 429.
+Retry policy:
+  - acquire() gọi MỘT LẦN duy nhất trước vòng lặp retry → không tiêu
+    thêm RPM slot khi retry.
+  - Tối đa 3 lần attempt, backoff 30s / 60s khi gặp 429 (lần thứ 3 raise).
+  - generate_content dùng async API (client.aio) → không block event loop.
 """
 from __future__ import annotations
 
@@ -28,7 +32,9 @@ from ai.client import ai_client, AIRateLimiter
 # ── Retry helpers ─────────────────────────────────────────────────────────────
 
 _MAX_RETRIES   = 3
-_RETRY_BACKOFF = [30, 60, 120]  # giây
+# Backoff cho _MAX_RETRIES - 1 = 2 lần retry đầu.
+# Lần thứ 3 (attempt == 2) sẽ raise ngay — không cần index thứ 3.
+_RETRY_BACKOFF = [30, 60]
 
 
 def _is_rate_limit_error(e: Exception) -> bool:
@@ -40,27 +46,46 @@ def _is_rate_limit_error(e: Exception) -> bool:
     return "429" in msg or "quota" in msg or "resource_exhausted" in msg
 
 
-async def _generate_with_retry(prompt: str, ai_limiter: AIRateLimiter) -> str | None:
+async def _generate_with_retry(prompt: str, ai_limiter: AIRateLimiter) -> str:
     """
-    Gọi Gemini với retry tự động khi gặp 429 RateLimitError.
+    Gọi Gemini async với retry tự động khi gặp 429 RateLimitError.
 
-    - Tối đa MAX_RETRIES lần
-    - Backoff tăng dần: 30s → 60s → 120s
-    - Các lỗi khác không được retry, ném thẳng lên caller
+    FIX-1: Dùng `ai_client.aio.models.generate_content` (async) thay vì
+           phiên bản sync — không còn block event loop trong lúc chờ API.
+
+    FIX-2: `ai_limiter.acquire()` gọi MỘT LẦN trước vòng for.
+           Phiên bản cũ acquire mỗi lần retry → tiêu thêm RPM slot sau
+           mỗi lần thất bại, có thể cạn kiệt toàn bộ quota trong 1 burst.
+
+    FIX-3: `_RETRY_BACKOFF` giảm xuống còn 2 phần tử [30, 60].
+           Phiên bản cũ có [30, 60, 120] nhưng index 2 không bao giờ được
+           dùng vì điều kiện `attempt < _MAX_RETRIES - 1` chỉ cho phép
+           backoff ở attempt 0 và 1.
+
+    Args:
+        prompt:     Chuỗi prompt gửi Gemini.
+        ai_limiter: Shared rate limiter (1 instance toàn app).
+
+    Returns:
+        Response text từ Gemini.
+
+    Raises:
+        Exception: Lỗi không phải 429, hoặc vẫn 429 sau khi hết retry.
     """
-    last_exc: Exception | None = None
+    # Acquire slot TRƯỚC vòng lặp — retry không tiêu thêm quota.
+    await ai_limiter.acquire()
 
     for attempt in range(_MAX_RETRIES):
-        await ai_limiter.acquire()
         try:
-            resp = ai_client.models.generate_content(
+            resp = await ai_client.aio.models.generate_content(
                 model    = GEMINI_MODEL,
                 contents = prompt,
             )
             return resp.text
+
         except Exception as e:
-            last_exc = e
-            if _is_rate_limit_error(e) and attempt < _MAX_RETRIES - 1:
+            is_last = attempt >= _MAX_RETRIES - 1
+            if _is_rate_limit_error(e) and not is_last:
                 wait = _RETRY_BACKOFF[attempt]
                 print(
                     f"  [AI] ⚠ 429 Rate limit (lần {attempt + 1}/{_MAX_RETRIES}),"
@@ -71,9 +96,8 @@ async def _generate_with_retry(prompt: str, ai_limiter: AIRateLimiter) -> str | 
             else:
                 raise
 
-    if last_exc:
-        raise last_exc
-    return None
+    # Unreachable — loop luôn return hoặc raise — nhưng cần cho mypy
+    raise RuntimeError("_generate_with_retry: hết retry không mong đợi")
 
 
 def _parse_json_response(text: str) -> dict | list | None:
@@ -130,7 +154,6 @@ async def ask_ai_build_profile(
     ai_limiter: AIRateLimiter,
 ) -> dict | None:
     """Phân tích HTML để xây dựng CSS selector profile cho site mới."""
-    # CPU-bound: parse + slice HTML trong thread pool
     snippet = await asyncio.to_thread(_sync_get_profile_snippet, html)
 
     prompt = f"""Phân tích HTML trang chương truyện sau và trả về JSON.
@@ -230,7 +253,6 @@ async def ai_find_first_chapter_url(
     ai_limiter: AIRateLimiter,
 ) -> str | None:
     """Tìm URL chương đầu tiên từ trang mục lục / trang truyện."""
-    # CPU-bound: parse + filter links trong thread pool
     links = await asyncio.to_thread(_sync_get_chapter_links, html, base_url)
 
     if not links:
@@ -255,7 +277,7 @@ Trả về JSON (CHỈ JSON):
     except Exception as e:
         print(f"  [AI] ⚠ ai_find_first_chapter_url thất bại: {e}", flush=True)
 
-    return links[0]  # Fallback: link đầu tiên
+    return links[0]
 
 
 async def ai_classify_and_find(
@@ -269,7 +291,6 @@ async def ai_classify_and_find(
     Trả về: page_type (chapter|index|other), next_url, first_chapter_url.
     Nhận html đã được làm sạch (remove_hidden_elements) từ scraper.
     """
-    # CPU-bound: parse + extract hints trong thread pool
     hint_block, snippet = await asyncio.to_thread(
         _sync_get_nav_hints_and_snippet, html, base_url
     )

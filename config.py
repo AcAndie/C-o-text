@@ -14,10 +14,9 @@ from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
-# Tìm .env từ thư mục project trở lên, tự động
 from pathlib import Path
-load_dotenv(dotenv_path=Path(__file__).parent / ".env")          # thử trong Cào text\
-load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")   # thử ở Small Project\
+load_dotenv(dotenv_path=Path(__file__).parent / ".env")
+load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
 
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 if not GEMINI_API_KEY:
@@ -74,6 +73,8 @@ CONTENT_SELECTORS: list[str] = [
 REQUEST_TIMEOUT = 60
 
 # ── Delay profile theo domain ─────────────────────────────────────────────────
+# FIX: "fanfiction.net" (non-www) đồng bộ với "www.fanfiction.net".
+# Trước đây min 1.0s — đủ để bị IP ban. Tăng lên 3.0s cho an toàn.
 DELAY_PROFILES: dict[str, tuple[float, float]] = {
     "royalroad.com"       : (8.0,  15.0),
     "www.royalroad.com"   : (8.0,  15.0),
@@ -81,7 +82,7 @@ DELAY_PROFILES: dict[str, tuple[float, float]] = {
     "www.scribblehub.com" : (6.0,  12.0),
     "wattpad.com"         : (4.0,  10.0),
     "www.wattpad.com"     : (4.0,  10.0),
-    "fanfiction.net"      : (1.0,   5.0),
+    "fanfiction.net"      : (3.0,   7.0),   # FIX: was (1.0, 5.0)
     "www.fanfiction.net"  : (3.0,   7.0),
     "archiveofourown.org" : (3.0,   6.0),
 }
@@ -103,9 +104,6 @@ STORY_ID_LEARN_AFTER  = 12
 STORY_ID_MAX_ATTEMPTS = 3
 
 # ── Ads filter ────────────────────────────────────────────────────────────────
-# AI scan watermark mỗi N chương — đủ thưa để không tốn quota,
-# đủ dày để học pattern sớm trong truyện ngắn.
-# Với free tier 3 RPM: scan mỗi 5 ch → tối đa 0.2 RPM overhead, chấp nhận được.
 ADS_AI_SCAN_EVERY = 5
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
@@ -118,7 +116,7 @@ AI_JITTER      = (2.0, 5.0)
 
 RE_CHAP_URL = re.compile(
     r"(chapter|chuong|chap|/c|/ch|episode|ep|part|phan|tap)[_-]?\d+$"
-    r"|/s/\d+/\d+",      # fanfiction.net: /s/{story_id}/{chapter_num}[/slug]
+    r"|/s/\d+/\d+",
     re.IGNORECASE,
 )
 RE_NEXT_BTN = re.compile(
@@ -127,7 +125,7 @@ RE_NEXT_BTN = re.compile(
 )
 RE_CHAP_HREF = re.compile(
     r"/(chapter|chuong|chap|c|ep|episode|part)[_-]?\d+"
-    r"|/s/\d+/\d+/",     # fanfiction.net chapter href
+    r"|/s/\d+/\d+/",
     re.IGNORECASE,
 )
 RE_CHAP_KW_URL = re.compile(
@@ -136,7 +134,7 @@ RE_CHAP_KW_URL = re.compile(
 )
 RE_CHAP_HINT = re.compile(
     r"(chapter|chuong|chap|/c/|/ch/|episode|ep|phần|tập)\d*"
-    r"|/s/\d+/\d+/",     # fanfiction.net: /s/{story_id}/{chapter_num}/
+    r"|/s/\d+/\d+/",
     re.IGNORECASE,
 )
 RE_NEXT_PREV = re.compile(
