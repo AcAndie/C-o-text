@@ -2,18 +2,19 @@
 """
 core/scraper.py — Orchestration: fetch → parse → lưu → điều hướng.
 
-FIX-PROFILE-SEL: _sync_extract_content nhận thêm profile parameter.
-  Thứ tự ưu tiên:
-    1. profile["content_selector"] (AI-learned, domain-specific) — ĐỘ CHÍNH XÁC CAO NHẤT
-    2. CONTENT_SELECTORS global list (fallback cho domain quen)
-  Trước đây profile selector bị bỏ qua hoàn toàn → domain mới (novelfire, v.v.)
-  luôn trả về None dù AI đã build đúng profile.
+BUG-1 FIX: run_novel_task() bây giờ bắt asyncio.CancelledError riêng.
+  Khi Ctrl+C được nhấn (hoặc task bị cancel từ bên ngoài), chương trình
+  sẽ lưu progress hiện tại trước khi re-raise — đảm bảo resume đúng lần sau.
+  Trước đây: CancelledError propagate thẳng qua except Exception → progress
+  của chương đang cào bị mất (vì save_progress ở cuối scrape_one_chapter
+  chưa chạy kịp).
 
-Fixes từ phiên bản trước vẫn còn:
+Các fix khác vẫn còn:
   FIX-A: Cache ai_classify_and_find result
   FIX-B: Cross-domain jump guard
   FIX-C: _extract_content_ai inline
   FIX-D: ai_validate_title khi vote hòa
+  FIX-PROFILE-SEL: profile content_selector ưu tiên cao nhất
   ADS-1/2: SimpleAdsFilter wired
 """
 from __future__ import annotations
@@ -86,14 +87,8 @@ def _sync_extract_content(
     Trích nội dung chương từ soup.
 
     FIX-PROFILE-SEL: Thử profile["content_selector"] TRƯỚC khi dùng
-    CONTENT_SELECTORS global. Domain-specific selector (do AI học) có
-    độ chính xác cao hơn selector cứng.
-
-    Lý do cần fix: scraper cũ bỏ qua hoàn toàn profile selector dù đã
-    build thành công → novelfire.net (và mọi domain lạ) không bao giờ
-    extract được content.
+    CONTENT_SELECTORS global.
     """
-    # 1. Profile selector — ưu tiên cao nhất
     if profile:
         sel = profile.get("content_selector")
         if sel:
@@ -110,7 +105,6 @@ def _sync_extract_content(
             except Exception as e:
                 logger.debug("[Extract] Profile selector %r lỗi: %s", sel, e)
 
-    # 2. Global CONTENT_SELECTORS — fallback
     for sel in CONTENT_SELECTORS:
         try:
             el = soup.select_one(sel)
@@ -161,12 +155,6 @@ async def check_and_find_start_chapter(
     profiles: dict[str, SiteProfileDict],
     ai_limiter: AIRateLimiter,
 ) -> tuple[str, ProgressDict]:
-    """
-    Xác định URL chương đầu tiên cần cào.
-
-    FIX-PROFILE-SEL (check_and_find): Khi kiểm tra có content không,
-    truyền profile vào _sync_extract_content để detect đúng domain mới.
-    """
     progress = await load_progress(progress_path)
 
     if progress.get("current_url"):
@@ -191,7 +179,6 @@ async def check_and_find_start_chapter(
         profile = profiles.get(domain, {})
 
         soup_check, _ = await asyncio.to_thread(_sync_parse_and_clean, html)
-        # FIX-PROFILE-SEL: truyền profile để dùng content_selector đúng domain
         content_check = await asyncio.to_thread(_sync_extract_content, soup_check, profile)
 
         if content_check and len(content_check.strip()) > 200:
@@ -255,8 +242,6 @@ async def scrape_one_chapter(
     soup, clean_html = await asyncio.to_thread(_sync_parse_and_clean, html)
 
     domain  = urlparse(url).netloc.lower()
-
-    # Profile
     profile: SiteProfileDict = profiles.get(domain, {})
     if not profile:
         new_profile = await ask_ai_build_profile(clean_html, url, ai_limiter)
@@ -264,16 +249,12 @@ async def scrape_one_chapter(
             await _save_new_profile(profiles, domain, new_profile, profiles_lock)
             profile = new_profile
             print(f"  [Profile] ✅ Đã lưu profile cho {domain}", flush=True)
-            # Log selector học được để dễ debug
             if new_profile.get("content_selector"):
                 print(
                     f"  [Profile] content_selector: {new_profile['content_selector']!r}",
                     flush=True,
                 )
 
-    # ── Extract nội dung ──────────────────────────────────────────────────────
-    # FIX-A: Cache ai_classify_and_find result.
-    # FIX-PROFILE-SEL: Truyền profile vào để ưu tiên content_selector AI học.
     ai_classify_cache: AiClassifyResult | None = None
 
     content = await asyncio.to_thread(_sync_extract_content, soup, profile)
@@ -291,7 +272,6 @@ async def scrape_one_chapter(
 
     content = clean_chapter_text(content)
 
-    # ── ADS-1: Filter ads/watermark plain-text ────────────────────────────────
     content_before_filter = content
     content = ads_filter.filter_content(content)
 
@@ -299,7 +279,6 @@ async def scrape_one_chapter(
     if removed_chars > 0:
         print(f"  [Ads] 🧹 Đã lọc {removed_chars} ký tự ads khỏi nội dung", flush=True)
 
-    # Fingerprint — dùng content đã lọc
     fp           = make_fingerprint(content)
     fingerprints = set(progress.get("fingerprints") or [])
     if fp in fingerprints:
@@ -317,7 +296,6 @@ async def scrape_one_chapter(
 
     chapter_num = progress.get("chapter_count", 0) + 1
 
-    # ── ADS-2: AI scan mỗi ADS_AI_SCAN_EVERY chương ──────────────────────────
     if chapter_num % ADS_AI_SCAN_EVERY == 1:
         context_block = ads_filter.build_ai_context_block(content_before_filter)
         if context_block:
@@ -338,12 +316,10 @@ async def scrape_one_chapter(
                 else:
                     print(f"  [Ads] ✔ Nội dung sạch, không có pattern mới", flush=True)
 
-    # Ghi file .md
     filename     = f"{chapter_num:04d}_{slugify_filename(title, max_len=60)}.md"
     file_content = f"# {title}\n\n{content}\n"
     await write_markdown(os.path.join(output_dir, filename), file_content)
 
-    # Cập nhật progress
     progress["chapter_count"]    = chapter_num
     progress["last_title"]       = title
     progress["last_scraped_url"] = url
@@ -378,7 +354,6 @@ async def scrape_one_chapter(
         flush=True,
     )
 
-    # ── Tìm next_url ─────────────────────────────────────────────────────────
     next_url = find_next_url(soup, url, profile)
     if not next_url:
         if ai_classify_cache is None:
@@ -401,7 +376,6 @@ async def scrape_one_chapter(
         print(f"  [Loop] ♻ URL đã thăm: {next_url[:60]}", flush=True)
         return None
 
-    # ── FIX-B: Cross-domain jump guard ───────────────────────────────────────
     current_domain = urlparse(url).netloc
     next_domain    = urlparse(next_url).netloc
 
@@ -493,6 +467,20 @@ async def run_novel_task(
                 await on_chapter_done()
 
             current_url = next_url
+
+        except asyncio.CancelledError:
+            # BUG-1 FIX: Lưu progress TRƯỚC KHI re-raise để resume đúng lần sau.
+            # Trước đây CancelledError bypass qua except Exception → progress mất.
+            print(
+                f"  [Cancel] 🛑 Task bị ngắt, đang lưu progress tại ch."
+                f"{progress.get('chapter_count', 0)}...",
+                flush=True,
+            )
+            try:
+                await save_progress(progress_path, progress)
+            except Exception:
+                pass  # Không crash khi đang shutdown
+            raise  # Propagate để asyncio.gather nhận biết
 
         except asyncio.TimeoutError:
             consecutive_timeouts += 1

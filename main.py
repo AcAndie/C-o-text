@@ -1,5 +1,12 @@
 """
 main.py — Điểm khởi chạy duy nhất của chương trình.
+
+BUG-1 FIX: asyncio.gather() bây giờ được bọc trong try/except CancelledError.
+  Khi Ctrl+C được nhấn, event loop cancel tất cả tasks. CancelledError
+  sẽ được bắt ở đây để:
+  1. In thông báo rõ ràng thay vì traceback dài
+  2. Đảm bảo finally block (pool.close_all, app.close) luôn chạy
+  3. Không bị confuse với "crash" — đây là shutdown bình thường
 """
 import sys
 import io
@@ -42,7 +49,6 @@ class AppState:
 
     @property
     def total(self) -> int:
-        """Tổng số chương đã cào trong phiên này."""
         return self._total_this_sess
 
     async def inc_total(self) -> int:
@@ -63,7 +69,6 @@ class AppState:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _is_valid_url(url: str) -> bool:
-    """Kiểm tra URL có scheme và netloc hợp lệ."""
     try:
         parsed = urlparse(url)
         return parsed.scheme in ("http", "https") and bool(parsed.netloc)
@@ -100,7 +105,6 @@ async def main() -> None:
             if line.strip() and not line.strip().startswith("#")
         ]
 
-    # Lọc URL không hợp lệ thay vì để lỗi âm thầm khi cào
     urls = [u for u in raw_urls if _is_valid_url(u)]
     skipped = len(raw_urls) - len(urls)
     if skipped:
@@ -131,26 +135,39 @@ async def main() -> None:
             on_chapter_done = app.inc_total,
         )
 
+    # BUG-1 FIX: Bắt CancelledError (Ctrl+C / external shutdown) để:
+    #   1. In thông báo rõ ràng
+    #   2. Đảm bảo finally block chạy (đóng pool, lưu progress)
+    #   3. Tránh traceback dài confusing
+    cancelled = False
     try:
         results = await asyncio.gather(
             *[_staggered_task(url, i) for i, url in enumerate(urls)],
             return_exceptions=True,
         )
+    except asyncio.CancelledError:
+        cancelled = True
+        print(
+            f"\n⚠️  Nhận tín hiệu dừng (Ctrl+C). Progress đã được lưu tự động.",
+            flush=True,
+        )
+        results = []
     finally:
         await pool.close_all()
         await app.close()
 
-    for url, result in zip(urls, results):
-        if isinstance(result, Exception):
-            print(
-                f"[ERR] Truyện thất bại: {url[:60]}\n"
-                f"      {type(result).__name__}: {result}",
-                flush=True,
-            )
+    if not cancelled:
+        for url, result in zip(urls, results):
+            if isinstance(result, Exception):
+                print(
+                    f"[ERR] Truyện thất bại: {url[:60]}\n"
+                    f"      {type(result).__name__}: {result}",
+                    flush=True,
+                )
 
     print(
         f"\n{'─'*60}\n"
-        f"✔ Tổng kết: {app.total} chương "   # ← dùng property, không truy cập _total_this_sess
+        f"✔ Tổng kết: {app.total} chương "
         f"trong {app.elapsed_str()}\n"
         f"{'─'*60}"
     )

@@ -2,14 +2,17 @@
 """
 core/extractors.py — Trích xuất tiêu đề chương và tên truyện.
 
-API thay đổi:
-  TitleExtractor.extract(soup, url, ai_limiter?)  — nhận BeautifulSoup thay vì str
-  extract_story_title(soup, url)                  — không đổi (đã nhận soup)
+BUG-2 FIX: Thêm _strip_story_prefix() + _RE_CHAP_NO_SEPARATOR.
+  Vấn đề: Một số site (novelfire, v.v.) trả <title> dạng:
+    "The Primal HunterChapter 1 - Another Monday Morning"
+  (tên truyện + tiêu đề chương ghép trực tiếp, KHÔNG có separator).
+  normalize_title() không xử lý được vì không có dấu | – —.
+  TitleExtractor._collect_candidates() bây giờ tự động strip prefix
+  cho <title> tag và <meta og:title> trước khi đưa vào voting pool.
 
-FIX-D: Wire `ai_validate_title` khi majority vote hòa (thay vì max(len)).
-       ai_limiter là optional — nếu None thì fallback về hành vi cũ (max len).
-
-Caller (scraper.py) đã có soup từ _sync_parse_and_clean → không parse lại.
+API không đổi:
+  TitleExtractor.extract(soup, url, ai_limiter?)
+  extract_story_title(soup, url)
 """
 from __future__ import annotations
 
@@ -27,10 +30,39 @@ if TYPE_CHECKING:
 
 _MIN_TITLE_LEN = 3
 
-# Xóa phần ", a <fandom>" của fanfiction.net
-_RE_FANDOM_TAG = re.compile(r",\s*a\s+.+$")
-# Xóa suffix "Chapter N" ở cuối title
+_RE_FANDOM_TAG  = re.compile(r",\s*a\s+.+$")
 _RE_CHAP_SUFFIX = re.compile(r"\s+chapter\s+\d+.*$", re.IGNORECASE)
+
+# ── BUG-2 FIX ─────────────────────────────────────────────────────────────────
+# Phát hiện "StoryNameChapter N" — "Chapter" gắn trực tiếp vào chữ cái
+# mà không có space / dash / em-dash trước nó.
+#
+# Lookbehind (?<=[a-zA-Z]) khớp khi ký tự TRƯỚC "Chapter" là chữ cái Latin.
+# Điều này đảm bảo:
+#   "The Primal HunterChapter 1 - ..."  → khớp ("r" trước "C")
+#   "Chapter 1 - ..."                   → KHÔNG khớp (đầu chuỗi)
+#   "Rock Falls - Chapter 1 - ..."      → KHÔNG khớp (space trước "C")
+#   "EpicChapterOneWithoutNumber"       → KHÔNG khớp (không có số sau Chapter)
+_RE_CHAP_NO_SEPARATOR = re.compile(
+    r'(?<=[a-zA-Z])(Chapter\s+\d+.+)$',
+    re.IGNORECASE,
+)
+
+
+def _strip_story_prefix(raw: str) -> str:
+    """
+    Xử lý title concat không separator: 'StoryNameChapter 1 - Title' → 'Chapter 1 - Title'.
+
+    Chỉ kích hoạt khi 'Chapter N' gắn trực tiếp vào chữ cái (không space/dash trước).
+    Nếu không match → trả về nguyên gốc, không thay đổi gì.
+
+    Ví dụ:
+      'The Primal HunterChapter 1 - Monday' → 'Chapter 1 - Monday'  ✓
+      'Chapter 1 - Monday'                  → 'Chapter 1 - Monday'  ✓ (no-op)
+      'Rock Falls - Chapter 2 - ...'        → 'Rock Falls - Chapter 2 - ...' ✓ (no-op)
+    """
+    m = _RE_CHAP_NO_SEPARATOR.search(raw)
+    return m.group(1).strip() if m else raw
 
 
 # ── TitleExtractor ────────────────────────────────────────────────────────────
@@ -39,12 +71,10 @@ class TitleExtractor:
     """
     Trích xuất tiêu đề chương từ BeautifulSoup bằng đa-nguồn + voting.
 
-    Không cần state → có thể dùng như singleton.
-    Không nhận `html: str` nữa — caller truyền soup đã parse để tránh
-    parse lại lần thứ N trong cùng một chapter pipeline.
-
-    FIX-D: Khi vote hòa, gọi ai_validate_title thay vì chọn theo max(len).
-           ai_limiter là optional để không phá interface cũ.
+    BUG-2 FIX: _collect_candidates() áp dụng _strip_story_prefix() cho
+               <title> và <meta og:title> trước khi đưa vào voting pool.
+               → Tránh title xấu như 'The Primal HunterChapter 1 - ...'
+                 thắng vote vì nó dài hơn 'Chapter 1 - ...' sạch từ <h1>.
     """
 
     async def extract(
@@ -53,14 +83,6 @@ class TitleExtractor:
         url: str,
         ai_limiter: "AIRateLimiter | None" = None,
     ) -> str:
-        """
-        Trích tiêu đề từ soup đã parse sẵn.
-
-        Args:
-            soup:       BeautifulSoup của trang chương (đã clean).
-            url:        URL hiện tại — dùng làm fallback slug.
-            ai_limiter: Nếu cung cấp, gọi AI khi vote hòa thay vì chọn max(len).
-        """
         candidates = self._collect_candidates(soup, url)
 
         cleaned: list[str] = []
@@ -74,7 +96,6 @@ class TitleExtractor:
         if not cleaned:
             return self._from_url_slug(url) or "Không rõ tiêu đề"
 
-        # Deduplicate case-insensitive, giữ lần xuất hiện đầu tiên
         lower_map: dict[str, str] = {}
         for t in cleaned:
             key = t.lower()
@@ -84,21 +105,16 @@ class TitleExtractor:
         counts = Counter(t.lower() for t in cleaned)
         top2   = counts.most_common(2)
 
-        # Không hòa → trả về ngay
         if len(top2) == 1 or top2[0][1] != top2[1][1]:
             return lower_map[top2[0][0]]
 
         # ── Vote hòa ──────────────────────────────────────────────────────────
         tied = [lower_map[t[0]] for t in top2]
 
-        # FIX-D: Dùng AI validate khi có ai_limiter
         if ai_limiter is not None:
             from ai.agents import ai_validate_title
-            # Lấy snippet đầu trang để AI có context
             body_el = soup.find("body")
             snippet = body_el.get_text(separator=" ", strip=True)[:300] if body_el else ""
-
-            # Thử validate candidate ngắn hơn trước (thường là tiêu đề thật)
             primary = min(tied, key=len)
             validated = await ai_validate_title(
                 candidate       = primary,
@@ -109,7 +125,6 @@ class TitleExtractor:
             if validated:
                 return normalize_title(validated)
 
-        # Fallback: chọn title dài nhất (hành vi cũ)
         return max(tied, key=len)
 
     def _collect_candidates(self, soup: BeautifulSoup, url: str) -> list[str]:
@@ -124,11 +139,15 @@ class TitleExtractor:
             if attr:
                 el = soup.find(tag_name, property=attr)
                 if el and el.get("content"):
-                    result.append(el["content"].strip())
+                    raw = el["content"].strip()
+                    # BUG-2 FIX: og:title cũng có thể bị concat
+                    result.append(_strip_story_prefix(raw))
             else:
                 el = soup.find(tag_name)
                 if el:
-                    result.append(el.get_text(strip=True))
+                    raw = el.get_text(strip=True)
+                    # BUG-2 FIX: <title> tag thường bị concat — strip trước
+                    result.append(_strip_story_prefix(raw) if tag_name == "title" else raw)
 
         prop = soup.find(attrs={"itemprop": "name"})
         if prop:
@@ -175,12 +194,7 @@ class TitleExtractor:
 def extract_story_title(soup: BeautifulSoup, url: str) -> str | None:
     """
     Trích tên truyện (không phải tiêu đề chương) từ BeautifulSoup.
-
-    Nguồn theo thứ tự ưu tiên:
-      1. Breadcrumb — phần tử áp chót thường là tên truyện
-      2. <title> dạng "Story Name Chapter N | SiteName"
     """
-    # 1. Breadcrumb
     for bc in soup.find_all(attrs={"class": re.compile(r"breadcrumb", re.I)}):
         items = bc.find_all(["a", "span", "li"])
         if len(items) >= 2:
@@ -188,7 +202,6 @@ def extract_story_title(soup: BeautifulSoup, url: str) -> str | None:
             if len(candidate) > 3:
                 return normalize_title(candidate)
 
-    # 2. <title> tag
     title_tag = soup.find("title")
     if title_tag:
         raw = title_tag.get_text(strip=True)

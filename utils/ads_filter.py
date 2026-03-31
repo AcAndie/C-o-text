@@ -2,25 +2,13 @@
 """
 utils/ads_filter.py — Lightweight ads/watermark filter cho plain-text content.
 
-Vai trò trong pipeline:
-  html_filter.py  → xóa hidden DOM element (CSS-hidden watermark)
-  ads_filter.py   → xóa dòng văn bản ads trong nội dung đã extract
-                    (plain-text watermark không bị ẩn bởi CSS)
-
-Ví dụ ads dạng plain-text (html_filter.py bỏ qua hoàn toàn):
-  "If you come across this story on Amazon, it has been stolen."
-  "Read the original at royalroad.com"
-  "This content was taken from webnovel without permission."
-
-Thiết kế:
-  - 1 instance per novel task (không share giữa các truyện)
-  - Không thread-safe — chạy trong 1 asyncio task duy nhất, không cần lock
-  - Stateful: keyword/pattern set tăng dần theo thời gian qua AI learning
-
-API công khai:
-  filter_content(text)            → str      xóa dòng chứa ads
-  build_ai_context_block(text)    → str|None block text gửi ai_detect_ads_content
-  update_from_ai_result(raw_json) → int      học pattern mới, trả về số đã thêm
+BUG-3 FIX: Bổ sung seed keywords cho UI elements của novelfire.net và các
+  aggregator site tương tự. Các dòng junk hay gặp ở cuối chương:
+    "Share to your friends"
+    "Tip: You can use left, right keyboard keys to browse between chapters."
+    "If you find any errors (non-standard content, ads redirect...), Please let us know"
+    "Report"  ← dưới _MIN_SUSPICIOUS_LINE_LEN, không cần keyword
+  Thêm cả regex pattern để bắt biến thể.
 """
 from __future__ import annotations
 
@@ -30,10 +18,6 @@ import re
 
 logger = logging.getLogger(__name__)
 
-# ── Seed keywords ─────────────────────────────────────────────────────────────
-# Cụm từ watermark phổ biến từ aggregator / piracy sites.
-# Lowercase — so sánh với line.lower() để case-insensitive.
-# Bổ sung khi gặp thực tế: thêm vào list này rồi commit.
 _SEED_KEYWORDS: list[str] = [
     # Generic stolen-content notice
     "stolen content",
@@ -68,7 +52,7 @@ _SEED_KEYWORDS: list[str] = [
     "more chapters at",
     "read more at",
 
-    # Monetization / donation links (thường là inline text)
+    # Monetization / donation links
     "patreon.com/",
     "ko-fi.com/",
     "buymeacoffee.com/",
@@ -87,55 +71,87 @@ _SEED_KEYWORDS: list[str] = [
     "if you encounter this story on amazon",
     "encounter this story on amazon",
     "found on amazon, report it",
+
+    # ── BUG-3 FIX: NovelFire / aggregator site UI elements ────────────────────
+    # Các dòng này xuất hiện ở cuối chương do content_selector quá rộng,
+    # bao gồm cả phần navigation/footer của site.
+
+    # NovelFire social share bar
+    "share to your friends",
+    "share this chapter",
+    "share this novel",
+
+    # NovelFire / generic keyboard navigation tip
+    "keyboard keys to browse between chapters",
+    "use left, right keyboard keys",
+    "you can use left, right",
+    "left, right keyboard keys to browse",
+
+    # NovelFire error report footer
+    "if you find any errors",
+    "non-standard content, ads redirect",
+    "please let us know so we can fix",
+    "let us know so we can fix it",
+
+    # Translation credit lines (aggregator MTL sites)
+    "translate by",
+    "translation by",
+    "translated by system",
+    "mtl by",
+    "machine translated by",
+    "raw source:",
+
+    # Generic aggregator footer
+    "chapters are updated daily",
+    "visit lightnovelreader",
+    "visit novelfull",
+    "visit wuxiaworld",
+    "visit gravitytales",
+    "read latest chapters at",
+    "read advance chapters at",
+    "for more chapters,",
 ]
 
-# Dòng rất ngắn sau strip thường là fragment ads hoặc separator rác
-# Nhưng không filter hoàn toàn vì có thể là dòng trống hợp lệ
 _MIN_SUSPICIOUS_LINE_LEN = 15
+_CONTEXT_WINDOW          = 10
+_MAX_CONTEXT_BLOCKS      = 5
 
-# Số context dòng trước/sau dòng nghi ngờ gửi lên AI
-_CONTEXT_WINDOW = 10
+# ── BUG-3 FIX: Seed regex patterns cho UI elements ───────────────────────────
+# Compile sẵn để tránh re-compile mỗi lần check.
+_SEED_PATTERNS_RAW: list[str] = [
+    # "Tip: You can use ..." — novelfire navigation hint
+    r"^Tip:\s+You can use",
+    # "Chapter N - Title" lặp lại ở cuối (navigation element)
+    # Chỉ match khi ở cuối chuỗi ngắn (< 60 chars), không phải heading trong chương
+    # → Handled by AdsFilter learning, không hardcode để tránh false positive
+]
 
-# Tối đa N block nghi ngờ gửi lên AI trong 1 lần scan
-# Giới hạn để tránh prompt quá dài → tốn token
-_MAX_CONTEXT_BLOCKS = 5
-
-
-# ── SimpleAdsFilter ───────────────────────────────────────────────────────────
 
 class SimpleAdsFilter:
     """
     Filter watermark/ads nhẹ cho plain-text nội dung chương.
 
-    Không thread-safe — thiết kế để dùng trong 1 asyncio task duy nhất.
-    Mỗi run_novel_task tạo 1 instance riêng biệt.
+    BUG-3 FIX: Seed patterns được compile và nạp ngay từ __init__,
+    bao gồm regex cho "Tip: You can use..." pattern của novelfire.
     """
 
     def __init__(self) -> None:
-        # Set keyword lowercase — lookup O(1) với `in`
         self._keywords: set[str] = {kw.lower() for kw in _SEED_KEYWORDS}
-        # List compiled regex — thêm dần qua AI learning
         self._patterns: list[re.Pattern[str]] = []
+
+        # BUG-3 FIX: Nạp seed patterns vào
+        for pat_str in _SEED_PATTERNS_RAW:
+            try:
+                self._patterns.append(re.compile(pat_str, re.IGNORECASE))
+            except re.error as e:
+                logger.warning("[AdsFilter] Seed pattern lỗi: %r — %s", pat_str, e)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def filter_content(self, text: str) -> str:
-        """
-        Xóa các dòng bị detect là ads/watermark khỏi nội dung chương.
-
-        Thuật toán:
-          1. Tách theo dòng
-          2. Giữ lại dòng không phải ads
-          3. Gộp lại, normalize dòng trắng (tối đa 2 liên tiếp)
-
-        Không xóa dòng trắng hợp lệ → giữ nguyên cấu trúc đoạn văn.
-        """
         lines  = text.splitlines()
         kept   = [line for line in lines if not self._is_ads_line(line)]
 
-        # Normalize: sau khi xóa dòng ads, 2 đoạn văn có thể để lại
-        # 2 dòng trắng liên tiếp → chuẩn markdown chỉ cần 1 dòng trắng.
-        # Giới hạn tối đa 1 blank line liên tiếp.
         result: list[str] = []
         blank_count = 0
         for line in kept:
@@ -150,24 +166,6 @@ class SimpleAdsFilter:
         return "\n".join(result)
 
     def build_ai_context_block(self, text: str) -> str | None:
-        """
-        Tạo block text có định dạng để gửi lên ai_detect_ads_content.
-
-        Với mỗi dòng nghi ngờ, chèn _CONTEXT_WINDOW dòng trước/sau
-        và đánh dấu dòng nghi ngờ bằng >>> <<<.
-
-        Trả về None nếu không tìm thấy dòng nghi ngờ nào — tránh
-        gọi AI không cần thiết khi nội dung sạch.
-
-        Ví dụ output:
-          Line of story text
-          Line of story text
-          >>> If you come across this story on Amazon, report it. <<<
-          Line of story text
-          ...
-          ---
-          (block tiếp theo nếu có)
-        """
         lines = text.splitlines()
         suspicious_indices = [
             i for i, line in enumerate(lines)
@@ -197,26 +195,8 @@ class SimpleAdsFilter:
         return "\n\n---\n\n".join(blocks)
 
     def update_from_ai_result(self, raw_json: str) -> int:
-        """
-        Parse kết quả JSON từ ai_detect_ads_content và cập nhật filter.
-
-        Expected JSON format:
-          {
-            "found": true,
-            "keywords": ["short phrase", ...],
-            "patterns": ["python regex", ...],
-            "example_lines": ["exact text", ...]
-          }
-
-        Bỏ qua nếu "found" = false hoặc JSON lỗi.
-        Bỏ qua pattern nếu regex compile thất bại (AI đôi khi viết sai).
-
-        Returns:
-          int: Số keyword + pattern mới được thêm vào (để caller log).
-        """
         if not raw_json:
             return 0
-
         try:
             data = json.loads(raw_json.strip())
         except (json.JSONDecodeError, AttributeError, ValueError):
@@ -228,7 +208,6 @@ class SimpleAdsFilter:
 
         added = 0
 
-        # Học keyword mới
         for kw in data.get("keywords", []):
             if not isinstance(kw, str):
                 continue
@@ -238,7 +217,6 @@ class SimpleAdsFilter:
                 added += 1
                 logger.debug("[AdsFilter] Keyword mới: %r", kw_lower)
 
-        # Học regex pattern mới
         for pat_str in data.get("patterns", []):
             if not isinstance(pat_str, str) or not pat_str.strip():
                 continue
@@ -248,45 +226,32 @@ class SimpleAdsFilter:
                 added += 1
                 logger.debug("[AdsFilter] Pattern mới: %r", pat_str)
             except re.error as e:
-                # AI đôi khi viết regex không hợp lệ — bỏ qua, không crash
                 logger.debug("[AdsFilter] Regex lỗi (bỏ qua): %r — %s", pat_str, e)
 
         return added
 
     @property
     def keyword_count(self) -> int:
-        """Số keyword hiện tại — dùng để debug/log."""
         return len(self._keywords)
 
     @property
     def pattern_count(self) -> int:
-        """Số regex pattern hiện tại — dùng để debug/log."""
         return len(self._patterns)
 
     # ── Private ───────────────────────────────────────────────────────────────
 
     def _is_ads_line(self, line: str) -> bool:
-        """
-        Kiểm tra một dòng có phải ads/watermark không.
-
-        Dòng trống hoặc quá ngắn → không check (tránh false positive).
-        Check keyword trước (O(1) per keyword) vì thường đủ rồi.
-        Check regex sau (O(len(line)) per pattern) chỉ khi cần.
-        """
         stripped = line.strip()
 
-        # Bỏ qua dòng trống hoặc quá ngắn
         if len(stripped) < _MIN_SUSPICIOUS_LINE_LEN:
             return False
 
         lower = stripped.lower()
 
-        # Keyword check — O(K) với K = số keyword
         for kw in self._keywords:
             if kw in lower:
                 return True
 
-        # Regex check — O(P * len(line)) với P = số pattern
         for pat in self._patterns:
             if pat.search(stripped):
                 return True
