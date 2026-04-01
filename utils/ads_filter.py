@@ -127,85 +127,97 @@ _SEED_PATTERNS_RAW: list[str] = [
 ]
 
 
-class SimpleAdsFilter:
-    """
-    Filter watermark/ads nhẹ cho plain-text nội dung chương.
+# utils/ads_filter.py — thêm load/save JSON
 
-    BUG-3 FIX: Seed patterns được compile và nạp ngay từ __init__,
-    bao gồm regex cho "Tip: You can use..." pattern của novelfire.
-    """
+import json
+import os
+
+_ADS_DB_FILE = "ADs_keyword.json"
+
+class SimpleAdsFilter:
 
     def __init__(self) -> None:
         self._keywords: set[str] = {kw.lower() for kw in _SEED_KEYWORDS}
+        self._patterns_raw: list[str] = list(_SEED_PATTERNS_RAW)
         self._patterns: list[re.Pattern[str]] = []
 
-        # BUG-3 FIX: Nạp seed patterns vào
-        for pat_str in _SEED_PATTERNS_RAW:
+        # Compile seed patterns
+        for pat_str in self._patterns_raw:
             try:
                 self._patterns.append(re.compile(pat_str, re.IGNORECASE))
             except re.error as e:
                 logger.warning("[AdsFilter] Seed pattern lỗi: %r — %s", pat_str, e)
 
-    # ── Public API ────────────────────────────────────────────────────────────
+        # Load learned data từ file
+        self._load()
 
-    def filter_content(self, text: str) -> str:
-        lines  = text.splitlines()
-        kept   = [line for line in lines if not self._is_ads_line(line)]
+    def _load(self) -> None:
+        """Load keywords/patterns đã học từ file JSON."""
+        if not os.path.exists(_ADS_DB_FILE):
+            return
+        try:
+            with open(_ADS_DB_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
 
-        result: list[str] = []
-        blank_count = 0
-        for line in kept:
-            if not line.strip():
-                blank_count += 1
-                if blank_count <= 1:
-                    result.append(line)
-            else:
-                blank_count = 0
-                result.append(line)
+            loaded_kw  = 0
+            loaded_pat = 0
 
-        return "\n".join(result)
+            for kw in data.get("keywords", []):
+                kw_lower = kw.lower().strip()
+                if kw_lower and kw_lower not in self._keywords:
+                    self._keywords.add(kw_lower)
+                    loaded_kw += 1
 
-    def build_ai_context_block(self, text: str) -> str | None:
-        lines = text.splitlines()
-        suspicious_indices = [
-            i for i, line in enumerate(lines)
-            if self._is_ads_line(line)
-        ]
+            for pat_str in data.get("patterns", []):
+                if pat_str and pat_str not in self._patterns_raw:
+                    try:
+                        self._patterns.append(re.compile(pat_str, re.IGNORECASE))
+                        self._patterns_raw.append(pat_str)
+                        loaded_pat += 1
+                    except re.error:
+                        pass
 
-        if not suspicious_indices:
-            return None
+            if loaded_kw or loaded_pat:
+                logger.info(
+                    "[AdsFilter] Loaded %d kw + %d pat từ %s",
+                    loaded_kw, loaded_pat, _ADS_DB_FILE,
+                )
+        except Exception as e:
+            logger.warning("[AdsFilter] Không load được %s: %s", _ADS_DB_FILE, e)
 
-        blocks: list[str] = []
-        for idx in suspicious_indices[:_MAX_CONTEXT_BLOCKS]:
-            start = max(0, idx - _CONTEXT_WINDOW)
-            end   = min(len(lines), idx + _CONTEXT_WINDOW + 1)
+    def save(self) -> None:
+        """
+        Lưu toàn bộ learned keywords/patterns ra file JSON.
+        Chỉ lưu phần đã học (loại seed ra) để file gọn.
+        Dùng atomic write để tránh corrupt.
+        """
+        seed_kw  = {kw.lower() for kw in _SEED_KEYWORDS}
+        seed_pat = set(_SEED_PATTERNS_RAW)
 
-            context_lines: list[str] = []
-            for i in range(start, end):
-                if i == idx:
-                    context_lines.append(f">>> {lines[i]} <<<")
-                else:
-                    context_lines.append(lines[i])
+        learned_kw  = sorted(self._keywords - seed_kw)
+        learned_pat = [p for p in self._patterns_raw if p not in seed_pat]
 
-            blocks.append("\n".join(context_lines))
+        data = {
+            "keywords": learned_kw,
+            "patterns": learned_pat,
+            "_stats": {
+                "total_keywords": len(self._keywords),
+                "total_patterns": len(self._patterns_raw),
+                "learned_keywords": len(learned_kw),
+                "learned_patterns": len(learned_pat),
+            }
+        }
 
-        if not blocks:
-            return None
-
-        return "\n\n---\n\n".join(blocks)
+        tmp = _ADS_DB_FILE + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, _ADS_DB_FILE)
+        except Exception as e:
+            logger.warning("[AdsFilter] Không save được %s: %s", _ADS_DB_FILE, e)
 
     def update_from_ai_result(self, raw_json: str) -> int:
-        if not raw_json:
-            return 0
-        try:
-            data = json.loads(raw_json.strip())
-        except (json.JSONDecodeError, AttributeError, ValueError):
-            logger.debug("[AdsFilter] JSON parse thất bại từ AI response")
-            return 0
-
-        if not isinstance(data, dict) or not data.get("found"):
-            return 0
-
+        # ... code cũ giữ nguyên, chỉ thêm tracking pattern_raw ...
         added = 0
 
         for kw in data.get("keywords", []):
@@ -215,7 +227,6 @@ class SimpleAdsFilter:
             if kw_lower and kw_lower not in self._keywords:
                 self._keywords.add(kw_lower)
                 added += 1
-                logger.debug("[AdsFilter] Keyword mới: %r", kw_lower)
 
         for pat_str in data.get("patterns", []):
             if not isinstance(pat_str, str) or not pat_str.strip():
@@ -223,37 +234,9 @@ class SimpleAdsFilter:
             try:
                 compiled = re.compile(pat_str.strip(), re.IGNORECASE)
                 self._patterns.append(compiled)
+                self._patterns_raw.append(pat_str.strip())  # ← track raw string
                 added += 1
-                logger.debug("[AdsFilter] Pattern mới: %r", pat_str)
             except re.error as e:
-                logger.debug("[AdsFilter] Regex lỗi (bỏ qua): %r — %s", pat_str, e)
+                logger.debug("[AdsFilter] Regex lỗi: %r — %s", pat_str, e)
 
         return added
-
-    @property
-    def keyword_count(self) -> int:
-        return len(self._keywords)
-
-    @property
-    def pattern_count(self) -> int:
-        return len(self._patterns)
-
-    # ── Private ───────────────────────────────────────────────────────────────
-
-    def _is_ads_line(self, line: str) -> bool:
-        stripped = line.strip()
-
-        if len(stripped) < _MIN_SUSPICIOUS_LINE_LEN:
-            return False
-
-        lower = stripped.lower()
-
-        for kw in self._keywords:
-            if kw in lower:
-                return True
-
-        for pat in self._patterns:
-            if pat.search(stripped):
-                return True
-
-        return False

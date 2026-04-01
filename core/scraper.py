@@ -40,7 +40,7 @@ import logging
 import os
 import re
 from urllib.parse import urlparse
-
+from utils.ads_filter import SimpleAdsFilter, _ADS_DB_FILE
 from bs4 import BeautifulSoup
 
 from config import (
@@ -503,18 +503,18 @@ async def scrape_one_chapter(
     content = ads_filter.filter_content(content)
 
     removed_chars = len(content_before_filter) - len(content)
-if removed_chars > 0:
-    after_set     = set(content.splitlines())
-    removed_lines = [
-        l.strip() for l in content_before_filter.splitlines()
-        if l.strip() and l not in after_set
-    ]
-    preview = " | ".join(removed_lines[:3])
-    print(
-        f"  [Ads] 🧹 Đã lọc {removed_chars} ký tự: "
-        f"{preview[:100]}{'…' if len(preview) > 100 else ''}",
-        flush=True,
-    )
+    if removed_chars > 0:
+        after_set     = set(content.splitlines())
+        removed_lines = [
+            l.strip() for l in content_before_filter.splitlines()
+            if l.strip() and l not in after_set
+        ]
+        preview = " | ".join(removed_lines[:3])
+        print(
+            f"  [Ads] 🧹 Đã lọc {removed_chars} ký tự: "
+            f"{preview[:100]}{'…' if len(preview) > 100 else ''}",
+            flush=True,
+        )
 
     fp           = make_fingerprint(content)
     fingerprints = set(progress.get("fingerprints") or [])
@@ -737,6 +737,12 @@ async def run_novel_task(
     total     = progress.get("chapter_count", 0)
     completed = progress.get("completed", False)
     label     = progress.get("story_title") or start_url[:50]
+    await asyncio.to_thread(ads_filter.save)
+    print(
+        f"  [Ads] 💾 Đã lưu {ads_filter.keyword_count} kw"
+        f" / {ads_filter.pattern_count} pat → {_ADS_DB_FILE}",
+        flush=True,
+    )
     print(
         f"\n{'✔' if completed else '⏸'} {'Hoàn thành' if completed else 'Tạm dừng'}: "
         f"{label} — {total} chương",

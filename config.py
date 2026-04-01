@@ -109,7 +109,7 @@ ADS_AI_SCAN_EVERY = 5
 # ── Misc ──────────────────────────────────────────────────────────────────────
 PROFILES_FILE  = "site_profiles.json"
 INIT_STAGGER   = 1.5
-AI_MAX_RPM     = 3
+AI_MAX_RPM     = 12
 AI_JITTER      = (2.0, 5.0)
 
 # ── Regex compile sẵn ────────────────────────────────────────────────────────
