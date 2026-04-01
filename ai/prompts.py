@@ -163,3 +163,39 @@ Return ONLY a JSON object, no markdown, no extra text:
 
 If none of the marked lines are ads, return:
 {{"found": false, "keywords": [], "patterns": [], "example_lines": []}}"""
+
+
+# ── Profile refinement (v4 NEW) ──────────────────────────────────────────
+
+    @staticmethod
+    def refine_profile(observations_summary: str) -> str:
+        return f"""Bạn đang review CSS selectors cho một web novel scraper.
+Dưới đây là structural signals quan sát được từ nhiều chương của cùng một site:
+
+{observations_summary}
+
+Nhiệm vụ: Dựa trên observations trên, đề xuất CSS selectors tốt nhất.
+Trả về JSON (CHỈ JSON, không markdown fence):
+{{
+  "content_selector": "CSS selector chứa nội dung chương, hoặc null",
+  "content_confidence": 0.0,
+  "title_selector": "CSS selector tiêu đề chương, hoặc null",
+  "title_confidence": 0.0,
+  "next_selector": "CSS selector nút/link Next Chapter, hoặc null",
+  "next_confidence": 0.0,
+  "notes": "ghi chú ngắn về site structure, hoặc null"
+}}
+
+Quy tắc:
+- confidence: float 0.0–1.0, phản ánh độ nhất quán trong observations
+  • >= 90% chapters có cùng pattern → confidence >= 0.9
+  • >= 70% chapters                 → confidence >= 0.7
+  • < 50% chapters                  → confidence < 0.5, nên trả null
+- Ưu tiên specificity: #id > .single-class > tag.class > tag
+- Selector phải trỏ đến element CHỨA content/title, không phải wrapper bên ngoài
+- content_selector: phải chứa body text truyện (> 200 ký tự), KHÔNG phải sidebar/header
+- next_selector: phải trỏ đến <a> hoặc <button> có href sang chương tiếp
+- Nếu current profile đã có selector đang hoạt động tốt (working_content_selector),
+  chỉ đề xuất thay thế nếu bạn thấy option tốt hơn rõ ràng (confidence >= 0.9)
+- Trả null cho bất kỳ field nào không đủ confidence, đừng bịa
+"""

@@ -2,11 +2,12 @@
 """
 utils/types.py — TypedDict definitions cho toàn bộ project.
 
-CHANGES (v3):
-  SiteProfileDict: Thêm 2 field còn thiếu:
-    - nav_type: str | None         — dùng trong navigator.py profile.get("nav_type")
-    - domain_watermarks: list[str] — persist watermarks AI học được cho domain
-  Cả 2 field đều total=False → backward-compatible với profile JSON cũ.
+CHANGES (v4):
+  StructuralObservation (NEW): Snapshot cấu trúc DOM của một chương.
+    Tích lũy qua OBS_REFINE_AFTER chương rồi gửi AI để refine profile.
+
+  SiteProfileDict — Thêm NHÓM 8 (Structural observations):
+    observations, observation_count, profile_refined, refined_at_chapter
 """
 from __future__ import annotations
 
@@ -32,6 +33,47 @@ class ProgressDict(TypedDict, total=False):
     last_title:        Optional[str]
 
 
+# ── Structural observation ────────────────────────────────────────────────────
+
+class StructuralObservation(TypedDict, total=False):
+    """
+    Snapshot cấu trúc DOM của một chương đã cào thành công.
+
+    Được tạo bởi dom_observer.observe_chapter_structure() và tích lũy
+    trong SiteProfileDict["observations"].
+
+    Sau OBS_REFINE_AFTER chương, ProfileManager tổng hợp tất cả observations
+    thành một summary và gửi AI (ask_ai_refine_profile) để tinh chỉnh profile
+    selectors với confidence score.
+
+    Chỉ lưu metadata (tag, classes, id) — KHÔNG lưu content text.
+    Tất cả field total=False để backward-compatible với profile cũ.
+    """
+    # ── Identity ──────────────────────────────────────────────────────────────
+    url:             str           # URL chương này
+    chapter_num:     int           # Số thứ tự chương
+
+    # ── Content element signals ───────────────────────────────────────────────
+    content_selector_hit: Optional[str]   # CSS selector đã win extract
+    content_tag:          Optional[str]   # div / article / section / ...
+    content_id:           Optional[str]   # id attribute của element
+    content_classes:      list[str]       # class list (tối đa 5)
+
+    # ── Title element signals ─────────────────────────────────────────────────
+    title_source:    Optional[str]   # nguồn win: "dropdown" | "h1" | "h2" |
+                                     # "class:chapter-title" | "og:title" |
+                                     # "itemprop:name" | "url_slug" | "content_heading"
+    title_tag:       Optional[str]   # tag của element chứa title text
+    title_id:        Optional[str]   # id attribute
+    title_classes:   list[str]       # class list (tối đa 5)
+
+    # ── Nav next element signals ──────────────────────────────────────────────
+    nav_next_tag:     Optional[str]  # a / button
+    nav_next_classes: list[str]      # class list
+    nav_next_text:    Optional[str]  # button text (truncated 40 chars)
+    nav_next_rel:     Optional[str]  # "next" nếu có rel="next"
+
+
 # ── Site profile ──────────────────────────────────────────────────────────────
 
 class SelectorStats(TypedDict, total=False):
@@ -48,40 +90,27 @@ class SiteProfileDict(TypedDict, total=False):
       next_selector, title_selector, content_selector
 
     NHÓM 2 — Selector performance (tự cập nhật khi scrape):
-      working_content_selector: selector trong CONTENT_SELECTORS đã proven
-        work trên site này. Dùng làm shortcut ở run sau, không cần thử hết list.
+      working_content_selector: selector trong CONTENT_SELECTORS đã proven work.
       selector_stats: {selector: {hits, total_tries}} — confidence tracking.
 
     NHÓM 3 — Site behavior flags:
-      requires_playwright: Bỏ qua curl_cffi ngay, dùng Playwright.
-      has_nav_edges: Luôn chạy _strip_nav_edges() cho site này.
-      has_chapter_dropdown: TitleExtractor ưu tiên nguồn <select>.
-      has_rel_next: find_next_url ưu tiên rel="next" link.
+      requires_playwright, has_nav_edges, has_chapter_dropdown, has_rel_next.
 
     NHÓM 4 — URL knowledge:
-      chapter_url_pattern: regex nhận diện chapter URL của site này.
-      sample_urls: Tối đa 5 URL chapter mẫu đã cào thành công.
+      chapter_url_pattern, sample_urls.
 
     NHÓM 5 — Navigation:
-      nav_type: Strategy điều hướng đã biết cho site này.
-        Giá trị hợp lệ: "selector" | "rel_next" | "slug_increment"
-                        | "dropdown" | "fanfic" | "button" | None
-        Dùng trong navigator.py: profile.get("nav_type") để fast-path.
-        FIX v3: Field này bị thiếu trong TypedDict mặc dù đã được dùng.
+      nav_type: strategy đã biết cho site này.
 
-    NHÓM 6 — Watermarks (FIX v3):
-      domain_watermarks: Danh sách keyword watermark đặc trưng của domain.
-        Được học qua ask_ai_build_profile() và persist vào site_profiles.json.
-        Khi run_novel_task() khởi động, inject vào AdsFilter để áp dụng ngay
-        từ chương đầu mà không cần AI scan lại.
+    NHÓM 6 — Watermarks (persist để inject vào AdsFilter ngay khi khởi động).
 
-    NHÓM 7 — Statistics & metadata:
-      ai_fallback_count: Số lần heuristic fail, phải gọi AI.
-      content_extraction_failures: Số lần không extract được content.
-      chapters_scraped: Tổng số chapter đã cào từ site này.
-      last_updated: ISO timestamp lần cuối profile cập nhật.
-      profile_version: Version schema (dùng cho migration sau này).
-      site_notes: Ghi chú tự do về đặc điểm site.
+    NHÓM 7 — Statistics & metadata.
+
+    NHÓM 8 — Structural observations (v4 NEW):
+      observations: list observations từ nhiều chương (tối đa OBS_MAX_STORED).
+      observation_count: tổng số observations đã record (không giảm khi trim).
+      profile_refined: đã qua AI refinement chưa → không trigger lại.
+      refined_at_chapter: chương nào đã trigger refinement.
     """
 
     # NHÓM 1 — CSS Selectors
@@ -103,10 +132,10 @@ class SiteProfileDict(TypedDict, total=False):
     chapter_url_pattern:    Optional[str]
     sample_urls:            list[str]
 
-    # NHÓM 5 — Navigation (FIX v3: field bị thiếu)
+    # NHÓM 5 — Navigation
     nav_type:               Optional[str]
 
-    # NHÓM 6 — Watermarks (FIX v3: field bị thiếu)
+    # NHÓM 6 — Watermarks
     domain_watermarks:      list[str]
 
     # NHÓM 7 — Statistics
@@ -116,6 +145,12 @@ class SiteProfileDict(TypedDict, total=False):
     last_updated:                   Optional[str]
     profile_version:                int
     site_notes:                     Optional[str]
+
+    # NHÓM 8 — Structural observations (v4 NEW)
+    observations:           list[StructuralObservation]
+    observation_count:      int        # Tổng obs đã record (monotonic)
+    profile_refined:        bool       # True sau khi AI refinement chạy xong
+    refined_at_chapter:     int        # Chapter number khi refinement diễn ra
 
 
 # ── AI results ────────────────────────────────────────────────────────────────
@@ -136,11 +171,7 @@ class StoryIdResult(TypedDict, total=False):
 class AiProfileResult(TypedDict, total=False):
     """
     Kết quả đầy đủ từ ask_ai_build_profile (prompt mới).
-    Superset của SiteProfileDict — chỉ chứa những field AI có thể suy luận
-    từ HTML, không có field chỉ runtime mới biết (requires_playwright, ...).
-
-    NOTE: chapter_url_regex (AI field) ≠ chapter_url_pattern (profile field).
-    ProfileManager.merge_ai_result() xử lý mapping này.
+    Superset của SiteProfileDict — chỉ chứa những field AI có thể suy luận.
     """
     next_selector:        Optional[str]
     title_selector:       Optional[str]
@@ -148,8 +179,30 @@ class AiProfileResult(TypedDict, total=False):
     nav_type:             Optional[str]
     has_chapter_dropdown: bool
     has_rel_next:         bool
-    chapter_url_regex:    Optional[str]   # AI output name
-    chapter_url_pattern:  Optional[str]   # Profile field name (fallback)
+    chapter_url_regex:    Optional[str]
+    chapter_url_pattern:  Optional[str]
     domain_watermarks:    list[str]
     site_notes:           Optional[str]
     ai_notes:             Optional[str]
+
+
+# ── AI refinement result (v4 NEW) ─────────────────────────────────────────────
+
+class AiRefinedProfile(TypedDict, total=False):
+    """
+    Kết quả từ ask_ai_refine_profile() sau khi phân tích StructuralObservations.
+
+    Mỗi selector đi kèm confidence score (0.0–1.0).
+    ProfileManager.merge_refined_result() chỉ apply field nếu confidence
+    >= OBS_CONFIDENCE_MIN (mặc định 0.8).
+    """
+    content_selector:   Optional[str]
+    content_confidence: float    # 0.0–1.0
+
+    title_selector:     Optional[str]
+    title_confidence:   float
+
+    next_selector:      Optional[str]
+    next_confidence:    float
+
+    notes:              Optional[str]  # Ghi chú tùy ý từ AI

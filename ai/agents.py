@@ -422,3 +422,57 @@ async def ai_detect_ads_content(
     except Exception as e:
         print(f"  [AI] ⚠ ai_detect_ads_content thất bại: {_fmt_err(e)}", flush=True)
     return None
+
+_SCHEMA_REFINE = {
+    "type": "object",
+    "properties": {
+        "content_selector":   {"type": "string",  "nullable": True},
+        "content_confidence": {"type": "number"},
+        "title_selector":     {"type": "string",  "nullable": True},
+        "title_confidence":   {"type": "number"},
+        "next_selector":      {"type": "string",  "nullable": True},
+        "next_confidence":    {"type": "number"},
+        "notes":              {"type": "string",  "nullable": True},
+    },
+    "required": ["content_confidence", "title_confidence", "next_confidence"],
+}
+
+
+async def ask_ai_refine_profile(
+    observations_summary: str,
+    ai_limiter: AIRateLimiter,
+) -> dict | None:
+    """
+    Gửi tổng hợp structural observations cho AI để tinh chỉnh CSS selectors.
+
+    Input: observations_summary từ ProfileManager.get_observations_summary()
+    Output: dict với các selector và confidence score (0.0–1.0)
+
+    Caller (scraper.py) dùng ProfileManager.merge_refined_result() để apply,
+    chỉ update field nếu confidence >= OBS_CONFIDENCE_MIN.
+
+    Chỉ được gọi 1 lần per domain (sau khi mark_refined → should_refine = False).
+    """
+    prompt = PromptTemplates.refine_profile(observations_summary)
+    try:
+        result = await _generate_structured(prompt, ai_limiter, _SCHEMA_REFINE)
+        if isinstance(result, dict):
+            # Validate + clamp confidence values
+            for conf_key in ("content_confidence", "title_confidence", "next_confidence"):
+                val = result.get(conf_key, 0.0)
+                try:
+                    result[conf_key] = max(0.0, min(1.0, float(val)))
+                except (TypeError, ValueError):
+                    result[conf_key] = 0.0
+
+            # Empty string → None
+            for sel_key in ("content_selector", "title_selector", "next_selector"):
+                if result.get(sel_key) == "":
+                    result[sel_key] = None
+
+            return result
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        print(f"  [AI] ⚠ ask_ai_refine_profile thất bại: {_fmt_err(e)}", flush=True)
+    return None

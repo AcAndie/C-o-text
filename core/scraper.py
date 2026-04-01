@@ -39,7 +39,9 @@ from config import (
     MAX_CONSECUTIVE_TIMEOUTS, TIMEOUT_BACKOFF_BASE,
     STORY_ID_LEARN_AFTER, STORY_ID_MAX_ATTEMPTS,
     ADS_AI_SCAN_EVERY, RE_CHAP_URL, get_delay_seconds,
+    OBS_CONFIDENCE_MIN,
 )
+
 from utils.file_io import load_progress, save_progress, write_markdown
 from utils.string_helpers import (
     is_junk_page, make_fingerprint, clean_chapter_text,
@@ -53,12 +55,16 @@ from ai.client import AIRateLimiter
 from ai.agents import (
     ask_ai_for_story_id, ai_find_first_chapter_url, ai_classify_and_find,
     ask_ai_build_profile, ask_ai_confirm_same_story, ai_detect_ads_content,
+    ask_ai_refine_profile,
 )
+
 from core.fetch        import fetch_page
 from core.navigator    import find_next_url, detect_page_type
 from core.html_filter  import remove_hidden_elements
 from core.extractors   import TitleExtractor, extract_story_title
 from core.session_pool import DomainSessionPool, PlaywrightPool
+
+from core.dom_observer import observe_chapter_structure
 
 logger = logging.getLogger(__name__)
 _COLLECTED_URL_CAP = 20
@@ -479,7 +485,63 @@ async def scrape_one_chapter(
 
     # Record chapter done
     await pm.record_chapter_done(domain, url)
-
+    try:
+        obs = observe_chapter_structure(
+            soup             = soup,
+            url              = url,
+            chapter_num      = chapter_num,
+            winning_selector = winning_selector,
+            title            = title,
+            title_source     = title_extractor.last_source,
+        )
+        await pm.record_observation(domain, obs)
+    except Exception as _obs_err:
+        logger.debug("[Observe] Lỗi observation (bỏ qua): %s", _obs_err)
+ 
+    # ── Refinement trigger: sau OBS_REFINE_AFTER chương thành công ────────────
+    # Chỉ trigger 1 lần per domain (mark_refined → should_refine = False).
+    # Thêm 1 AI call nhưng không ảnh hưởng flow nếu thất bại.
+    if pm.should_refine(domain, chapter_num):
+        print(
+            f"  [Profile] 🔬 Refining {domain} profile "
+            f"(obs={pm.get(domain).get('observation_count', 0)})...",
+            flush=True,
+        )
+        try:
+            summary = pm.get_observations_summary(domain)
+            refined = await ask_ai_refine_profile(summary, ai_limiter)
+            if refined:
+                updated_count = await pm.merge_refined_result(
+                    domain, refined, threshold=OBS_CONFIDENCE_MIN)
+                if updated_count > 0:
+                    profile = pm.get(domain)   # Refresh profile sau update
+                    print(
+                        f"  [Profile] ✅ Refined {updated_count} selector(s) "
+                        f"[content={refined.get('content_selector')!r} "
+                        f"c={refined.get('content_confidence', 0):.2f} | "
+                        f"title={refined.get('title_selector')!r} "
+                        f"c={refined.get('title_confidence', 0):.2f} | "
+                        f"next={refined.get('next_selector')!r} "
+                        f"c={refined.get('next_confidence', 0):.2f}]",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"  [Profile] ℹ️  No updates "
+                        f"(max conf: "
+                        f"content={refined.get('content_confidence', 0):.2f} "
+                        f"title={refined.get('title_confidence', 0):.2f} "
+                        f"next={refined.get('next_confidence', 0):.2f} "
+                        f"< threshold={OBS_CONFIDENCE_MIN})",
+                        flush=True,
+                    )
+        except Exception as _refine_err:
+            logger.warning("[Profile] Refinement thất bại: %s", _refine_err)
+        finally:
+            # Luôn mark_refined dù AI thành công hay không
+            # → Tránh retry trong các chapter sau
+            await pm.mark_refined(domain, chapter_num)
+ 
     print(f"  ✅ Ch.{chapter_num:>4}: {truncate(title, 45):<45} | {len(content):>5} ký tự", flush=True)
 
     # Story ID guard
