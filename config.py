@@ -1,11 +1,10 @@
 """
 config.py — Hằng số cấu hình, regex compile sẵn và helper thuần túy.
 
-Quy tắc:
-  • Không import module nội bộ nào khác trong project.
-  • Chỉ dùng stdlib + dotenv.
-  • Mọi module khác import từ đây; không có chiều ngược lại.
-  • Regex compile ở module-level — 1 lần khi import, tái dùng suốt phiên.
+CHANGES (v2):
+  - ADS_AI_SCAN_EVERY: 5 → 15 (giảm AI call 3x khi cào)
+  - RE_CHAP_URL: thêm pattern slug cuối URL (royalroad dùng /fiction/id/slug)
+  - AI_MAX_RPM: 12 → 10 (ổn định hơn với free tier khi chạy 2 task song song)
 """
 import os
 import re
@@ -73,8 +72,6 @@ CONTENT_SELECTORS: list[str] = [
 REQUEST_TIMEOUT = 60
 
 # ── Delay profile theo domain ─────────────────────────────────────────────────
-# FIX: "fanfiction.net" (non-www) đồng bộ với "www.fanfiction.net".
-# Trước đây min 1.0s — đủ để bị IP ban. Tăng lên 3.0s cho an toàn.
 DELAY_PROFILES: dict[str, tuple[float, float]] = {
     "royalroad.com"       : (8.0,  15.0),
     "www.royalroad.com"   : (8.0,  15.0),
@@ -82,7 +79,7 @@ DELAY_PROFILES: dict[str, tuple[float, float]] = {
     "www.scribblehub.com" : (6.0,  12.0),
     "wattpad.com"         : (4.0,  10.0),
     "www.wattpad.com"     : (4.0,  10.0),
-    "fanfiction.net"      : (3.0,   7.0),   # FIX: was (1.0, 5.0)
+    "fanfiction.net"      : (3.0,   7.0),
     "www.fanfiction.net"  : (3.0,   7.0),
     "archiveofourown.org" : (3.0,   6.0),
 }
@@ -104,21 +101,32 @@ STORY_ID_LEARN_AFTER  = 12
 STORY_ID_MAX_ATTEMPTS = 3
 
 # ── Ads filter ────────────────────────────────────────────────────────────────
-ADS_AI_SCAN_EVERY = 5
+# PERF: Tăng từ 5 → 15 để giảm AI call 3x.
+# Reasoning: sau khi đã học patterns từ 15 chương đầu, phần lớn watermark
+# đã được cover bởi keyword/regex. AI scan thêm ít giá trị hơn.
+ADS_AI_SCAN_EVERY = 15
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
 PROFILES_FILE  = "site_profiles.json"
 INIT_STAGGER   = 1.5
-AI_MAX_RPM     = 12
-AI_JITTER      = (2.0, 5.0)
+# PERF: Giảm nhẹ từ 12 → 10 để tránh 429 khi 2 task song song cùng gọi AI
+AI_MAX_RPM     = 10
+AI_JITTER      = (1.0, 3.0)   # Giảm jitter max từ 5s → 3s
 
 # ── Regex compile sẵn ────────────────────────────────────────────────────────
 
 RE_CHAP_URL = re.compile(
-    r"(chapter|chuong|chap|/c|/ch|episode|ep|part|phan|tap)[_-]?\d+$"
-    r"|/s/\d+/\d+",
+    # Pattern có số chương rõ ràng (số ở cuối segment)
+    r"(chapter|chuong|chap|/c|/ch|episode|ep|part|phan|tap)[_-]?\d+"
+    r"|/s/\d+/\d+"           # fanfiction.net: /s/{id}/{num}
+    # FIX-ROYALROAD: RoyalRoad dùng slug dạng /fiction/{id}/{any-slug}
+    # URL /fiction/55418/rock-falls-everyone-dies không có số chương
+    # nên không match pattern trên → bị force "index"
+    # Fix: detect /fiction/{id}/{slug} với id là số
+    r"|/fiction/\d+/[^/]+$",
     re.IGNORECASE,
 )
+
 RE_NEXT_BTN = re.compile(
     r"\b(next|tiếp|sau|next\s*chapter|chương\s*tiếp|chương\s*sau|siguiente)\b",
     re.IGNORECASE | re.UNICODE,

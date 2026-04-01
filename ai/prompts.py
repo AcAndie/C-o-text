@@ -2,35 +2,22 @@
 """
 ai/prompts.py — Quản lý tập trung tất cả prompt gửi Gemini.
 
-Tại sao cần file này:
-  - Khi có >6 agent function, prompt nằm rải rác trong code Python rất khó
-    tinh chỉnh và A/B test.
-  - Tách prompt ra đây giúp: version-control riêng, dễ đọc, dễ sửa mà
-    không phải đụng vào logic Python.
-  - Mỗi prompt là 1 classmethod của PromptTemplates → IDE auto-complete,
-    dễ tìm kiếm, không typo key string.
-
-Quy ước:
-  - Mỗi hàm nhận các tham số cần thiết, trả về str (prompt hoàn chỉnh).
-  - Không import gì từ project nội bộ → tránh circular import.
-  - Tất cả prompt dùng tiếng Việt cho instruction, tiếng Anh cho JSON schema
-    (Gemini hiểu JSON schema tiếng Anh tốt hơn).
+CHANGES (v2):
+  build_profile(): Prompt mở rộng — AI giờ trả về 7 field thay vì 3:
+    - has_chapter_dropdown, has_rel_next: behavior flags
+    - chapter_url_pattern: regex pattern
+    - site_notes: ghi chú đặc điểm site
 """
 from __future__ import annotations
 
 
 class PromptTemplates:
-    """
-    Namespace tập trung cho toàn bộ prompt gửi Gemini.
 
-    Dùng như: PromptTemplates.build_profile(html, url)
-    """
-
-    # ── Site profile ──────────────────────────────────────────────────────────
+    # ── Site profile (EXPANDED) ───────────────────────────────────────────────
 
     @staticmethod
     def build_profile(html_snippet: str, url: str) -> str:
-        return f"""Phân tích HTML trang chương truyện sau và trả về JSON.
+        return f"""Phân tích HTML trang chương truyện và trả về JSON mô tả cấu trúc site.
 URL: {url}
 
 HTML (rút gọn, tối đa 8000 ký tự):
@@ -38,17 +25,28 @@ HTML (rút gọn, tối đa 8000 ký tự):
 
 Yêu cầu JSON (CHỈ JSON, không có text khác, không markdown fence):
 {{
-  "next_selector": "CSS selector tìm nút/link sang chương tiếp theo",
-  "title_selector": "CSS selector tìm tiêu đề chương",
-  "content_selector": "CSS selector vùng nội dung chính (KHÔNG phải <body>)"
+  "next_selector": "CSS selector tìm nút/link sang chương tiếp theo, hoặc null",
+  "title_selector": "CSS selector tìm tiêu đề chương, hoặc null",
+  "content_selector": "CSS selector vùng nội dung chính, hoặc null",
+  "has_chapter_dropdown": true,
+  "has_rel_next": false,
+  "chapter_url_pattern": "regex Python nhận diện URL chapter, hoặc null",
+  "site_notes": "ghi chú ngắn về đặc điểm site, hoặc null"
 }}
 
-Quy tắc bắt buộc:
-- Selector phải là CSS hợp lệ với BeautifulSoup select_one()
-- Ưu tiên #id > .class cụ thể > tag[attribute]
-- content_selector PHẢI chứa nội dung truyện, KHÔNG được là body/html/main chung chung
-- Trả về null cho field nào không tìm được
-- Kiểm tra kỹ: nếu element chứa <script> tags, selector đó KHÔNG hợp lệ
+Quy tắc:
+- next_selector: ưu tiên nút "Next Chapter" / nút điều hướng chương tiếp
+- content_selector: PHẢI chứa nội dung truyện, KHÔNG được là body/html/main
+  Ưu tiên #id > .class cụ thể > tag[attribute]
+- has_chapter_dropdown: true nếu có <select> chọn chapter (ví dụ fanfiction.net)
+- has_rel_next: true nếu có <link rel="next" href="..."> trỏ đến chapter kế tiếp
+- chapter_url_pattern: regex Python (không flags), ví dụ:
+    fanfiction.net → "/s/\\\\d+/\\\\d+"
+    royalroad      → "/fiction/\\\\d+/[^/]+"
+    Trả null nếu không đủ thông tin
+- site_notes: ghi chú JS-heavy, paywall, watermark pattern, v.v. Trả null nếu không có
+- Trả null cho field không tìm được, KHÔNG bịa
+- Nếu element chứa <script>, selector đó KHÔNG hợp lệ
 """
 
     # ── Story ID guard ────────────────────────────────────────────────────────
@@ -82,8 +80,7 @@ Trả về JSON (CHỈ JSON, không markdown fence):
 hoặc
 {{"same_story": false, "reason": "lý do ngắn gọn"}}
 
-Chú ý: chỉ trả false nếu rõ ràng là truyện KHÁC (khác domain nghĩa, khác tên truyện).
-Nếu không chắc, mặc định trả true.
+Chú ý: chỉ trả false nếu rõ ràng là truyện KHÁC. Nếu không chắc, mặc định trả true.
 """
 
     # ── First chapter finder ──────────────────────────────────────────────────
@@ -137,7 +134,6 @@ URL: {chapter_url}
 Tiêu đề đề xuất: {candidate!r}
 Đoạn đầu nội dung trang (300 ký tự): {content_snippet[:300]!r}
 
-Tiêu đề trên có hợp lệ không? Nếu có, trả về tiêu đề đã làm sạch.
 Trả về JSON (CHỈ JSON, không markdown fence):
 {{"valid": true, "title": "tiêu đề làm sạch"}}
 hoặc
@@ -150,20 +146,9 @@ hoặc
     def detect_ads(context_text: str) -> str:
         return f"""You are a text filter assistant for web novel scrapers.
 
-Below are suspicious lines found in novel chapters. Each entry shows:
-- Up to 10 lines of context BEFORE the suspicious line
-- The suspicious line itself (marked with >>> <<<)
-- Up to 10 lines of context AFTER the suspicious line
-
-Use the surrounding context to judge whether the marked line is truly
-an injected watermark/ad, or just normal story content that happened
-to match a keyword.
-
-IMPORTANT: A line is only ads/watermark if it is clearly injected by an
-aggregator site and does NOT belong to the story's narrative. If the
-surrounding context shows it is part of the story (e.g. a character
-mentions Amazon, a site name, or copyright as part of the plot, skill name, etc.),
-mark it as NOT ads.
+Below are suspicious lines found in novel chapters. Each entry shows context
+BEFORE and AFTER the marked line. Use context to judge if the line is truly
+an injected watermark/ad (not story content).
 
 SUSPICIOUS LINES WITH CONTEXT:
 {context_text}

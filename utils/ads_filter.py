@@ -1,11 +1,21 @@
 # utils/ads_filter.py
+"""
+utils/ads_filter.py — Filter watermark/ads từ nội dung chương truyện.
+
+CHANGES (v3):
+  inject_domain_keywords(): Nhận domain_watermarks từ SiteProfileDict (PROF-2).
+  inject_domain_patterns(): Nhận regex patterns từ profile.
+"""
 from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 
 logger = logging.getLogger(__name__)
+
+ADS_DB_FILE = "ADs_keyword.json"
 
 _SEED_KEYWORDS: list[str] = [
     "stolen content", "stolen from", "this content is stolen",
@@ -59,10 +69,87 @@ class SimpleAdsFilter:
             except re.error as e:
                 logger.warning("[AdsFilter] Seed pattern lỗi: %r — %s", pat_str, e)
 
+    @classmethod
+    def load(cls) -> "SimpleAdsFilter":
+        instance = cls()
+        if not os.path.exists(ADS_DB_FILE):
+            return instance
+        try:
+            with open(ADS_DB_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            loaded_kw = loaded_pat = 0
+            for kw in data.get("keywords", []):
+                if isinstance(kw, str):
+                    kw_lower = kw.lower().strip()
+                    if kw_lower and kw_lower not in instance._keywords:
+                        instance._keywords.add(kw_lower)
+                        loaded_kw += 1
+            for pat_str in data.get("patterns", []):
+                if isinstance(pat_str, str) and pat_str.strip():
+                    try:
+                        instance._patterns.append(re.compile(pat_str.strip(), re.IGNORECASE))
+                        loaded_pat += 1
+                    except re.error:
+                        pass
+            if loaded_kw or loaded_pat:
+                logger.info("[AdsFilter] Load %d kw + %d pat từ %s", loaded_kw, loaded_pat, ADS_DB_FILE)
+        except Exception as e:
+            logger.warning("[AdsFilter] Không load được DB: %s", e)
+        return instance
+
+    def save(self) -> None:
+        data = {
+            "keywords": sorted(self._keywords),
+            "patterns": [p.pattern for p in self._patterns],
+        }
+        tmp = ADS_DB_FILE + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, ADS_DB_FILE)
+        except Exception as e:
+            logger.error("[AdsFilter] Không lưu được DB: %s", e)
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
+
+    # ── PROF-2: Domain injection ──────────────────────────────────────────────
+
+    def inject_domain_keywords(self, keywords: list[str]) -> int:
+        """Inject domain_watermarks từ SiteProfileDict. Trả về số keyword mới."""
+        added = 0
+        for kw in keywords:
+            if not isinstance(kw, str):
+                continue
+            kw_lower = kw.lower().strip()
+            if kw_lower and kw_lower not in self._keywords:
+                self._keywords.add(kw_lower)
+                added += 1
+        return added
+
+    def inject_domain_patterns(self, patterns: list[str]) -> int:
+        """Inject regex patterns từ domain profile."""
+        added = 0
+        existing = {p.pattern for p in self._patterns}
+        for pat_str in patterns:
+            if not isinstance(pat_str, str) or not pat_str.strip():
+                continue
+            if pat_str.strip() in existing:
+                continue
+            try:
+                self._patterns.append(re.compile(pat_str.strip(), re.IGNORECASE))
+                added += 1
+            except re.error as e:
+                logger.warning("[AdsFilter] Domain pattern lỗi: %r — %s", pat_str, e)
+        return added
+
+    # ── Core ──────────────────────────────────────────────────────────────────
+
     def filter_content(self, text: str) -> str:
         lines = text.splitlines()
         kept  = [line for line in lines if not self._is_ads_line(line)]
-
         result: list[str] = []
         blank_count = 0
         for line in kept:
@@ -73,30 +160,22 @@ class SimpleAdsFilter:
             else:
                 blank_count = 0
                 result.append(line)
-
         return "\n".join(result)
 
     def build_ai_context_block(self, text: str) -> str | None:
         lines = text.splitlines()
-        suspicious_indices = [
-            i for i, line in enumerate(lines)
-            if self._is_ads_line(line)
-        ]
+        suspicious_indices = [i for i, line in enumerate(lines) if self._is_ads_line(line)]
         if not suspicious_indices:
             return None
-
         blocks: list[str] = []
         for idx in suspicious_indices[:_MAX_CONTEXT_BLOCKS]:
             start = max(0, idx - _CONTEXT_WINDOW)
             end   = min(len(lines), idx + _CONTEXT_WINDOW + 1)
-            context_lines: list[str] = []
-            for i in range(start, end):
-                if i == idx:
-                    context_lines.append(f">>> {lines[i]} <<<")
-                else:
-                    context_lines.append(lines[i])
+            context_lines = [
+                f">>> {lines[i]} <<<" if i == idx else lines[i]
+                for i in range(start, end)
+            ]
             blocks.append("\n".join(context_lines))
-
         return "\n\n---\n\n".join(blocks) if blocks else None
 
     def update_from_ai_result(self, raw_json: str) -> int:
@@ -106,10 +185,8 @@ class SimpleAdsFilter:
             data = json.loads(raw_json.strip())
         except (json.JSONDecodeError, AttributeError, ValueError):
             return 0
-
         if not isinstance(data, dict) or not data.get("found"):
             return 0
-
         added = 0
         for kw in data.get("keywords", []):
             if not isinstance(kw, str):
@@ -118,7 +195,6 @@ class SimpleAdsFilter:
             if kw_lower and kw_lower not in self._keywords:
                 self._keywords.add(kw_lower)
                 added += 1
-
         for pat_str in data.get("patterns", []):
             if not isinstance(pat_str, str) or not pat_str.strip():
                 continue
@@ -127,7 +203,6 @@ class SimpleAdsFilter:
                 added += 1
             except re.error:
                 pass
-
         return added
 
     @property

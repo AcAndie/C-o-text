@@ -2,13 +2,16 @@
 """
 ai/agents.py — Toàn bộ hàm gọi Gemini API.
 
-FIXES:
-  - BUG-1: Thêm `except asyncio.CancelledError: raise` trong _generate_with_retry
-            và _generate_structured — tránh nuốt task cancellation (Ctrl+C).
-  - BUG-4: _is_rate_limit_error bây giờ nhận diện cả 503 UNAVAILABLE
-            → retry tự động thay vì crash ngay.
-  - BUG-5: Tất cả agent function dùng `str(e).strip() or repr(e)`
-            → không còn in "[AI] ⚠ ... thất bại: " với message rỗng.
+CHANGES (v2):
+  - _SCHEMA_PROFILE: 8 field mới (nav_type, requires_playwright,
+    chapter_url_regex, story_id_pattern, domain_watermarks, ai_notes).
+  - ask_ai_build_profile(): Trả về SiteProfileDict đầy đủ thay vì chỉ 3 fields.
+  - ai_classify_and_find(): Nhận thêm domain_context (ai_notes từ profile).
+
+FIXES (giữ nguyên từ v1):
+  - BUG-1: CancelledError propagate trong _generate_with_retry và _generate_structured.
+  - BUG-4: _is_rate_limit_error nhận diện cả 503 UNAVAILABLE.
+  - BUG-5: _fmt_err dùng repr() fallback khi str() rỗng.
 """
 from __future__ import annotations
 
@@ -32,63 +35,39 @@ _RETRY_BACKOFF = [30, 60]
 
 
 def _is_rate_limit_error(e: Exception) -> bool:
-    """
-    BUG-4 FIX: Nhận diện cả 429 VÀ 503 là lỗi cần retry.
-    Gemini free tier thường trả 503 UNAVAILABLE khi bị quá tải tạm thời,
-    không phải lỗi vĩnh viễn — hành vi đúng là chờ và thử lại.
-    """
     code = getattr(e, "status_code", None) or getattr(e, "code", None)
     if code in (429, 503):
         return True
     msg = str(e).lower()
     return (
-        "429" in msg
-        or "503" in msg
-        or "quota" in msg
-        or "resource_exhausted" in msg
-        or "unavailable" in msg
+        "429" in msg or "503" in msg or "quota" in msg
+        or "resource_exhausted" in msg or "unavailable" in msg
         or "service unavailable" in msg
     )
 
 
 def _fmt_err(e: Exception) -> str:
-    """
-    BUG-5 FIX: Một số google.genai exception có str() rỗng.
-    Dùng repr() làm fallback để luôn có thông tin debug.
-    """
     return str(e).strip() or repr(e)
 
 
 async def _generate_with_retry(prompt: str, ai_limiter: AIRateLimiter) -> str:
-    """Gọi Gemini text generation với retry tự động khi gặp 429/503."""
     await ai_limiter.acquire()
-
     for attempt in range(_MAX_RETRIES):
         try:
             resp = await ai_client.aio.models.generate_content(
-                model    = GEMINI_MODEL,
-                contents = prompt,
+                model=GEMINI_MODEL, contents=prompt,
             )
             return resp.text
-
         except asyncio.CancelledError:
-            # BUG-1 FIX: Task đang bị cancel (Ctrl+C / external) — propagate ngay,
-            # không retry vì retry sẽ block shutdown.
             raise
-
         except Exception as e:
             is_last = attempt >= _MAX_RETRIES - 1
             if _is_rate_limit_error(e) and not is_last:
                 wait = _RETRY_BACKOFF[attempt]
-                print(
-                    f"  [AI] ⚠ Rate limit/503 (lần {attempt + 1}/{_MAX_RETRIES}),"
-                    f" thử lại sau {wait}s... [{_fmt_err(e)[:80]}]",
-                    flush=True,
-                )
+                print(f"  [AI] ⚠ Rate limit/503 (lần {attempt+1}/{_MAX_RETRIES}), thử lại sau {wait}s...", flush=True)
                 await asyncio.sleep(wait)
             else:
                 raise
-
     raise RuntimeError("_generate_with_retry: hết retry không mong đợi")
 
 
@@ -97,40 +76,24 @@ async def _generate_structured(
     ai_limiter: AIRateLimiter,
     response_schema: dict[str, Any],
 ) -> dict | list | None:
-    """
-    Gọi Gemini với response_schema để ép output JSON chính xác.
-
-    BUG-1 FIX: Thêm `except asyncio.CancelledError: raise` để tránh
-               nuốt signal cancel — quan trọng cho graceful shutdown.
-    BUG-4 FIX: _is_rate_limit_error bắt cả 503.
-    """
     await ai_limiter.acquire()
-
     for attempt in range(_MAX_RETRIES):
         try:
             from google.genai import types as genai_types
-
             config = genai_types.GenerateContentConfig(
-                response_mime_type = "application/json",
-                response_schema    = response_schema,
+                response_mime_type="application/json",
+                response_schema=response_schema,
             )
             resp = await ai_client.aio.models.generate_content(
-                model    = GEMINI_MODEL,
-                contents = prompt,
-                config   = config,
+                model=GEMINI_MODEL, contents=prompt, config=config,
             )
             return json.loads(resp.text)
-
         except json.JSONDecodeError:
             return _parse_json_response(resp.text if resp else "")
-
         except asyncio.CancelledError:
-            # BUG-1 FIX: Không retry khi bị cancel — re-raise ngay lập tức.
             raise
-
         except Exception as e:
             is_last = attempt >= _MAX_RETRIES - 1
-
             err_msg = str(e).lower()
             if "response_schema" in err_msg or "mime_type" in err_msg:
                 try:
@@ -138,28 +101,21 @@ async def _generate_structured(
                     return _parse_json_response(text)
                 except Exception:
                     return None
-
             if _is_rate_limit_error(e) and not is_last:
                 wait = _RETRY_BACKOFF[attempt]
-                print(
-                    f"  [AI] ⚠ Rate limit/503 (lần {attempt + 1}/{_MAX_RETRIES}),"
-                    f" thử lại sau {wait}s... [{_fmt_err(e)[:80]}]",
-                    flush=True,
-                )
+                print(f"  [AI] ⚠ Rate limit/503 (lần {attempt+1}/{_MAX_RETRIES}), thử lại sau {wait}s...", flush=True)
                 await asyncio.sleep(wait)
             else:
                 raise
-
     return None
 
 
 def _parse_json_response(text: str) -> dict | list | None:
-    """Parse JSON từ response AI, chịu được ```json ... ``` fence. Safety net."""
     if not text:
         return None
     text = text.strip()
     text = re.sub(r"^```(?:json)?\s*", "", text)
-    text = re.sub(r"\s*```$",          "", text)
+    text = re.sub(r"\s*```$", "", text)
     match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", text)
     if match:
         text = match.group(1)
@@ -169,7 +125,7 @@ def _parse_json_response(text: str) -> dict | list | None:
         return None
 
 
-# ── Sync HTML helpers (chạy trong thread pool) ────────────────────────────────
+# ── Sync HTML helpers ─────────────────────────────────────────────────────────
 
 def _sync_get_profile_snippet(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
@@ -177,13 +133,10 @@ def _sync_get_profile_snippet(html: str) -> str:
 
 
 _RE_CHAPTER_LISTING = re.compile(
-    r"/(chapters|chapter-list|table-of-contents|toc|contents|chapter-index)"
-    r"[/?#]?$",
+    r"/(chapters|chapter-list|table-of-contents|toc|contents|chapter-index)[/?#]?$",
     re.IGNORECASE,
 )
 
-# RE_CHAP_HINT_STRICT: yêu cầu có số chương sau keyword (chapter-1, /c/123, ep5...)
-# Tránh match: /chapters, /chapter-list, /chapter-index (không có số)
 _RE_CHAP_HINT_STRICT = re.compile(
     r"(chapter|chuong|chap|/c/|/ch/|episode|ep|phần|tập)[_\-]?\d+"
     r"|/s/\d+/\d+",
@@ -192,33 +145,19 @@ _RE_CHAP_HINT_STRICT = re.compile(
 
 
 def _sync_get_chapter_links(html: str, base_url: str) -> list[str]:
-    """
-    Trích các link có thể là chapter từ HTML.
-
-    FIX: Dùng _RE_CHAP_HINT_STRICT (yêu cầu số sau keyword) thay vì RE_CHAP_HINT.
-    Loại bỏ thêm các URL listing page (/chapters, /toc, ...) bằng _RE_CHAPTER_LISTING.
-
-    Ví dụ lỗi cũ:
-      royalroad.com/.../chapters  → khớp RE_CHAP_HINT ("chapter" trong "chapters")
-      → AI chọn nhầm làm "first chapter URL" → Guard path C triggers
-    """
     soup = BeautifulSoup(html, "html.parser")
     seen: set[str] = set()
     links: list[str] = []
-
     for a in soup.find_all("a", href=True):
         href = a["href"]
-        # Bỏ qua trang listing
         if _RE_CHAPTER_LISTING.search(href):
             continue
-        # Phải có số chương
         if not _RE_CHAP_HINT_STRICT.search(href):
             continue
         full_url = urljoin(base_url, href)
         if full_url not in seen:
             seen.add(full_url)
             links.append(full_url)
-
     return links
 
 
@@ -234,14 +173,26 @@ def _sync_get_nav_hints_and_snippet(html: str, base_url: str) -> tuple[str, str]
     return hint_block, snippet
 
 
-# ── JSON Schemas cho Structured Output ───────────────────────────────────────
+# ── JSON Schemas ──────────────────────────────────────────────────────────────
 
+# ENHANCED: Full profile schema với tất cả fields mới
 _SCHEMA_PROFILE = {
     "type": "object",
     "properties": {
-        "next_selector":    {"type": "string", "nullable": True},
-        "title_selector":   {"type": "string", "nullable": True},
-        "content_selector": {"type": "string", "nullable": True},
+        # Selectors
+        "next_selector":      {"type": "string",  "nullable": True},
+        "title_selector":     {"type": "string",  "nullable": True},
+        "content_selector":   {"type": "string",  "nullable": True},
+        # Navigation
+        "nav_type":           {"type": "string",  "nullable": True},
+        # Transport
+        "requires_playwright": {"type": "boolean"},
+        # URL patterns
+        "chapter_url_regex":  {"type": "string",  "nullable": True},
+        "story_id_pattern":   {"type": "string",  "nullable": True},
+        # Content
+        "domain_watermarks":  {"type": "array",   "items": {"type": "string"}},
+        "ai_notes":           {"type": "string",  "nullable": True},
     },
 }
 
@@ -308,11 +259,41 @@ async def ask_ai_build_profile(
     url: str,
     ai_limiter: AIRateLimiter,
 ) -> dict | None:
+    """
+    Phân tích trang và trả về SiteProfileDict đầy đủ (11 fields).
+
+    ENHANCED (v2): Profile giờ bao gồm nav_type, requires_playwright,
+    chapter_url_regex, story_id_pattern, domain_watermarks, ai_notes.
+    Caller (scraper.py) dùng merge_profile() để tích hợp vào profile cũ.
+    """
     snippet = await asyncio.to_thread(_sync_get_profile_snippet, html)
     prompt  = PromptTemplates.build_profile(snippet, url)
     try:
         result = await _generate_structured(prompt, ai_limiter, _SCHEMA_PROFILE)
         if isinstance(result, dict):
+            # Validate regex fields — tránh lưu regex lỗi
+            for regex_field in ("chapter_url_regex", "story_id_pattern"):
+                val = result.get(regex_field)
+                if val:
+                    try:
+                        re.compile(val)
+                    except re.error:
+                        result[regex_field] = None
+
+            # Normalize domain_watermarks
+            wm = result.get("domain_watermarks")
+            if not isinstance(wm, list):
+                result["domain_watermarks"] = []
+            else:
+                result["domain_watermarks"] = [
+                    kw.lower().strip() for kw in wm
+                    if isinstance(kw, str) and kw.strip()
+                ][:5]
+
+            # Normalize requires_playwright
+            if not isinstance(result.get("requires_playwright"), bool):
+                result["requires_playwright"] = False
+
             return result
     except asyncio.CancelledError:
         raise
@@ -340,10 +321,8 @@ async def ask_ai_for_story_id(
 
 
 async def ask_ai_confirm_same_story(
-    title1: str,
-    url1: str,
-    title2: str,
-    url2: str,
+    title1: str, url1: str,
+    title2: str, url2: str,
     ai_limiter: AIRateLimiter,
 ) -> bool:
     prompt = PromptTemplates.confirm_same_story(title1, url1, title2, url2)
@@ -387,11 +366,19 @@ async def ai_classify_and_find(
     html: str,
     base_url: str,
     ai_limiter: AIRateLimiter,
+    domain_context: str | None = None,  # ENHANCED: ai_notes từ profile
 ) -> dict | None:
+    """
+    domain_context: ai_notes từ SiteProfileDict (nếu đã có profile).
+    Được prepend vào prompt để AI hiểu quirks của site trước khi phân tích.
+    """
     hint_block, snippet = await asyncio.to_thread(
         _sync_get_nav_hints_and_snippet, html, base_url
     )
-    prompt = PromptTemplates.classify_and_find(hint_block, snippet, base_url)
+    prompt = PromptTemplates.classify_and_find(
+        hint_block, snippet, base_url,
+        domain_context=domain_context,
+    )
     try:
         result = await _generate_structured(prompt, ai_limiter, _SCHEMA_CLASSIFY)
         if isinstance(result, dict):
