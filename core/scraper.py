@@ -2,20 +2,36 @@
 """
 core/scraper.py — Orchestration: fetch → parse → lưu → điều hướng.
 
-BUG-1 FIX: run_novel_task() bây giờ bắt asyncio.CancelledError riêng.
-  Khi Ctrl+C được nhấn (hoặc task bị cancel từ bên ngoài), chương trình
-  sẽ lưu progress hiện tại trước khi re-raise — đảm bảo resume đúng lần sau.
-  Trước đây: CancelledError propagate thẳng qua except Exception → progress
-  của chương đang cào bị mất (vì save_progress ở cuối scrape_one_chapter
-  chưa chạy kịp).
+FIXES (v4):
+  FIX-INDEX-GUARD (Bug 1 — fanfiction.net): 3 path nguy hiểm đều được bịt:
 
-Các fix khác vẫn còn:
-  FIX-A: Cache ai_classify_and_find result
-  FIX-B: Cross-domain jump guard
-  FIX-C: _extract_content_ai inline
-  FIX-D: ai_validate_title khi vote hòa
-  FIX-PROFILE-SEL: profile content_selector ưu tiên cao nhất
-  ADS-1/2: SimpleAdsFilter wired
+    Path A — check_and_find_start_chapter():
+      detect_page_type() trả "chapter" sai cho story index page (do có nút "Next >").
+      Fix: nếu URL không khớp RE_CHAP_URL → override thành "index".
+
+    Path B — check_and_find_start_chapter():
+      ai_classify_and_find() trả {"page_type":"chapter"} cho story index page
+      → code cũ return start_url làm chapter start.
+      Fix: trong "index" path, loại bỏ hoàn toàn branch return start_url từ AI classify.
+           Chỉ sử dụng first_chapter_url / next_url khác với start_url.
+
+    Path C — scrape_one_chapter():
+      progress["current_url"] bị lưu sai (= story index URL) từ run trước.
+      Resume thẳng vào URL đó không qua check_and_find_start_chapter().
+      Fix: guard đầu tiên — nếu URL không có số chương VÀ detect_page_type="index"
+           → đánh dấu completed, return None, không extract content.
+
+  FIX-NAV-EDGES (Bug 2 — novelfire):
+    div.chapter-content capture toàn bộ wrapper gồm breadcrumb + word count +
+    chapter nav title ở đầu/cuối.
+    Fix: _strip_nav_edges() post-process content sau extract, trước save.
+    Thuật toán 3 bước (xem docstring hàm).
+
+  FIX-CONTENT-PRIORITY (v3 — giữ nguyên):
+    CONTENT_SELECTORS ưu tiên trước profile content_selector.
+
+  BUG-1 FIX (v2 — giữ nguyên):
+    CancelledError lưu progress trước khi re-raise.
 """
 from __future__ import annotations
 
@@ -36,6 +52,7 @@ from config import (
     STORY_ID_LEARN_AFTER,
     STORY_ID_MAX_ATTEMPTS,
     ADS_AI_SCAN_EVERY,
+    RE_CHAP_URL,
     get_delay_seconds,
 )
 from utils.file_io import load_progress, save_progress, write_markdown, save_profiles
@@ -66,6 +83,100 @@ logger = logging.getLogger(__name__)
 _COLLECTED_URL_CAP = 20
 
 
+# ── Nav-edge stripping (FIX-NAV-EDGES) ───────────────────────────────────────
+
+# Khớp: "[ 1234 words ]", "[ 1,234 words ]", "[ ... words ]", "[ 1.2k words ]"
+_RE_WORD_COUNT_LINE = re.compile(
+    r"^\[\s*[\d,.\s]+words?\s*\]$"
+    r"|^\[\s*\.+\s*words?\s*\]$",
+    re.IGNORECASE,
+)
+_NAV_EDGE_SCAN = 7   # số dòng kiểm tra ở mỗi đầu content
+
+
+def _strip_nav_edges(text: str) -> str:
+    """
+    Loại bỏ navigation/breadcrumb/footer do aggregator site inject vào đầu/cuối content.
+
+    Pattern điển hình của novelfire.net (và các site tương tự):
+      ĐẦU:  "The Primal Hunter"          ← breadcrumb (story title)
+            "Chapter 2 - Introduction"   ← chapter nav element
+            "[ 1234 words ]"             ← word count
+            ""
+            "Chapter 2 - Introduction"   ← nav element lặp lại
+      CUỐI: "Chapter 2 - Introduction"   ← nav element
+            "Report"                     ← button
+            "Chapter 2 - Introduction"   ← nav element lặp lại
+
+    Thuật toán 3 bước:
+      1. DETECT "repeated lines": các dòng xuất hiện ở CẢ top lẫn bottom EDGE
+         dòng → xác nhận là nav element (ví dụ: "Chapter 2 - Introduction").
+      2. TOP SCAN (không break): quét _NAV_EDGE_SCAN dòng đầu, ghi nhớ vị trí
+         nav cuối cùng (last_top_nav). Mọi thứ <= last_top_nav bị cắt, kể cả
+         breadcrumb không phải nav thuần ("The Primal Hunter") nằm trước các
+         nav lines vì nó có index < last_top_nav.
+      3. BOT SCAN (break tại dòng content thực): quét từ cuối lên, cắt blank/nav,
+         DỪNG tại dòng content thực đầu tiên gặp được.
+
+    Safety: nếu sau trim content còn lại rỗng → trả về text gốc.
+    """
+    lines = text.splitlines()
+    n = len(lines)
+    if n < 8:
+        return text
+
+    EDGE = _NAV_EDGE_SCAN
+
+    # ── Bước 1: phát hiện repeated nav lines ──────────────────────────────────
+    top_set = {lines[i].strip() for i in range(min(EDGE, n)) if lines[i].strip()}
+    bot_set = {lines[n - 1 - i].strip() for i in range(min(EDGE, n)) if lines[n - 1 - i].strip()}
+    repeated = top_set & bot_set   # e.g. {"Chapter 2 - Introduction"}
+
+    def _is_nav(line: str) -> bool:
+        s = line.strip()
+        if not s:
+            return True                                           # blank line
+        if _RE_WORD_COUNT_LINE.match(s):
+            return True                                           # "[ 1234 words ]"
+        if len(s) <= 10 and re.match(r"^[A-Za-z\s]+$", s):
+            return True                                           # "Report", "Next", "Prev"
+        return s in repeated                                      # chapter title lặp lại ở 2 đầu
+
+    # ── Bước 2: top scan (no-break) — tìm nav line cuối trong EDGE dòng đầu ──
+    last_top_nav = -1
+    for i in range(min(EDGE, n)):
+        if _is_nav(lines[i]):
+            last_top_nav = i
+        # KHÔNG break: nav lines SAU breadcrumb đẩy last_top_nav vượt qua breadcrumb,
+        # khiến breadcrumb cũng bị trim mặc dù bản thân nó không phải nav thuần.
+
+    start = last_top_nav + 1
+    # Bỏ qua blank lines ngay sau nav header
+    while start < n and not lines[start].strip():
+        start += 1
+
+    # ── Bước 3: bot scan (break on real line) — dừng tại content thực ─────────
+    end = n
+    for i in range(min(EDGE, n)):
+        idx = n - 1 - i
+        if idx <= start:
+            break
+        s = lines[idx].strip()
+        if not s or _is_nav(lines[idx]):
+            end = idx           # blank hoặc nav → tiếp tục trim
+        else:
+            break               # content thực → DỪNG
+
+    # Bỏ blank lines ngay trước nav footer
+    while end > start and not lines[end - 1].strip():
+        end -= 1
+
+    if start >= end:
+        return text             # safety: không xóa hết
+
+    return "\n".join(lines[start:end])
+
+
 # ── CPU-bound helpers ─────────────────────────────────────────────────────────
 
 def _sync_parse_and_clean(html: str) -> tuple[BeautifulSoup, str]:
@@ -86,9 +197,26 @@ def _sync_extract_content(
     """
     Trích nội dung chương từ soup.
 
-    FIX-PROFILE-SEL: Thử profile["content_selector"] TRƯỚC khi dùng
-    CONTENT_SELECTORS global.
+    FIX-CONTENT-PRIORITY (v3):
+      1. CONTENT_SELECTORS (hand-crafted, high confidence) — ưu tiên tuyệt đối
+      2. profile["content_selector"] (AI-generated) — chỉ là fallback
     """
+    # ── Bước 1: CONTENT_SELECTORS ─────────────────────────────────────────────
+    for sel in CONTENT_SELECTORS:
+        try:
+            el = soup.select_one(sel)
+            if el:
+                text = extract_text_blocks(el)
+                if len(text.strip()) > 200:
+                    logger.debug(
+                        "[Extract] CONTENT_SELECTORS hit: %r → %d chars",
+                        sel, len(text.strip()),
+                    )
+                    return text
+        except Exception:
+            continue
+
+    # ── Bước 2: Profile selector (fallback only) ──────────────────────────────
     if profile:
         sel = profile.get("content_selector")
         if sel:
@@ -97,23 +225,17 @@ def _sync_extract_content(
                 if el:
                     text = extract_text_blocks(el)
                     if len(text.strip()) > 200:
+                        logger.debug(
+                            "[Extract] Profile fallback selector %r → %d chars",
+                            sel, len(text.strip()),
+                        )
                         return text
                     logger.debug(
-                        "[Extract] Profile selector %r trả về nội dung quá ngắn (%d chars)",
+                        "[Extract] Profile selector %r quá ngắn (%d chars), bỏ qua",
                         sel, len(text.strip()),
                     )
             except Exception as e:
                 logger.debug("[Extract] Profile selector %r lỗi: %s", sel, e)
-
-    for sel in CONTENT_SELECTORS:
-        try:
-            el = soup.select_one(sel)
-            if el:
-                text = extract_text_blocks(el)
-                if len(text.strip()) > 200:
-                    return text
-        except Exception:
-            continue
 
     return None
 
@@ -174,39 +296,61 @@ async def check_and_find_start_chapter(
 
     page_type = await asyncio.to_thread(_sync_detect_page_type, html, start_url)
 
-    if page_type == "chapter":
-        domain  = urlparse(start_url).netloc.lower()
-        profile = profiles.get(domain, {})
+    # ── FIX-INDEX-GUARD / Path A ──────────────────────────────────────────────
+    # detect_page_type() có thể vote "chapter" sai vì trang index có nút "Next >"
+    # (bump chapter score +1) mặc dù URL không có số chương.
+    # Nếu RE_CHAP_URL không match URL → chắc chắn là index/other.
+    # Ví dụ: fanfiction.net /s/14427661 bị phân loại sai thành "chapter".
+    if page_type == "chapter" and not RE_CHAP_URL.search(start_url):
+        logger.debug(
+            "[Start] Path-A override: URL không khớp RE_CHAP_URL (%s)"
+            " nhưng detect='chapter' → force 'index'",
+            start_url,
+        )
+        page_type = "index"
 
+    if page_type == "chapter":
+        # Verify: có thực sự tồn tại chapter content không?
         soup_check, _ = await asyncio.to_thread(_sync_parse_and_clean, html)
-        content_check = await asyncio.to_thread(_sync_extract_content, soup_check, profile)
+        content_check = await asyncio.to_thread(_sync_extract_content, soup_check, None)
 
         if content_check and len(content_check.strip()) > 200:
             print(f"  [Start] 📖 Bắt đầu từ chương: {start_url[:70]}", flush=True)
             return start_url, progress
 
         print(
-            f"  [Start] 🔄 Phát hiện là chương nhưng không có nội dung"
-            f" → thử tìm chương đầu...",
+            f"  [Start] 🔄 Detect 'chapter' nhưng không tìm thấy content"
+            f" → fallback sang tìm chương đầu...",
             flush=True,
         )
-        page_type = "index"
 
-    print(f"  [Start] 📋 Trang index, tìm chương đầu...", flush=True)
+    # ── Index path ────────────────────────────────────────────────────────────
+    print(f"  [Start] 📋 Tìm chương đầu từ trang index...", flush=True)
+
+    # Bước 1: Heuristic — trích chapter links từ HTML
     first_url = await ai_find_first_chapter_url(html, start_url, ai_limiter)
-    if first_url:
+    if first_url and first_url != start_url:
         print(f"  [Start] ✅ Chương đầu: {first_url[:70]}", flush=True)
         return first_url, progress
 
-    print(f"  [Start] 🤖 Nhờ AI phân tích trang...", flush=True)
+    # Bước 2: AI full-page classify fallback
+    print(f"  [Start] 🤖 Nhờ AI phân tích toàn trang...", flush=True)
     result: AiClassifyResult | None = await ai_classify_and_find(html, start_url, ai_limiter)
     if result:
+        # ── FIX-INDEX-GUARD / Path B ──────────────────────────────────────────
+        # Không bao giờ return start_url khi đang ở "index" path, dù AI trả
+        # {"page_type": "chapter"}. AI thường nhầm khi thấy chapter dropdown.
+        # Chỉ dùng first_chapter_url / next_url, và chỉ khi khác start_url.
         if result.get("page_type") == "chapter":
-            print(f"  [Start] 📖 AI xác nhận: đây là trang chương.", flush=True)
-            return start_url, progress
+            logger.debug(
+                "[Start] Path-B: AI classify='chapter' trong index path (%s)"
+                " → bỏ qua page_type, chỉ dùng URL từ AI nếu có",
+                start_url,
+            )
+
         for key in ("first_chapter_url", "next_url"):
             found = result.get(key)  # type: ignore[literal-required]
-            if found:
+            if found and found != start_url:
                 print(f"  [Start] ✅ AI tìm được URL: {found[:70]}", flush=True)
                 return found, progress
 
@@ -241,24 +385,81 @@ async def scrape_one_chapter(
 
     soup, clean_html = await asyncio.to_thread(_sync_parse_and_clean, html)
 
-    domain  = urlparse(url).netloc.lower()
-    profile: SiteProfileDict = profiles.get(domain, {})
-    if not profile:
-        new_profile = await ask_ai_build_profile(clean_html, url, ai_limiter)
-        if new_profile:
-            await _save_new_profile(profiles, domain, new_profile, profiles_lock)
-            profile = new_profile
-            print(f"  [Profile] ✅ Đã lưu profile cho {domain}", flush=True)
-            if new_profile.get("content_selector"):
-                print(
-                    f"  [Profile] content_selector: {new_profile['content_selector']!r}",
-                    flush=True,
-                )
+    # ── FIX-INDEX-GUARD / Path C ──────────────────────────────────────────────
+    # Guard chống story INDEX URL được resume vào scrape_one_chapter().
+    # Nguyên nhân: progress["current_url"] bị lưu sai từ run cũ (bug đã fix),
+    # nhưng progress file cũ vẫn còn → resume thẳng vào URL sai.
+    #
+    # Điều kiện kích hoạt (AND cả hai):
+    #   1. URL không có số chương (RE_CHAP_URL không match) → URL nghi ngờ
+    #   2. detect_page_type() trả "index" → xác nhận là index page
+    #
+    # Hành động: đánh dấu completed (ngăn vòng lặp vô tận) + return None.
+    # User sẽ thấy cảnh báo rõ ràng và biết cần reset progress file.
+    if not RE_CHAP_URL.search(url):
+        page_type_guard = await asyncio.to_thread(_sync_detect_page_type, html, url)
+        if page_type_guard == "index":
+            print(
+                f"\n  ⚠️  [Guard] URL trỏ đến story INDEX page, không phải chapter!\n"
+                f"     URL: {url[:70]}\n"
+                f"     Nguyên nhân có thể: progress file cũ lưu sai current_url.\n"
+                f"     👉 Hãy xóa progress file tương ứng và chạy lại.\n",
+                flush=True,
+            )
+            progress["completed"]        = True
+            progress["completed_at_url"] = url
+            await save_progress(progress_path, progress)
+            return None
+
+    domain = urlparse(url).netloc.lower()
+
+    # ── Extract content (FIX-CONTENT-PRIORITY v3 + FIX-PROFILE-ORDER v3) ─────
+    # Thứ tự: CONTENT_SELECTORS (no profile) → profile/build → AI body fallback
+
+    # Bước 1: CONTENT_SELECTORS không cần profile
+    content = await asyncio.to_thread(_sync_extract_content, soup, None)
 
     ai_classify_cache: AiClassifyResult | None = None
 
-    content = await asyncio.to_thread(_sync_extract_content, soup, profile)
+    # Bước 2: CONTENT_SELECTORS thất bại → load/build profile → thử lại
+    if content is None:
+        profile: SiteProfileDict = profiles.get(domain, {})
 
+        if not profile:
+            print(
+                f"  [Profile] 🔍 CONTENT_SELECTORS thất bại,"
+                f" build profile cho {domain}...",
+                flush=True,
+            )
+            new_profile = await ask_ai_build_profile(clean_html, url, ai_limiter)
+            if new_profile:
+                await _save_new_profile(profiles, domain, new_profile, profiles_lock)
+                profile = new_profile
+                print(f"  [Profile] ✅ Đã lưu profile cho {domain}", flush=True)
+                if new_profile.get("content_selector"):
+                    print(
+                        f"  [Profile] content_selector: {new_profile['content_selector']!r}",
+                        flush=True,
+                    )
+
+        if profile:
+            content = await asyncio.to_thread(_sync_extract_content, soup, profile)
+
+    else:
+        # CONTENT_SELECTORS thành công → load profile (next_selector, title_selector)
+        # Build ngầm nếu domain mới, chỉ ở chương đầu tiên
+        profile = profiles.get(domain, {})
+        if not profile and progress.get("chapter_count", 0) == 0:
+            new_profile = await ask_ai_build_profile(clean_html, url, ai_limiter)
+            if new_profile:
+                await _save_new_profile(profiles, domain, new_profile, profiles_lock)
+                profile = new_profile
+                print(
+                    f"  [Profile] ✅ Đã lưu profile cho {domain} (background build)",
+                    flush=True,
+                )
+
+    # Bước 3: AI body fallback — toàn bộ <body>
     if content is None:
         ai_classify_cache = await ai_classify_and_find(clean_html, url, ai_limiter)
         if ai_classify_cache and ai_classify_cache.get("page_type") == "chapter":
@@ -272,12 +473,22 @@ async def scrape_one_chapter(
 
     content = clean_chapter_text(content)
 
+    # ── FIX-NAV-EDGES ─────────────────────────────────────────────────────────
+    # Strip nav elements ở đầu/cuối (breadcrumb, chapter title, word count, buttons).
+    # Chạy TRƯỚC ads_filter để tránh nav lines bị classify nhầm là ads.
+    content_stripped = _strip_nav_edges(content)
+    if content_stripped and len(content_stripped.strip()) >= 100:
+        if content_stripped != content:
+            stripped_lines = content.count("\n") - content_stripped.count("\n")
+            logger.debug("[NavEdge] Stripped ~%d lines of nav content", stripped_lines)
+        content = content_stripped
+
     content_before_filter = content
     content = ads_filter.filter_content(content)
 
     removed_chars = len(content_before_filter) - len(content)
     if removed_chars > 0:
-        print(f"  [Ads] 🧹 Đã lọc {removed_chars} ký tự ads khỏi nội dung", flush=True)
+        print(f"  [Ads] 🧹 Đã lọc {removed_chars} ký tự ads", flush=True)
 
     fp           = make_fingerprint(content)
     fingerprints = set(progress.get("fingerprints") or [])
@@ -469,8 +680,7 @@ async def run_novel_task(
             current_url = next_url
 
         except asyncio.CancelledError:
-            # BUG-1 FIX: Lưu progress TRƯỚC KHI re-raise để resume đúng lần sau.
-            # Trước đây CancelledError bypass qua except Exception → progress mất.
+            # BUG-1 FIX: lưu progress trước khi re-raise.
             print(
                 f"  [Cancel] 🛑 Task bị ngắt, đang lưu progress tại ch."
                 f"{progress.get('chapter_count', 0)}...",
@@ -479,8 +689,8 @@ async def run_novel_task(
             try:
                 await save_progress(progress_path, progress)
             except Exception:
-                pass  # Không crash khi đang shutdown
-            raise  # Propagate để asyncio.gather nhận biết
+                pass
+            raise
 
         except asyncio.TimeoutError:
             consecutive_timeouts += 1
