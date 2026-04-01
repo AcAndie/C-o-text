@@ -2,8 +2,12 @@
 """
 utils/ads_filter.py — Filter watermark/ads từ nội dung chương truyện.
 
-CHANGES (v3):
-  inject_domain_keywords(): Nhận domain_watermarks từ SiteProfileDict (PROF-2).
+CHANGES (v4):
+  _SEED_PATTERNS_RAW: Thêm patterns bắt script tags và JS ad code xuất hiện
+    dưới dạng text trong nội dung (novelfire.net và các aggregator tương tự
+    inject pubfuturetag, googletag, adsbygoogle trực tiếp vào article body).
+
+  inject_domain_keywords(): Nhận domain_watermarks từ SiteProfileDict.
   inject_domain_patterns(): Nhận regex patterns từ profile.
 """
 from __future__ import annotations
@@ -53,8 +57,32 @@ _MIN_SUSPICIOUS_LINE_LEN = 15
 _CONTEXT_WINDOW          = 10
 _MAX_CONTEXT_BLOCKS      = 5
 
+# FIX v4: Thêm patterns bắt JS ad injection xuất hiện dưới dạng text.
+# Các site như novelfire.net nhúng <script>window.pubfuturetag...</script>
+# trực tiếp vào content div. Dù extract_text_blocks đã fix để skip <script>
+# tags, vẫn cần patterns này như safety net cho các dạng text-only injection.
 _SEED_PATTERNS_RAW: list[str] = [
+    # Existing
     r"^Tip:\s+You can use",
+
+    # Script tag appearing as text (site embeds raw HTML in content)
+    r"<script[\s>]",
+    r"</script>",
+
+    # Common ad network JS patterns
+    r"window\.pubfuturetag",
+    r"window\.googletag",
+    r"window\.adsbygoogle",
+    r"googletag\.cmd\.push",
+    r"adsbygoogle\.push",
+    r"\.pubads\(\)",
+
+    # Generic ad push pattern: window.X = window.X || []; window.X.push({...})
+    r"window\.\w+\s*=\s*window\.\w+\s*\|\|\s*\[\]",
+
+    # pubfuturetag specific (novelfire)
+    r"pubfuturetag\.push\(",
+    r'"unit"\s*:\s*"[^"]+"\s*,\s*"id"\s*:\s*"pf-',
 ]
 
 
@@ -115,7 +143,7 @@ class SimpleAdsFilter:
             except Exception:
                 pass
 
-    # ── PROF-2: Domain injection ──────────────────────────────────────────────
+    # ── Domain injection ──────────────────────────────────────────────────────
 
     def inject_domain_keywords(self, keywords: list[str]) -> int:
         """Inject domain_watermarks từ SiteProfileDict. Trả về số keyword mới."""

@@ -98,9 +98,9 @@ Trả về JSON (CHỈ JSON, không markdown fence):
 
     # ── Page classifier + next URL ────────────────────────────────────────────
 
-    @staticmethod
-    def classify_and_find(hint_block: str, html_snippet: str, base_url: str) -> str:
-        return f"""Phân loại trang web và tìm URL chương tiếp theo.
+    def classify_and_find(hint_block: str, html_snippet: str, base_url: str, domain_context: str | None = None) -> str:
+        prefix = f"Site context: {domain_context}\n\n" if domain_context else ""
+        return prefix + f"""Phân loại trang web và tìm URL chương tiếp theo.
 
 URL hiện tại: {base_url}
 

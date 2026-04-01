@@ -15,6 +15,15 @@ Lần sau vào cùng domain:
   - requires_playwright      → dùng thẳng Playwright, không curl_cffi roundtrip
   - has_nav_edges            → luôn strip nav, không detect lại
   - chapter_url_pattern      → detect_page_type chính xác hơn
+
+CHANGES (v5.1 — FIX issue #2):
+  run_novel_task(): Sau AdsFilter.load(), inject domain_watermarks từ profile
+    (pm.get_domain_watermarks) vào ads_filter NGAY KHI KHỞI ĐỘNG.
+    → Domain watermarks đã học từ phiên trước được áp dụng ngay từ chương đầu.
+
+  scrape_one_chapter(): Sau merge_ai_result() thành công, inject domain_watermarks
+    mới vào ads_filter của phiên hiện tại.
+    → Watermarks AI phát hiện từ profile build được dùng ngay trong phiên đó.
 """
 from __future__ import annotations
 
@@ -266,6 +275,35 @@ async def _find_next_url_with_fallback(
     return None, None
 
 
+# ── Inject domain watermarks helper ──────────────────────────────────────────
+
+def _inject_domain_watermarks(
+    ads_filter: SimpleAdsFilter,
+    pm: ProfileManager,
+    domain: str,
+    label: str = "",
+) -> None:
+    """
+    Inject domain_watermarks và domain_patterns từ profile vào ads_filter.
+
+    Gọi khi:
+      1. run_novel_task() khởi động — dùng watermarks đã học từ phiên trước
+      2. Sau merge_ai_result() — dùng watermarks AI vừa tìm trong phiên này
+
+    Tách thành helper riêng để tránh lặp code ở 2 call site.
+    """
+    wm_added  = ads_filter.inject_domain_keywords(pm.get_domain_watermarks(domain))
+    pat_added = ads_filter.inject_domain_patterns(pm.get_domain_patterns(domain))
+    total = wm_added + pat_added
+    if total > 0:
+        tag = f"[{label}] " if label else ""
+        print(
+            f"  [Ads] 🔑 {tag}+{wm_added}kw +{pat_added}pat từ profile {domain} "
+            f"(total: {ads_filter.keyword_count}kw/{ads_filter.pattern_count}pat)",
+            flush=True,
+        )
+
+
 # ── Scrape one chapter ────────────────────────────────────────────────────────
 
 async def scrape_one_chapter(
@@ -319,12 +357,19 @@ async def scrape_one_chapter(
             if new_data:
                 await pm.merge_ai_result(domain, new_data)
                 profile = pm.get(domain)
+
+                # FIX issue #2: Inject domain watermarks vào ads_filter NGAY SAU KHI build profile
+                # Watermarks AI phát hiện (ví dụ: "share to your friends" trên novelfire)
+                # sẽ được áp dụng từ chương này trở đi, không cần đợi phiên sau.
+                _inject_domain_watermarks(ads_filter, pm, domain, label="profile-build")
+
                 print(
                     f"  [Profile] ✅ content={new_data.get('content_selector')!r}"
                     f" next={new_data.get('next_selector')!r}"
                     f" dropdown={new_data.get('has_chapter_dropdown')}"
                     f" rel_next={new_data.get('has_rel_next')}"
-                    f" pattern={new_data.get('chapter_url_pattern')!r}",
+                    f" pattern={new_data.get('chapter_url_pattern') or new_data.get('chapter_url_regex')!r}"
+                    f" wm={len(new_data.get('domain_watermarks') or [])}",
                     flush=True,
                 )
 
@@ -342,6 +387,8 @@ async def scrape_one_chapter(
         if new_data:
             await pm.merge_ai_result(domain, new_data)
             profile = pm.get(domain)
+            # FIX issue #2: Inject watermarks từ background profile build
+            _inject_domain_watermarks(ads_filter, pm, domain, label="profile-bg")
 
     # AI body fallback
     if content is None:
@@ -513,15 +560,21 @@ async def run_novel_task(
     on_chapter_done=None,
 ) -> None:
     os.makedirs(output_dir, exist_ok=True)
-    pm             = ProfileManager(profiles, profiles_lock)
+    pm              = ProfileManager(profiles, profiles_lock)
     title_extractor = TitleExtractor()
     ads_filter      = SimpleAdsFilter.load()
-    consecutive_errors   = 0
-    consecutive_timeouts = 0
 
     domain = urlparse(start_url).netloc.lower()
+
+    # FIX issue #2: Inject domain watermarks từ profile NGAY KHI KHỞI ĐỘNG.
+    # Đảm bảo watermarks đã học từ phiên trước được áp dụng từ chương đầu tiên,
+    # không cần chờ AI profile build lại.
     if pm.has_profile(domain):
         print(f"  [Profile] 📂 {pm.summary(domain)}", flush=True)
+        _inject_domain_watermarks(ads_filter, pm, domain, label="startup")
+
+    consecutive_errors   = 0
+    consecutive_timeouts = 0
 
     try:
         current_url, progress = await check_and_find_start_chapter(

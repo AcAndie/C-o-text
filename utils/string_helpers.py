@@ -9,6 +9,13 @@ utils/string_helpers.py — Hàm tiện ích xử lý chuỗi, không có side-e
   • normalize_title          — chuẩn hóa tiêu đề: xóa suffix site, ký tự lạ
   • slugify_filename         — tên file an toàn trên mọi OS
   • truncate                 — cắt chuỗi với ellipsis
+
+CHANGES (v3):
+  extract_text_blocks(): Thêm _EXTRACT_SKIP_TAGS — bỏ qua script/style/noscript/...
+    khi recurse. Fix lỗi novelfire.net và các site inject <script> trong <article>.
+    Trước đây extract_text_blocks chỉ dựa vào strip_noise_tags() trên toàn soup;
+    nếu script nằm bên trong element được select_one() sau khi soup đã cleaned,
+    JS code vẫn lọt ra dưới dạng NavigableString text.
 """
 import hashlib
 import re
@@ -19,8 +26,6 @@ from bs4 import BeautifulSoup
 
 # ── Cloudflare challenge detection ────────────────────────────────────────────
 
-# Public (không có dấu _) để session_pool.py import trực tiếp mà không
-# phụ thuộc vào tên private.
 CF_CHALLENGE_TITLES = frozenset({
     "just a moment...",
     "just a moment",
@@ -160,6 +165,29 @@ _BLOCK_TAGS = frozenset({
 
 _INLINE_BREAK_TAGS = frozenset({"br"})
 
+# FIX v3: Tags to skip ENTIRELY during text extraction.
+# Even if strip_noise_tags() already removes these from the top-level soup,
+# some sites (e.g. novelfire.net) inject <script> tags directly inside
+# <article> or content divs. By also skipping them here, we guarantee
+# that JS code never leaks into extracted text regardless of DOM structure.
+_EXTRACT_SKIP_TAGS = frozenset({
+    "script",
+    "style",
+    "noscript",
+    "iframe",
+    "svg",
+    "canvas",
+    "figure",
+    "picture",
+    "source",
+    "video",
+    "audio",
+    "form",
+    "button",      # nav buttons (Next/Prev) inside content wrappers
+    "select",      # chapter dropdowns
+    "option",
+})
+
 
 def extract_text_blocks(element) -> str:
     """
@@ -167,8 +195,13 @@ def extract_text_blocks(element) -> str:
       - Block tags (p, div, h1...) → chèn '\\n' trước và sau
       - <br> → chèn '\\n'
       - Inline tags (span, em, strong, a...) → nối liền, không thêm '\\n'
+      - _EXTRACT_SKIP_TAGS (script, style, ...) → bỏ qua hoàn toàn  ← MỚI
 
     Thay thế get_text("\\n") để tránh lỗi ngắt dòng giữa chừng câu văn.
+
+    FIX: Trước đây script/style không nằm trong _BLOCK_TAGS hay _INLINE_BREAK_TAGS,
+    nên _recurse sẽ iterate children → text JS/CSS bị append vào kết quả.
+    Nay thêm guard _EXTRACT_SKIP_TAGS → return sớm, không recurse.
     """
     parts: list[str] = []
 
@@ -181,6 +214,10 @@ def extract_text_blocks(element) -> str:
 
         tag = node.name
         if tag is None:
+            return
+
+        # ── FIX v3: Skip noise/UI tags entirely ───────────────────────────────
+        if tag in _EXTRACT_SKIP_TAGS:
             return
 
         if tag in _INLINE_BREAK_TAGS:
@@ -206,5 +243,3 @@ def extract_text_blocks(element) -> str:
     # Gộp nhiều dòng trắng thành tối đa 2
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
-
-

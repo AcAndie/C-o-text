@@ -2,14 +2,11 @@
 """
 utils/types.py — TypedDict definitions cho toàn bộ project.
 
-CHANGES (v2):
-  SiteProfileDict mở rộng từ 3 field → 16 field:
-  - Selector performance tracking (working_content_selector, selector_stats)
-  - Site behavior flags (requires_playwright, has_nav_edges, ...)
-  - URL pattern knowledge (chapter_url_pattern, sample_urls)
-  - Session statistics (ai_fallback_count, last_updated, ...)
-
-  Tất cả field dùng total=False → backward-compatible với profile JSON cũ.
+CHANGES (v3):
+  SiteProfileDict: Thêm 2 field còn thiếu:
+    - nav_type: str | None         — dùng trong navigator.py profile.get("nav_type")
+    - domain_watermarks: list[str] — persist watermarks AI học được cho domain
+  Cả 2 field đều total=False → backward-compatible với profile JSON cũ.
 """
 from __future__ import annotations
 
@@ -65,7 +62,20 @@ class SiteProfileDict(TypedDict, total=False):
       chapter_url_pattern: regex nhận diện chapter URL của site này.
       sample_urls: Tối đa 5 URL chapter mẫu đã cào thành công.
 
-    NHÓM 5 — Statistics & metadata:
+    NHÓM 5 — Navigation:
+      nav_type: Strategy điều hướng đã biết cho site này.
+        Giá trị hợp lệ: "selector" | "rel_next" | "slug_increment"
+                        | "dropdown" | "fanfic" | "button" | None
+        Dùng trong navigator.py: profile.get("nav_type") để fast-path.
+        FIX v3: Field này bị thiếu trong TypedDict mặc dù đã được dùng.
+
+    NHÓM 6 — Watermarks (FIX v3):
+      domain_watermarks: Danh sách keyword watermark đặc trưng của domain.
+        Được học qua ask_ai_build_profile() và persist vào site_profiles.json.
+        Khi run_novel_task() khởi động, inject vào AdsFilter để áp dụng ngay
+        từ chương đầu mà không cần AI scan lại.
+
+    NHÓM 7 — Statistics & metadata:
       ai_fallback_count: Số lần heuristic fail, phải gọi AI.
       content_extraction_failures: Số lần không extract được content.
       chapters_scraped: Tổng số chapter đã cào từ site này.
@@ -93,7 +103,13 @@ class SiteProfileDict(TypedDict, total=False):
     chapter_url_pattern:    Optional[str]
     sample_urls:            list[str]
 
-    # NHÓM 5 — Statistics
+    # NHÓM 5 — Navigation (FIX v3: field bị thiếu)
+    nav_type:               Optional[str]
+
+    # NHÓM 6 — Watermarks (FIX v3: field bị thiếu)
+    domain_watermarks:      list[str]
+
+    # NHÓM 7 — Statistics
     ai_fallback_count:              int
     content_extraction_failures:    int
     chapters_scraped:               int
@@ -122,11 +138,18 @@ class AiProfileResult(TypedDict, total=False):
     Kết quả đầy đủ từ ask_ai_build_profile (prompt mới).
     Superset của SiteProfileDict — chỉ chứa những field AI có thể suy luận
     từ HTML, không có field chỉ runtime mới biết (requires_playwright, ...).
+
+    NOTE: chapter_url_regex (AI field) ≠ chapter_url_pattern (profile field).
+    ProfileManager.merge_ai_result() xử lý mapping này.
     """
     next_selector:        Optional[str]
     title_selector:       Optional[str]
     content_selector:     Optional[str]
+    nav_type:             Optional[str]
     has_chapter_dropdown: bool
     has_rel_next:         bool
-    chapter_url_pattern:  Optional[str]
+    chapter_url_regex:    Optional[str]   # AI output name
+    chapter_url_pattern:  Optional[str]   # Profile field name (fallback)
+    domain_watermarks:    list[str]
     site_notes:           Optional[str]
+    ai_notes:             Optional[str]
