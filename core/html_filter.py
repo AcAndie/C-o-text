@@ -58,8 +58,8 @@ _HIDDEN_CLASS_RE = re.compile(
     r"\b(?:"
     r"hidden|invisible|sr-only|visually-hidden|"
     r"d-none|display-none|hide|offscreen|"
-    r"watermark|wm-text|protect-text|anti-theft|"
-    r"noshow|no-show|nocopy|no-copy|"
+    r"watermark|wm-text|"
+    r"noshow|no-show|"
     r"rr-hidden|rr-copyright|sh-notice|"
     r"theft-notice|stolen-notice|copyright-notice"
     r")\b",

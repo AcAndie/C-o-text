@@ -176,13 +176,50 @@ def _sync_get_profile_snippet(html: str) -> str:
     return str(soup)[:8000]
 
 
+_RE_CHAPTER_LISTING = re.compile(
+    r"/(chapters|chapter-list|table-of-contents|toc|contents|chapter-index)"
+    r"[/?#]?$",
+    re.IGNORECASE,
+)
+
+# RE_CHAP_HINT_STRICT: yêu cầu có số chương sau keyword (chapter-1, /c/123, ep5...)
+# Tránh match: /chapters, /chapter-list, /chapter-index (không có số)
+_RE_CHAP_HINT_STRICT = re.compile(
+    r"(chapter|chuong|chap|/c/|/ch/|episode|ep|phần|tập)[_\-]?\d+"
+    r"|/s/\d+/\d+",
+    re.IGNORECASE,
+)
+
+
 def _sync_get_chapter_links(html: str, base_url: str) -> list[str]:
+    """
+    Trích các link có thể là chapter từ HTML.
+
+    FIX: Dùng _RE_CHAP_HINT_STRICT (yêu cầu số sau keyword) thay vì RE_CHAP_HINT.
+    Loại bỏ thêm các URL listing page (/chapters, /toc, ...) bằng _RE_CHAPTER_LISTING.
+
+    Ví dụ lỗi cũ:
+      royalroad.com/.../chapters  → khớp RE_CHAP_HINT ("chapter" trong "chapters")
+      → AI chọn nhầm làm "first chapter URL" → Guard path C triggers
+    """
     soup = BeautifulSoup(html, "html.parser")
-    return [
-        urljoin(base_url, a["href"])
-        for a in soup.find_all("a", href=True)
-        if RE_CHAP_HINT.search(a["href"])
-    ]
+    seen: set[str] = set()
+    links: list[str] = []
+
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        # Bỏ qua trang listing
+        if _RE_CHAPTER_LISTING.search(href):
+            continue
+        # Phải có số chương
+        if not _RE_CHAP_HINT_STRICT.search(href):
+            continue
+        full_url = urljoin(base_url, href)
+        if full_url not in seen:
+            seen.add(full_url)
+            links.append(full_url)
+
+    return links
 
 
 def _sync_get_nav_hints_and_snippet(html: str, base_url: str) -> tuple[str, str]:

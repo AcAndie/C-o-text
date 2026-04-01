@@ -337,16 +337,31 @@ async def check_and_find_start_chapter(
     print(f"  [Start] 🤖 Nhờ AI phân tích toàn trang...", flush=True)
     result: AiClassifyResult | None = await ai_classify_and_find(html, start_url, ai_limiter)
     if result:
-        # ── FIX-INDEX-GUARD / Path B ──────────────────────────────────────────
-        # Không bao giờ return start_url khi đang ở "index" path, dù AI trả
-        # {"page_type": "chapter"}. AI thường nhầm khi thấy chapter dropdown.
-        # Chỉ dùng first_chapter_url / next_url, và chỉ khi khác start_url.
         if result.get("page_type") == "chapter":
-            logger.debug(
-                "[Start] Path-B: AI classify='chapter' trong index path (%s)"
-                " → bỏ qua page_type, chỉ dùng URL từ AI nếu có",
-                start_url,
-            )
+            # ── FIX-INDEX-GUARD / Path B (revised) ───────────────────────────
+            # Điều kiện cũ: luôn block return start_url → fanfiction.net bị lỗi
+            # vì URL /s/14427661/1/ là chapter thật nhưng content extraction thất bại.
+            #
+            # Điều kiện mới: cho phép return start_url NẾU cả 2 đều xác nhận chapter:
+            #   1. RE_CHAP_URL match URL (URL có pattern số chương rõ ràng)
+            #   2. AI classify trả "chapter"
+            # → An toàn vì fanfiction /s/{id}/{num}/ và tương tự đều có số chương.
+            # scrape_one_chapter() sẽ xử lý content qua AI body fallback nếu cần.
+            #
+            # Vẫn block nếu URL KHÔNG có pattern số chương (e.g. trang index giả mạo).
+            if RE_CHAP_URL.search(start_url):
+                print(
+                    f"  [Start] ✅ URL pattern + AI xác nhận đây là trang chương: "
+                    f"{start_url[:70]}",
+                    flush=True,
+                )
+                return start_url, progress
+            else:
+                logger.debug(
+                    "[Start] Path-B: AI classify='chapter' nhưng URL không có số chương (%s)"
+                    " → vẫn bỏ qua, chỉ dùng URL từ AI",
+                    start_url,
+                )
 
         for key in ("first_chapter_url", "next_url"):
             found = result.get(key)  # type: ignore[literal-required]
@@ -355,6 +370,7 @@ async def check_and_find_start_chapter(
                 return found, progress
 
     raise RuntimeError(f"Không tìm được điểm bắt đầu từ: {start_url}")
+
 
 
 # ── Scrape one chapter ────────────────────────────────────────────────────────
@@ -487,8 +503,18 @@ async def scrape_one_chapter(
     content = ads_filter.filter_content(content)
 
     removed_chars = len(content_before_filter) - len(content)
-    if removed_chars > 0:
-        print(f"  [Ads] 🧹 Đã lọc {removed_chars} ký tự ads", flush=True)
+if removed_chars > 0:
+    after_set     = set(content.splitlines())
+    removed_lines = [
+        l.strip() for l in content_before_filter.splitlines()
+        if l.strip() and l not in after_set
+    ]
+    preview = " | ".join(removed_lines[:3])
+    print(
+        f"  [Ads] 🧹 Đã lọc {removed_chars} ký tự: "
+        f"{preview[:100]}{'…' if len(preview) > 100 else ''}",
+        flush=True,
+    )
 
     fp           = make_fingerprint(content)
     fingerprints = set(progress.get("fingerprints") or [])
