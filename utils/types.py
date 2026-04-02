@@ -2,6 +2,11 @@
 """
 utils/types.py — TypedDict definitions cho toàn bộ project.
 
+CHANGES (v5):
+  CalibrationIssue (NEW): Một issue phát hiện khi probe chương.
+  CalibrationRecord (NEW): Kết quả probe một chương (lưu content để ghi khi PASS).
+  ProgressDict: +calibration_done, +calibration_round, +calibration_urls.
+
 CHANGES (v4):
   StructuralObservation (NEW): Snapshot cấu trúc DOM của một chương.
     Tích lũy qua OBS_REFINE_AFTER chương rồi gửi AI để refine profile.
@@ -31,6 +36,10 @@ class ProgressDict(TypedDict, total=False):
     completed_at_url:  Optional[str]
     last_scraped_url:  Optional[str]
     last_title:        Optional[str]
+    # Calibration phase
+    calibration_done:  bool       # True sau khi calibration PASS
+    calibration_round: int        # Round hiện tại (resume nếu bị ngắt)
+    calibration_urls:  list[str]  # URLs đã probe trong round gần nhất
 
 
 # ── Structural observation ────────────────────────────────────────────────────
@@ -72,6 +81,45 @@ class StructuralObservation(TypedDict, total=False):
     nav_next_classes: list[str]      # class list
     nav_next_text:    Optional[str]  # button text (truncated 40 chars)
     nav_next_rel:     Optional[str]  # "next" nếu có rel="next"
+
+
+# ── Calibration ───────────────────────────────────────────────────────────────
+
+class CalibrationIssue(TypedDict, total=False):
+    """
+    Một issue phát hiện trong quá trình calibration probe.
+
+    issue_type:
+      "content_short"    — content sau xử lý < CALIBRATION_MIN_CONTENT chars
+      "title_suspicious" — title = "Không rõ tiêu đề" hoặc trông như URL slug
+      "ai_fallback"      — AI phải dùng để tìm content hoặc next URL
+      "no_next_url"      — không tìm được URL tiếp theo (cả heuristic lẫn AI)
+      "ads_leaked"       — còn suspicious content sau khi AdsFilter lọc
+      "fetch_failed"     — HTTP error hoặc junk page
+    """
+    issue_type: str
+    detail:     str
+
+
+class CalibrationRecord(TypedDict, total=False):
+    """
+    Kết quả probe một chương trong calibration phase.
+
+    Lưu toàn bộ processed content để ghi file khi calibration PASS.
+    Không ghi file trong quá trình probe — Option B.
+    """
+    chapter_num:       int
+    url:               str
+    title:             str
+    content:           str            # Full processed content — ghi file khi PASS
+    content_preview:   str            # 300 chars đầu — gửi AI review
+    content_length:    int
+    selector_used:     Optional[str]
+    title_source:      Optional[str]
+    ai_fallback_used:  bool
+    next_url:          Optional[str]  # URL chương tiếp theo
+    story_title:       Optional[str]  # Tên truyện (chỉ extract ở ch.1)
+    issues:            list           # list[CalibrationIssue]
 
 
 # ── Site profile ──────────────────────────────────────────────────────────────

@@ -1,6 +1,15 @@
 # core/scraper.py
 """
-core/scraper.py — v5: ProfileManager integration.
+core/scraper.py — v6: Calibration phase integration.
+
+Trước khi vào main loop, run_novel_task() chạy calibration phase (nếu chưa done):
+  - Probe CALIBRATION_CHAPTERS chương đầu
+  - Phát hiện issues (content ngắn, title lạ, AI fallback, no next URL)
+  - Nếu có issues → AI review → fix profile → retry (tối đa CALIBRATION_MAX_ROUNDS)
+  - Nếu PASS → ghi file, tiếp tục main loop từ chương kế tiếp
+  - Nếu thất bại → dừng task, in báo cáo chi tiết
+
+v5: ProfileManager integration.
 
 Mọi thao tác profile đi qua ProfileManager (pm):
   pm.record_content_hit()      → selector_stats, working_content_selector
@@ -10,20 +19,12 @@ Mọi thao tác profile đi qua ProfileManager (pm):
   pm.record_chapter_done()     → chapters_scraped, sample_urls
   pm.update_chapter_url_pattern() → chapter_url_pattern từ story_id
 
-Lần sau vào cùng domain:
-  - working_content_selector → shortcut, không thử cả CONTENT_SELECTORS list
-  - requires_playwright      → dùng thẳng Playwright, không curl_cffi roundtrip
-  - has_nav_edges            → luôn strip nav, không detect lại
-  - chapter_url_pattern      → detect_page_type chính xác hơn
-
 CHANGES (v5.1 — FIX issue #2):
   run_novel_task(): Sau AdsFilter.load(), inject domain_watermarks từ profile
     (pm.get_domain_watermarks) vào ads_filter NGAY KHI KHỞI ĐỘNG.
-    → Domain watermarks đã học từ phiên trước được áp dụng ngay từ chương đầu.
 
   scrape_one_chapter(): Sau merge_ai_result() thành công, inject domain_watermarks
     mới vào ads_filter của phiên hiện tại.
-    → Watermarks AI phát hiện từ profile build được dùng ngay trong phiên đó.
 """
 from __future__ import annotations
 
@@ -39,7 +40,7 @@ from config import (
     MAX_CONSECUTIVE_TIMEOUTS, TIMEOUT_BACKOFF_BASE,
     STORY_ID_LEARN_AFTER, STORY_ID_MAX_ATTEMPTS,
     ADS_AI_SCAN_EVERY, RE_CHAP_URL, get_delay_seconds,
-    OBS_CONFIDENCE_MIN,
+    OBS_CONFIDENCE_MIN, CALIBRATION_CHAPTERS,
 )
 
 from utils.file_io import load_progress, save_progress, write_markdown
@@ -153,20 +154,17 @@ def _sync_extract_content(
       2. CONTENT_SELECTORS list
       3. profile["content_selector"] — AI-generated fallback
     """
-    # 1. Shortcut
     working = profile.get("working_content_selector")
     if working:
         text = _try_selector(soup, working)
         if text:
             return text, working
 
-    # 2. Hand-crafted list
     for sel in CONTENT_SELECTORS:
         text = _try_selector(soup, sel)
         if text:
             return text, sel
 
-    # 3. AI selector
     ai_sel = profile.get("content_selector")
     if ai_sel and ai_sel not in CONTENT_SELECTORS:
         text = _try_selector(soup, ai_sel)
@@ -217,7 +215,6 @@ async def check_and_find_start_chapter(
 
     page_type = await asyncio.to_thread(_sync_detect_page_type, html, start_url)
 
-    # Path-A: URL không có pattern chương → force index
     if page_type == "chapter" and not RE_CHAP_URL.search(start_url):
         page_type = "index"
 
@@ -289,15 +286,6 @@ def _inject_domain_watermarks(
     domain: str,
     label: str = "",
 ) -> None:
-    """
-    Inject domain_watermarks và domain_patterns từ profile vào ads_filter.
-
-    Gọi khi:
-      1. run_novel_task() khởi động — dùng watermarks đã học từ phiên trước
-      2. Sau merge_ai_result() — dùng watermarks AI vừa tìm trong phiên này
-
-    Tách thành helper riêng để tránh lặp code ở 2 call site.
-    """
     wm_added  = ads_filter.inject_domain_keywords(pm.get_domain_watermarks(domain))
     pat_added = ads_filter.inject_domain_patterns(pm.get_domain_patterns(domain))
     total = wm_added + pat_added
@@ -338,7 +326,6 @@ async def scrape_one_chapter(
 
     soup, clean_html = await asyncio.to_thread(_sync_parse_and_clean, html)
 
-    # Guard: index page được resume nhầm
     if not RE_CHAP_URL.search(url):
         page_type_guard = await asyncio.to_thread(_sync_detect_page_type, html, url)
         if page_type_guard == "index":
@@ -356,19 +343,13 @@ async def scrape_one_chapter(
     ai_classify_cache: AiClassifyResult | None = None
 
     if content is None:
-        # Build/update profile
         if not profile.get("content_selector"):
             print(f"  [Profile] 🔍 Build profile {domain}...", flush=True)
             new_data = await ask_ai_build_profile(clean_html, url, ai_limiter)
             if new_data:
                 await pm.merge_ai_result(domain, new_data)
                 profile = pm.get(domain)
-
-                # FIX issue #2: Inject domain watermarks vào ads_filter NGAY SAU KHI build profile
-                # Watermarks AI phát hiện (ví dụ: "share to your friends" trên novelfire)
-                # sẽ được áp dụng từ chương này trở đi, không cần đợi phiên sau.
                 _inject_domain_watermarks(ads_filter, pm, domain, label="profile-build")
-
                 print(
                     f"  [Profile] ✅ content={new_data.get('content_selector')!r}"
                     f" next={new_data.get('next_selector')!r}"
@@ -381,22 +362,18 @@ async def scrape_one_chapter(
 
         content, winning_selector = await asyncio.to_thread(_sync_extract_content, soup, profile)
 
-    # Record selector outcome
     if winning_selector:
         await pm.record_content_hit(domain, winning_selector)
     elif content is None:
         await pm.record_extraction_failure(domain)
 
-    # Background profile build cho domain mới ở chapter đầu
     if not profile.get("next_selector") and progress.get("chapter_count", 0) == 0:
         new_data = await ask_ai_build_profile(clean_html, url, ai_limiter)
         if new_data:
             await pm.merge_ai_result(domain, new_data)
             profile = pm.get(domain)
-            # FIX issue #2: Inject watermarks từ background profile build
             _inject_domain_watermarks(ads_filter, pm, domain, label="profile-bg")
 
-    # AI body fallback
     if content is None:
         try:
             ai_classify_cache = await ai_classify_and_find(clean_html, url, ai_limiter)
@@ -422,7 +399,6 @@ async def scrape_one_chapter(
 
     content = clean_chapter_text(content)
 
-    # Nav-edge strip — detect + record
     content_stripped = _strip_nav_edges(content)
     if content_stripped and len(content_stripped.strip()) >= 100:
         if content_stripped != content:
@@ -431,7 +407,6 @@ async def scrape_one_chapter(
                 print(f"  [Profile] 📌 {domain}: has_nav_edges=True", flush=True)
         content = content_stripped
 
-    # Ads filter
     content_before = content
     content = ads_filter.filter_content(content)
     removed = len(content_before) - len(content)
@@ -442,7 +417,6 @@ async def scrape_one_chapter(
         preview = " | ".join(removed_lines[:3])
         print(f"  [Ads] 🧹 -{removed} ký tự: {preview[:80]}", flush=True)
 
-    # Fingerprint
     fp = make_fingerprint(content)
     fingerprints = set(progress.get("fingerprints") or [])
     if fp in fingerprints:
@@ -459,7 +433,6 @@ async def scrape_one_chapter(
 
     chapter_num = progress.get("chapter_count", 0) + 1
 
-    # Ads AI scan
     if chapter_num % ADS_AI_SCAN_EVERY == 1:
         ctx = ads_filter.build_ai_context_block(content_before)
         if ctx:
@@ -473,7 +446,6 @@ async def scrape_one_chapter(
             except Exception as e:
                 logger.warning("[Ads] Scan thất bại: %s", e)
 
-    # Write file
     filename     = f"{chapter_num:04d}_{slugify_filename(title, max_len=60)}.md"
     await write_markdown(os.path.join(output_dir, filename), f"# {title}\n\n{content}\n")
 
@@ -483,7 +455,6 @@ async def scrape_one_chapter(
     all_visited.add(url)
     progress["all_visited_urls"] = list(all_visited)
 
-    # Record chapter done
     await pm.record_chapter_done(domain, url)
     try:
         obs = observe_chapter_structure(
@@ -497,10 +468,7 @@ async def scrape_one_chapter(
         await pm.record_observation(domain, obs)
     except Exception as _obs_err:
         logger.debug("[Observe] Lỗi observation (bỏ qua): %s", _obs_err)
- 
-    # ── Refinement trigger: sau OBS_REFINE_AFTER chương thành công ────────────
-    # Chỉ trigger 1 lần per domain (mark_refined → should_refine = False).
-    # Thêm 1 AI call nhưng không ảnh hưởng flow nếu thất bại.
+
     if pm.should_refine(domain, chapter_num):
         print(
             f"  [Profile] 🔬 Refining {domain} profile "
@@ -514,7 +482,7 @@ async def scrape_one_chapter(
                 updated_count = await pm.merge_refined_result(
                     domain, refined, threshold=OBS_CONFIDENCE_MIN)
                 if updated_count > 0:
-                    profile = pm.get(domain)   # Refresh profile sau update
+                    profile = pm.get(domain)
                     print(
                         f"  [Profile] ✅ Refined {updated_count} selector(s) "
                         f"[content={refined.get('content_selector')!r} "
@@ -538,13 +506,10 @@ async def scrape_one_chapter(
         except Exception as _refine_err:
             logger.warning("[Profile] Refinement thất bại: %s", _refine_err)
         finally:
-            # Luôn mark_refined dù AI thành công hay không
-            # → Tránh retry trong các chapter sau
             await pm.mark_refined(domain, chapter_num)
- 
+
     print(f"  ✅ Ch.{chapter_num:>4}: {truncate(title, 45):<45} | {len(content):>5} ký tự", flush=True)
 
-    # Story ID guard
     if not progress.get("story_id_locked"):
         collected: list[str] = progress.get("collected_urls") or []
         if url not in collected:
@@ -568,7 +533,6 @@ async def scrape_one_chapter(
                 logger.warning("[StoryID] thất bại: %s", e)
                 progress["story_id_attempts"] = progress.get("story_id_attempts", 0) + 1
 
-    # Find next URL
     next_url, ai_classify_cache = await _find_next_url_with_fallback(
         soup, clean_html, url, profile, ai_classify_cache, ai_limiter, pm, domain)
 
@@ -628,9 +592,6 @@ async def run_novel_task(
 
     domain = urlparse(start_url).netloc.lower()
 
-    # FIX issue #2: Inject domain watermarks từ profile NGAY KHI KHỞI ĐỘNG.
-    # Đảm bảo watermarks đã học từ phiên trước được áp dụng từ chương đầu tiên,
-    # không cần chờ AI profile build lại.
     if pm.has_profile(domain):
         print(f"  [Profile] 📂 {pm.summary(domain)}", flush=True)
         _inject_domain_watermarks(ads_filter, pm, domain, label="startup")
@@ -644,6 +605,61 @@ async def run_novel_task(
     except Exception as e:
         print(f"  [ERR] Không tìm được điểm bắt đầu: {e}", flush=True)
         return
+
+    # ── CALIBRATION PHASE ─────────────────────────────────────────────────────
+    # Chạy trước main loop nếu chưa calibrate.
+    # Deferred import để tránh circular dependency.
+    if not progress.get("calibration_done"):
+        from core.calibrator import run_calibration_phase, write_calibration_results
+
+        print(
+            f"\n🔬 Bắt đầu calibration ({CALIBRATION_CHAPTERS} chương probe)...",
+            flush=True,
+        )
+
+        try:
+            cal_records = await run_calibration_phase(
+                start_url     = current_url,
+                progress      = progress,
+                progress_path = progress_path,
+                pool          = pool,
+                pw_pool       = pw_pool,
+                pm            = pm,
+                ai_limiter    = ai_limiter,
+                ads_filter    = ads_filter,
+            )
+        except asyncio.CancelledError:
+            await save_progress(progress_path, progress)
+            await pm.close()
+            raise
+
+        if cal_records is None:
+            # Calibration thất bại sau MAX_ROUNDS — dừng task này
+            await pm.close()
+            await asyncio.to_thread(ads_filter.save)
+            return
+
+        # Ghi file và cập nhật progress
+        await write_calibration_results(
+            records       = cal_records,
+            output_dir    = output_dir,
+            progress      = progress,
+            progress_path = progress_path,
+        )
+
+        current_url = progress.get("current_url")
+        if not current_url:
+            print(f"  [Cal] 🏁 Hết truyện ngay sau calibration.", flush=True)
+            await pm.close()
+            await asyncio.to_thread(ads_filter.save)
+            return
+
+        print(
+            f"\n✅ Calibration hoàn thành. "
+            f"Tiếp tục scrape từ ch.{progress.get('chapter_count', 0) + 1}",
+            flush=True,
+        )
+    # ── END CALIBRATION PHASE ─────────────────────────────────────────────────
 
     print(f"\n🚀 {progress.get('story_title') or start_url[:50]}", flush=True)
 

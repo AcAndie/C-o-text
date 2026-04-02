@@ -2,6 +2,10 @@
 """
 ai/prompts.py — Quản lý tập trung tất cả prompt gửi Gemini.
 
+CHANGES (v3):
+  calibration_review(): Prompt mới — AI phân tích issues từ N chương probe
+    và đề xuất CSS selector / profile fixes để retry calibration.
+
 CHANGES (v2):
   build_profile(): Prompt mở rộng — AI giờ trả về 7 field thay vì 3:
     - has_chapter_dropdown, has_rel_next: behavior flags
@@ -165,7 +169,7 @@ If none of the marked lines are ads, return:
 {{"found": false, "keywords": [], "patterns": [], "example_lines": []}}"""
 
 
-# ── Profile refinement (v4 NEW) ──────────────────────────────────────────
+# ── Profile refinement ────────────────────────────────────────────────────────
 
     @staticmethod
     def refine_profile(observations_summary: str) -> str:
@@ -198,4 +202,36 @@ Quy tắc:
 - Nếu current profile đã có selector đang hoạt động tốt (working_content_selector),
   chỉ đề xuất thay thế nếu bạn thấy option tốt hơn rõ ràng (confidence >= 0.9)
 - Trả null cho bất kỳ field nào không đủ confidence, đừng bịa
+"""
+
+    # ── Calibration review ────────────────────────────────────────────────────
+
+    @staticmethod
+    def calibration_review(report: str, n_chapters: int = 10) -> str:
+        return f"""Bạn là chuyên gia phân tích web novel scraper.
+Dưới đây là kết quả thử nghiệm cào {n_chapters} chương đầu của một trang web.
+Phân tích issues và đề xuất cải thiện CSS selectors / cấu hình profile.
+
+{report}
+
+QUY TẮC ĐỀ XUẤT:
+- content_selector: PHẢI match container chứa ít nhất 300 ký tự nội dung truyện
+  (không phải sidebar, header, footer). Ưu tiên #id > .specific-class
+- next_selector: PHẢI match <a> hoặc <button> có href dẫn sang chương tiếp theo
+- title_selector: PHẢI match element chứa tiêu đề CHƯƠNG (không phải tên truyện)
+- has_nav_edges: true nếu content div chứa nút Next/Prev ở đầu/cuối cần strip
+- domain_watermarks: chỉ thêm nếu thấy text cụ thể trong content_preview
+- nav_type: "selector"|"rel_next"|"slug_increment"|"dropdown"|"fanfic" — chỉ set nếu rõ ràng
+- Nếu không có bằng chứng từ issues/preview → trả null, đừng bịa
+
+Trả về JSON (CHỈ JSON, không markdown fence):
+{{
+  "content_selector":  "CSS selector hoặc null",
+  "next_selector":     "CSS selector hoặc null",
+  "title_selector":    "CSS selector hoặc null",
+  "nav_type":          "loại nav hoặc null",
+  "has_nav_edges":     false,
+  "domain_watermarks": [],
+  "notes":             "giải thích ngắn gọn về các thay đổi"
+}}
 """

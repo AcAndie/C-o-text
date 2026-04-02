@@ -103,16 +103,20 @@ STORY_ID_MAX_ATTEMPTS = 3
 # ── Profile observation-based refinement ──────────────────────────────────────
 # Trigger AI refinement sau bao nhiêu chương thành công
 OBS_REFINE_AFTER     = 10
- 
+
 # Cần ít nhất N observations hợp lệ trước khi trigger (tránh refine khi data thưa)
 OBS_MIN_OBSERVATIONS = 8
- 
+
 # Chỉ update profile field nếu AI confident >= ngưỡng này (0.0–1.0)
 OBS_CONFIDENCE_MIN   = 0.8
- 
+
 # Giữ tối đa N observations trong profile (tránh JSON quá lớn)
 OBS_MAX_STORED       = 15
 
+# ── Calibration phase ────────────────────────────────────────────────────────
+CALIBRATION_CHAPTERS    = 10    # Số chương probe mỗi round
+CALIBRATION_MAX_ROUNDS  = 3     # Rounds tối đa trước khi báo lỗi
+CALIBRATION_MIN_CONTENT = 300   # Chars tối thiểu để content hợp lệ
 
 # ── Ads filter ────────────────────────────────────────────────────────────────
 # PERF: Tăng từ 5 → 15 để giảm AI call 3x.

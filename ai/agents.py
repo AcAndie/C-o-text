@@ -2,6 +2,11 @@
 """
 ai/agents.py — Toàn bộ hàm gọi Gemini API.
 
+CHANGES (v3):
+  - ask_ai_calibration_review(): Agent mới — phân tích calibration report
+    (issues từ N chương probe) và trả về suggested profile fixes.
+  - _SCHEMA_CALIBRATION_FIX: JSON schema tương ứng.
+
 CHANGES (v2):
   - _SCHEMA_PROFILE: 8 field mới (nav_type, requires_playwright,
     chapter_url_regex, story_id_pattern, domain_watermarks, ai_notes).
@@ -175,22 +180,16 @@ def _sync_get_nav_hints_and_snippet(html: str, base_url: str) -> tuple[str, str]
 
 # ── JSON Schemas ──────────────────────────────────────────────────────────────
 
-# ENHANCED: Full profile schema với tất cả fields mới
 _SCHEMA_PROFILE = {
     "type": "object",
     "properties": {
-        # Selectors
         "next_selector":      {"type": "string",  "nullable": True},
         "title_selector":     {"type": "string",  "nullable": True},
         "content_selector":   {"type": "string",  "nullable": True},
-        # Navigation
         "nav_type":           {"type": "string",  "nullable": True},
-        # Transport
         "requires_playwright": {"type": "boolean"},
-        # URL patterns
         "chapter_url_regex":  {"type": "string",  "nullable": True},
         "story_id_pattern":   {"type": "string",  "nullable": True},
-        # Content
         "domain_watermarks":  {"type": "array",   "items": {"type": "string"}},
         "ai_notes":           {"type": "string",  "nullable": True},
     },
@@ -251,6 +250,33 @@ _SCHEMA_ADS = {
     "required": ["found"],
 }
 
+_SCHEMA_REFINE = {
+    "type": "object",
+    "properties": {
+        "content_selector":   {"type": "string",  "nullable": True},
+        "content_confidence": {"type": "number"},
+        "title_selector":     {"type": "string",  "nullable": True},
+        "title_confidence":   {"type": "number"},
+        "next_selector":      {"type": "string",  "nullable": True},
+        "next_confidence":    {"type": "number"},
+        "notes":              {"type": "string",  "nullable": True},
+    },
+    "required": ["content_confidence", "title_confidence", "next_confidence"],
+}
+
+_SCHEMA_CALIBRATION_FIX = {
+    "type": "object",
+    "properties": {
+        "content_selector":  {"type": "string",  "nullable": True},
+        "next_selector":     {"type": "string",  "nullable": True},
+        "title_selector":    {"type": "string",  "nullable": True},
+        "nav_type":          {"type": "string",  "nullable": True},
+        "has_nav_edges":     {"type": "boolean"},
+        "domain_watermarks": {"type": "array", "items": {"type": "string"}},
+        "notes":             {"type": "string",  "nullable": True},
+    },
+}
+
 
 # ── Agent functions ───────────────────────────────────────────────────────────
 
@@ -271,7 +297,6 @@ async def ask_ai_build_profile(
     try:
         result = await _generate_structured(prompt, ai_limiter, _SCHEMA_PROFILE)
         if isinstance(result, dict):
-            # Validate regex fields — tránh lưu regex lỗi
             for regex_field in ("chapter_url_regex", "story_id_pattern"):
                 val = result.get(regex_field)
                 if val:
@@ -280,7 +305,6 @@ async def ask_ai_build_profile(
                     except re.error:
                         result[regex_field] = None
 
-            # Normalize domain_watermarks
             wm = result.get("domain_watermarks")
             if not isinstance(wm, list):
                 result["domain_watermarks"] = []
@@ -290,7 +314,6 @@ async def ask_ai_build_profile(
                     if isinstance(kw, str) and kw.strip()
                 ][:5]
 
-            # Normalize requires_playwright
             if not isinstance(result.get("requires_playwright"), bool):
                 result["requires_playwright"] = False
 
@@ -366,7 +389,7 @@ async def ai_classify_and_find(
     html: str,
     base_url: str,
     ai_limiter: AIRateLimiter,
-    domain_context: str | None = None,  # ENHANCED: ai_notes từ profile
+    domain_context: str | None = None,
 ) -> dict | None:
     """
     domain_context: ai_notes từ SiteProfileDict (nếu đã có profile).
@@ -423,20 +446,6 @@ async def ai_detect_ads_content(
         print(f"  [AI] ⚠ ai_detect_ads_content thất bại: {_fmt_err(e)}", flush=True)
     return None
 
-_SCHEMA_REFINE = {
-    "type": "object",
-    "properties": {
-        "content_selector":   {"type": "string",  "nullable": True},
-        "content_confidence": {"type": "number"},
-        "title_selector":     {"type": "string",  "nullable": True},
-        "title_confidence":   {"type": "number"},
-        "next_selector":      {"type": "string",  "nullable": True},
-        "next_confidence":    {"type": "number"},
-        "notes":              {"type": "string",  "nullable": True},
-    },
-    "required": ["content_confidence", "title_confidence", "next_confidence"],
-}
-
 
 async def ask_ai_refine_profile(
     observations_summary: str,
@@ -457,7 +466,6 @@ async def ask_ai_refine_profile(
     try:
         result = await _generate_structured(prompt, ai_limiter, _SCHEMA_REFINE)
         if isinstance(result, dict):
-            # Validate + clamp confidence values
             for conf_key in ("content_confidence", "title_confidence", "next_confidence"):
                 val = result.get(conf_key, 0.0)
                 try:
@@ -465,7 +473,6 @@ async def ask_ai_refine_profile(
                 except (TypeError, ValueError):
                     result[conf_key] = 0.0
 
-            # Empty string → None
             for sel_key in ("content_selector", "title_selector", "next_selector"):
                 if result.get(sel_key) == "":
                     result[sel_key] = None
@@ -475,4 +482,38 @@ async def ask_ai_refine_profile(
         raise
     except Exception as e:
         print(f"  [AI] ⚠ ask_ai_refine_profile thất bại: {_fmt_err(e)}", flush=True)
+    return None
+
+
+async def ask_ai_calibration_review(
+    report: str,
+    ai_limiter: AIRateLimiter,
+) -> dict | None:
+    """
+    Gửi calibration report (issues từ N chương probe) cho AI.
+    AI phân tích và trả về suggested profile fixes.
+
+    Chỉ được gọi sau mỗi round calibration thất bại.
+    Caller: core/calibrator.py → run_calibration_phase().
+    """
+    from config import CALIBRATION_CHAPTERS
+    prompt = PromptTemplates.calibration_review(report, n_chapters=CALIBRATION_CHAPTERS)
+    try:
+        result = await _generate_structured(prompt, ai_limiter, _SCHEMA_CALIBRATION_FIX)
+        if isinstance(result, dict):
+            wm = result.get("domain_watermarks")
+            if not isinstance(wm, list):
+                result["domain_watermarks"] = []
+            else:
+                result["domain_watermarks"] = [
+                    kw.lower().strip() for kw in wm
+                    if isinstance(kw, str) and kw.strip()
+                ]
+            if not isinstance(result.get("has_nav_edges"), bool):
+                result["has_nav_edges"] = False
+            return result
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        print(f"  [AI] ⚠ ask_ai_calibration_review thất bại: {_fmt_err(e)}", flush=True)
     return None

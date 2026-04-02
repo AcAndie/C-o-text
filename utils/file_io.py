@@ -64,6 +64,10 @@ def make_default_progress() -> ProgressDict:
         completed_at_url  = None,
         last_scraped_url  = None,
         last_title        = None,
+        # Calibration phase
+        calibration_done  = False,
+        calibration_round = 1,
+        calibration_urls  = [],
     )
 
 def _sync_load_progress(path: str) -> ProgressDict:

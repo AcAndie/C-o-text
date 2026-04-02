@@ -2,6 +2,11 @@
 """
 core/profile_manager.py — Thread-safe wrapper quản lý site profiles.
 
+CHANGES (v4):
+  merge_calibration_fixes(): Apply kết quả từ ask_ai_calibration_review().
+    Không có confidence threshold — fixes dựa trên evidence cụ thể từ probe.
+    Reset working_content_selector khi content_selector thay đổi.
+
 CHANGES (v3 — observation-based refinement):
   record_observation(): Lưu StructuralObservation vào profile.observations.
     Trim list xuống OBS_MAX_STORED nhưng observation_count là monotonic.
@@ -107,19 +112,6 @@ class ProfileManager:
     def get_observations_summary(self, domain: str) -> str:
         """
         Tổng hợp observations thành text để gửi cho ask_ai_refine_profile().
-
-        Format:
-          Domain: ...
-          Chapters observed: N
-          === CONTENT ELEMENT ===
-            selector "X": K/N chapters
-            DOM <tag#id.class>: K/N chapters
-          === TITLE ELEMENT ===
-            ...
-          === NAV NEXT ===
-            ...
-          === CURRENT PROFILE ===
-            ...
         """
         p         = self._profiles.get(domain, {})
         obs_list  = list(p.get("observations") or [])
@@ -128,7 +120,6 @@ class ProfileManager:
         if total == 0:
             return f"Domain: {domain}\nNo observations."
 
-        # ── Content patterns ──────────────────────────────────────────────────
         content_sel_counts:    Counter = Counter()
         content_struct_counts: Counter = Counter()
 
@@ -148,7 +139,6 @@ class ProfileManager:
                     sig += "." + ".".join(cls[:2])
                 content_struct_counts[sig] += 1
 
-        # ── Title patterns ────────────────────────────────────────────────────
         title_source_counts: Counter = Counter()
         title_struct_counts: Counter = Counter()
 
@@ -168,7 +158,6 @@ class ProfileManager:
                     sig += "." + ".".join(cls[:2])
                 title_struct_counts[sig] += 1
 
-        # ── Nav next patterns ─────────────────────────────────────────────────
         nav_counts: Counter = Counter()
 
         for obs in obs_list:
@@ -183,7 +172,6 @@ class ProfileManager:
             elif tag:
                 nav_counts[tag] += 1
 
-        # ── Build summary text ────────────────────────────────────────────────
         lines: list[str] = [
             f"Domain: {domain}",
             f"Chapters observed: {total}",
@@ -254,18 +242,11 @@ class ProfileManager:
         domain: str,
         obs: StructuralObservation,
     ) -> None:
-        """
-        Lưu một StructuralObservation vào profile.
-
-        - observation_count là monotonic (không giảm khi trim list)
-        - observations list bị trim xuống OBS_MAX_STORED để tránh JSON bloat
-        - Không block: dùng lock ngắn, không I/O ở đây (dirty flag cho close())
-        """
         async with self._lock:
             p    = self._ensure_profile(domain)
             obs_list: list = list(p.get("observations") or [])
-            obs_list.append(dict(obs))           # Convert TypedDict → plain dict
-            p["observations"]     = obs_list[-OBS_MAX_STORED:]    # type: ignore[typeddict-unknown-key]
+            obs_list.append(dict(obs))
+            p["observations"]      = obs_list[-OBS_MAX_STORED:]    # type: ignore[typeddict-unknown-key]
             p["observation_count"] = p.get("observation_count", 0) + 1  # type: ignore[typeddict-unknown-key]
             self._dirty = True
 
@@ -275,18 +256,6 @@ class ProfileManager:
         refined: dict,
         threshold: float = 0.8,
     ) -> int:
-        """
-        Apply kết quả từ ask_ai_refine_profile() vào SiteProfileDict.
-
-        Chỉ update field nếu:
-          1. AI trả về selector không rỗng
-          2. confidence >= threshold (mặc định OBS_CONFIDENCE_MIN)
-
-        Không override selector đang hoạt động (working_content_selector)
-        trừ khi AI confident hơn 0.9.
-
-        Returns: số fields thực sự được update.
-        """
         updated = 0
         async with self._lock:
             p = self._ensure_profile(domain)
@@ -309,8 +278,6 @@ class ProfileManager:
                     )
                     continue
 
-                # Đặc biệt: working_content_selector chỉ update nếu
-                # new selector khác VÀ confidence > 0.9
                 if sel_key == "content_selector":
                     working = p.get("working_content_selector")
                     if working and working != new_val and conf < 0.9:
@@ -339,11 +306,79 @@ class ProfileManager:
 
         return updated
 
+    async def merge_calibration_fixes(self, domain: str, fixes: dict) -> int:
+        """
+        Apply kết quả từ ask_ai_calibration_review() vào SiteProfileDict.
+
+        Khác merge_refined_result(): KHÔNG có confidence threshold —
+        fixes dựa trên evidence cụ thể từ probe, không phải inference.
+
+        Reset working_content_selector khi content_selector thay đổi
+        để round tiếp theo re-learn từ selector mới.
+
+        Returns: số fields thực sự được update.
+        """
+        updated = 0
+        async with self._lock:
+            p = self._ensure_profile(domain)
+
+            # Selectors — apply trực tiếp nếu có giá trị
+            for field in ("content_selector", "next_selector", "title_selector"):
+                val = fixes.get(field)
+                if val and isinstance(val, str) and val.strip():
+                    if p.get(field) != val:  # type: ignore[literal-required]
+                        old = p.get(field)   # type: ignore[literal-required]
+                        p[field] = val       # type: ignore[literal-required]
+                        updated += 1
+                        logger.info(
+                            "[ProfileManager] cal-fix %s %s: %r → %r",
+                            domain, field, old, val,
+                        )
+
+            # Nếu content_selector thay đổi → reset working_content_selector
+            # để round sau re-learn từ selector mới
+            if fixes.get("content_selector"):
+                new_cs = fixes["content_selector"]
+                if new_cs != p.get("working_content_selector"):
+                    p["working_content_selector"] = None  # type: ignore[typeddict-unknown-key]
+                    logger.debug(
+                        "[ProfileManager] %s: reset working_content_selector", domain
+                    )
+
+            # nav_type
+            nav_type = fixes.get("nav_type")
+            if nav_type and isinstance(nav_type, str):
+                p["nav_type"] = nav_type  # type: ignore[typeddict-unknown-key]
+                updated += 1
+
+            # has_nav_edges
+            if fixes.get("has_nav_edges") is True and not p.get("has_nav_edges"):
+                p["has_nav_edges"] = True
+                updated += 1
+
+            # domain_watermarks — merge, không replace
+            new_wm = fixes.get("domain_watermarks")
+            if isinstance(new_wm, list) and new_wm:
+                existing: list[str] = list(p.get("domain_watermarks") or [])
+                merged: set[str] = {
+                    kw.lower().strip()
+                    for kw in (existing + new_wm)
+                    if isinstance(kw, str) and kw.strip()
+                }
+                p["domain_watermarks"] = sorted(merged)  # type: ignore[typeddict-unknown-key]
+                updated += 1
+
+            if updated > 0:
+                notes = fixes.get("notes")
+                if notes and isinstance(notes, str):
+                    existing_notes = p.get("site_notes") or ""
+                    p["site_notes"] = (existing_notes + f"\n[cal-fix] {notes}").strip()
+                p["last_updated"] = _now_iso()
+                self._dirty = True
+
+        return updated
+
     async def mark_refined(self, domain: str, chapter_count: int) -> None:
-        """
-        Đánh dấu domain đã qua AI refinement.
-        Sau đó should_refine() sẽ luôn trả False cho domain này.
-        """
         async with self._lock:
             p = self._ensure_profile(domain)
             p["profile_refined"]    = True  # type: ignore[typeddict-unknown-key]
@@ -411,10 +446,6 @@ class ProfileManager:
             self._dirty = True
 
     async def merge_ai_result(self, domain: str, ai_data: dict) -> None:
-        """
-        Merge kết quả từ ask_ai_build_profile() vào SiteProfileDict.
-        (Giữ nguyên từ v2, không thay đổi)
-        """
         async with self._lock:
             p = self._ensure_profile(domain)
 
