@@ -11,6 +11,7 @@ Learning Phase (5 calls):
 Utility:
   find_first_chapter  — Tìm URL Chapter 1 từ trang Index
   classify_and_find   — Phân loại trang + tìm next URL (emergency fallback)
+  verify_ads          — Xác nhận dòng text có phải ads/watermark không
 """
 from __future__ import annotations
 
@@ -106,12 +107,10 @@ Trả về JSON (CHỈ JSON thuần):
 }}
 
 Hướng dẫn math_format:
-  "latex"       — nội dung dùng $...$ hoặc $$...$$ (inline/block LaTeX)
-  "mathjax"     — nội dung dùng \\(...\\) hoặc \\[...\\] hoặc có class MathJax
+  "latex"         — nội dung dùng $...$ hoặc $$...$$ (inline/block LaTeX)
+  "mathjax"       — nội dung dùng \\(...\\) hoặc \\[...\\] hoặc có class MathJax
   "plain_unicode" — công thức viết bằng ký tự unicode thường (x², √, ∑, v.v.)
-  null          — không có công thức toán
-
-Kiểm tra kỹ: tìm <table>, <math>, class/id liên quan đến math, ký tự unicode ngoài ASCII.
+  null            — không có công thức toán
 """
 
     @staticmethod
@@ -146,15 +145,6 @@ Trả về JSON (CHỈ JSON thuần):
   "image_alt_text": false,
   "notes": "Ghi chú về formatting đặc biệt khác. null nếu không có."
 }}
-
-Hướng dẫn convert_to:
-  system_box  → "blockquote" (thêm > prefix) | "code_block" (nếu là code/data thuần)
-  hidden_text → "spoiler_tag" (||text||) | "strikethrough" (~~text~~) | "skip" (bỏ qua)
-  author_note → "blockquote_note" (> *Author's Note:*) | "italic_note" (*[AN: ...]*) | "skip"
-
-Chú ý: found=false nếu không thấy bằng chứng rõ ràng trong HTML. Không suy đoán.
-bold_italic: true nếu truyện dùng <strong>/<em> cho emphasis quan trọng (không phải UI buttons)
-hr_dividers: true nếu truyện dùng <hr> để ngăn cách section
 """
 
     @staticmethod
@@ -223,6 +213,49 @@ Trả về JSON (CHỈ JSON thuần):
   "page_type": "chapter",
   "next_url": "URL chương tiếp theo hoặc null",
   "first_chapter_url": null
+}}
+"""
+
+    @staticmethod
+    def verify_ads(candidates: list[str], domain: str) -> str:
+        """
+        Xác nhận danh sách dòng text có phải ads/watermark thật không.
+        Gọi sau mỗi phiên scrape để validate những gì đã bị lọc.
+        """
+        numbered = "\n".join(
+            f"  {i + 1:>2}. {line!r}"
+            for i, line in enumerate(candidates)
+        )
+        return f"""Bạn là chuyên gia lọc nội dung web novel. Nhiệm vụ: xác nhận dòng nào là ADS/WATERMARK thực sự.
+
+Domain scrape: {domain}
+
+Các dòng đã bị lọc ra khỏi nội dung truyện (xuất hiện nhiều lần):
+{numbered}
+
+TIÊU CHÍ ADS/WATERMARK (xác nhận là TRUE):
+  ✓ Thông báo stolen content, piracy notice
+  ✓ "Read at [site]", "Visit [site]", "Find this novel at..."
+  ✓ Quảng cáo Patreon / Ko-fi / donation kêu gọi donate
+  ✓ Attribution dịch thuật lặp đi lặp lại dạng boilerplate (không phải dialogue nhân vật)
+  ✓ Navigation label lặp lại (Prev Chapter / Next Chapter / Table of Contents)
+  ✓ Copyright notice/watermark chèn vào content
+
+KHÔNG PHẢI ADS (xác nhận là FALSE — false positive):
+  ✗ Dialogue nhân vật tình cờ đề cập tên website
+  ✗ Nội dung truyện đề cập dịch thuật/ngôn ngữ trong context câu chuyện
+  ✗ Mô tả sách/tài liệu trong fictional world
+  ✗ Bất kỳ câu nào rõ ràng là văn học hư cấu
+
+Trả về JSON (CHỈ JSON thuần, không markdown fence):
+{{
+  "confirmed_ads": [
+    "Chép NGUYÊN VĂN những dòng xác nhận là ads thật. Mảng rỗng [] nếu không có."
+  ],
+  "false_positives": [
+    "Chép NGUYÊN VĂN những dòng là false positive (không phải ads). Mảng rỗng [] nếu không có."
+  ],
+  "notes": "Ghi chú ngắn nếu có pattern đặc biệt. null nếu không cần."
 }}
 """
 

@@ -1,8 +1,9 @@
 """
 learning/profile_manager.py — Quản lý SiteProfile per-domain.
 
-Thread-safe qua asyncio.Lock (chia sẻ từ AppState).
-Một ProfileManager instance tồn tại suốt phiên và được truyền vào tất cả tasks.
+Thay đổi v2:
+  - save_profile(): ghi disk NGAY LẬP TỨC (không chờ flush) → an toàn khi Ctrl+C
+  - add_ads_to_profile(): thêm confirmed keywords vào profile + ghi disk ngay
 """
 from __future__ import annotations
 
@@ -19,10 +20,7 @@ logger = logging.getLogger(__name__)
 class ProfileManager:
     """
     Wrapper thread-safe cho dict[domain → SiteProfile].
-
     Khởi tạo 1 lần trong AppState với profiles load từ disk.
-    Tất cả write operation dùng self._lock.
-    Read operations (get, has) không cần lock (Python GIL đủ cho dict read).
     """
 
     def __init__(self, profiles: dict[str, SiteProfile], lock: asyncio.Lock) -> None:
@@ -30,7 +28,7 @@ class ProfileManager:
         self._lock     = lock
         self._dirty    = False
 
-    # ── Read (no lock) ────────────────────────────────────────────────────────
+    # ── Read (no lock needed) ─────────────────────────────────────────────────
 
     def get(self, domain: str) -> SiteProfile:
         return self._profiles.get(domain, {})  # type: ignore[return-value]
@@ -39,7 +37,6 @@ class ProfileManager:
         return domain in self._profiles
 
     def is_profile_fresh(self, domain: str) -> bool:
-        """True nếu profile mới hơn PROFILE_MAX_AGE_DAYS."""
         from config import PROFILE_MAX_AGE_DAYS
         p = self._profiles.get(domain)
         if not p or not p.get("last_learned"):
@@ -64,31 +61,52 @@ class ProfileManager:
             f"math={p.get('formatting_rules', {}).get('math_support', False)}"
         )
 
-    # ── Write (with lock) ─────────────────────────────────────────────────────
+    # ── Write (immediate disk flush) ──────────────────────────────────────────
 
     async def save_profile(self, domain: str, profile: SiteProfile) -> None:
-        """Lưu profile mới hoàn toàn cho domain."""
+        """
+        Lưu profile mới và persist NGAY XUỐNG DISK.
+        Không dùng lazy dirty flag — đảm bảo an toàn khi Ctrl+C.
+        """
         async with self._lock:
             self._profiles[domain] = profile
             self._dirty = True
+            await save_profiles(self._profiles)
+        logger.debug("[ProfileManager] Profile saved: %s", domain)
+
+    async def add_ads_to_profile(self, domain: str, keywords: list[str]) -> None:
+        """
+        Thêm confirmed ads keywords vào profile.ads_keywords_learned + ghi disk ngay.
+        Gọi sau khi AI verify xác nhận một keyword là ads thật.
+        """
+        if not keywords:
+            return
+        async with self._lock:
+            p = self._profiles.setdefault(domain, {})  # type: ignore[misc]
+            existing = set(p.get("ads_keywords_learned") or [])
+            new_kws  = {kw.lower().strip() for kw in keywords if kw.strip()}
+            updated  = sorted(existing | new_kws)
+            p["ads_keywords_learned"] = updated  # type: ignore[typeddict-unknown-key]
+            self._dirty = True
+            await save_profiles(self._profiles)
+        added = len(new_kws - set(p.get("ads_keywords_learned", [])))
+        logger.debug("[ProfileManager] +%d ads keywords cho %s", len(new_kws), domain)
 
     async def update_field(self, domain: str, key: str, value) -> None:
-        """Cập nhật một field trong profile."""
+        """Cập nhật một field trong profile (lazy — chờ flush)."""
         async with self._lock:
             p = self._profiles.setdefault(domain, {})  # type: ignore[misc]
             p[key]      = value  # type: ignore[literal-required]
             self._dirty = True
 
     async def flush(self) -> None:
-        """Lưu tất cả profiles xuống disk nếu có thay đổi."""
+        """Ghi profiles xuống disk nếu có thay đổi chưa lưu (safety net)."""
         if not self._dirty:
             return
         try:
             async with self._lock:
                 await save_profiles(self._profiles)
                 self._dirty = False
-            logger.debug("[ProfileManager] Profiles saved to disk.")
+            logger.debug("[ProfileManager] Profiles flushed to disk.")
         except Exception as e:
-            logger.error("[ProfileManager] Lưu thất bại: %s", e)
-
-
+            logger.error("[ProfileManager] Flush thất bại: %s", e)

@@ -11,6 +11,7 @@ Learning Phase agents (5 calls):
 Utility agents:
   ai_find_first_chapter()        — Tìm Chapter 1 từ index page
   ai_classify_and_find()         — Emergency fallback khi không tìm được next URL
+  ai_verify_ads()                — Xác nhận dòng bị filter có phải ads thật không
 """
 from __future__ import annotations
 
@@ -46,10 +47,7 @@ def _fmt(e: Exception) -> str:
 
 
 async def _call(prompt: str, limiter: AIRateLimiter, schema: dict[str, Any] | None = None) -> str | None:
-    """
-    Gọi Gemini với retry. Trả về text response hoặc None nếu thất bại.
-    Nếu schema cung cấp → dùng structured output (application/json).
-    """
+    """Gọi Gemini với retry. Trả về text response hoặc None nếu thất bại."""
     await limiter.acquire()
     for attempt in range(_MAX_RETRIES):
         try:
@@ -72,7 +70,6 @@ async def _call(prompt: str, limiter: AIRateLimiter, schema: dict[str, Any] | No
         except Exception as e:
             is_last = attempt >= _MAX_RETRIES - 1
             err_str = _fmt(e).lower()
-            # Schema errors → fallback mà không dùng structured mode
             if schema and ("response_schema" in err_str or "mime_type" in err_str):
                 try:
                     resp = await ai_client.aio.models.generate_content(
@@ -109,9 +106,7 @@ def _parse(text: str | None) -> dict | list | None:
 # ── HTML helpers ──────────────────────────────────────────────────────────────
 
 def _snippet(html: str, max_len: int = 10000) -> str:
-    """Trả về HTML snippet đã rút gọn để gửi AI."""
     soup = BeautifulSoup(html, "html.parser")
-    # Xóa script/style để tiết kiệm tokens
     for t in soup.find_all(["script", "style", "noscript"]):
         t.decompose()
     return str(soup)[:max_len]
@@ -256,6 +251,16 @@ _S_CLASSIFY = {
     "required": ["page_type"],
 }
 
+_S_VERIFY_ADS = {
+    "type": "object",
+    "properties": {
+        "confirmed_ads" : {"type": "array", "items": {"type": "string"}},
+        "false_positives": {"type": "array", "items": {"type": "string"}},
+        "notes"         : {"type": "string", "nullable": True},
+    },
+    "required": ["confirmed_ads"],
+}
+
 
 # ── Learning Phase Agents ─────────────────────────────────────────────────────
 
@@ -268,14 +273,12 @@ async def ai_build_initial_profile(
         text = await _call(prompt, limiter, _S_INITIAL_PROFILE)
         result = _parse(text)
         if isinstance(result, dict):
-            # Validate regex
             pat = result.get("chapter_url_pattern")
             if pat:
                 try:
                     re.compile(pat)
                 except re.error:
                     result["chapter_url_pattern"] = None
-            # Normalize remove_selectors
             rm = result.get("remove_selectors")
             if not isinstance(rm, list):
                 result["remove_selectors"] = []
@@ -315,7 +318,6 @@ async def ai_analyze_special_content(
         text   = await _call(prompt, limiter, _S_SPECIAL)
         result = _parse(text)
         if isinstance(result, dict):
-            # Normalize
             if not isinstance(result.get("math_evidence"), list):
                 result["math_evidence"] = []
             if not isinstance(result.get("special_symbols"), list):
@@ -337,18 +339,16 @@ async def ai_analyze_formatting(
         text   = await _call(prompt, limiter, _S_FORMATTING)
         result = _parse(text)
         if isinstance(result, dict):
-            # Ensure boolean defaults
             result.setdefault("bold_italic",    True)
             result.setdefault("hr_dividers",    True)
             result.setdefault("image_alt_text", False)
-            # Normalize special element rules
             for key in ("system_box", "hidden_text", "author_note"):
                 rule = result.get(key)
                 if not isinstance(rule, dict):
                     result[key] = {"found": False, "selectors": []}
                 else:
-                    rule.setdefault("found",      False)
-                    rule.setdefault("selectors",  [])
+                    rule.setdefault("found",     False)
+                    rule.setdefault("selectors", [])
                     if not isinstance(rule["selectors"], list):
                         rule["selectors"] = []
             return result
@@ -368,7 +368,6 @@ async def ai_final_crosscheck(
         text   = await _call(prompt, limiter, _S_CROSSCHECK)
         result = _parse(text)
         if isinstance(result, dict):
-            # Clamp confidence
             try:
                 result["confidence"] = max(0.0, min(1.0, float(result.get("confidence", 0.7))))
             except (TypeError, ValueError):
@@ -377,7 +376,6 @@ async def ai_final_crosscheck(
                 result["ads_keywords"] = []
             if not isinstance(result.get("remove_selectors_final"), list):
                 result["remove_selectors_final"] = []
-            # Normalize keywords: lowercase, strip
             result["ads_keywords"] = [
                 kw.lower().strip() for kw in result["ads_keywords"]
                 if isinstance(kw, str) and kw.strip()
@@ -414,7 +412,7 @@ async def ai_find_first_chapter(
     except Exception as e:
         print(f"  [AI find_first] ⚠ Thất bại: {_fmt(e)}", flush=True)
 
-    return links[0]  # Fallback: link đầu tiên trong list
+    return links[0]
 
 
 async def ai_classify_and_find(
@@ -434,3 +432,47 @@ async def ai_classify_and_find(
     except Exception as e:
         print(f"  [AI classify] ⚠ Thất bại: {_fmt(e)}", flush=True)
     return None
+
+
+async def ai_verify_ads(
+    candidates: list[str],
+    domain: str,
+    limiter: AIRateLimiter,
+) -> list[str]:
+    """
+    Xác nhận danh sách dòng bị filter có phải ads/watermark thật không.
+
+    Args:
+        candidates: Top N dòng chưa rõ, lấy từ ads_filter.get_unknown_candidates()
+        domain:     Domain đang scrape (dùng cho context trong prompt)
+        limiter:    AI rate limiter
+
+    Returns:
+        List các dòng được xác nhận là ads thật (subset của candidates).
+        Trả về [] nếu không có gì được xác nhận hoặc AI call thất bại.
+    """
+    if not candidates:
+        return []
+
+    prompt = Prompts.verify_ads(candidates, domain)
+    try:
+        text   = await _call(prompt, limiter, _S_VERIFY_ADS)
+        result = _parse(text)
+        if isinstance(result, dict):
+            confirmed = result.get("confirmed_ads") or []
+            fp        = result.get("false_positives") or []
+            if fp:
+                print(
+                    f"  [Ads] ℹ️  {len(fp)} false positive: "
+                    + ", ".join(repr(x[:40]) for x in fp[:3]),
+                    flush=True,
+                )
+            return [
+                line for line in confirmed
+                if isinstance(line, str) and line.strip()
+            ]
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        print(f"  [AI verify_ads] ⚠ Thất bại: {_fmt(e)}", flush=True)
+    return []
