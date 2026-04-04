@@ -1,11 +1,10 @@
 """
 main.py — Entry point duy nhất của Cào Text.
 
-Flow:
-  1. Đọc links.txt
-  2. Khởi tạo AppState (pools, rate limiter, profile manager)
-  3. Stagger tasks → asyncio.gather
-  4. Graceful shutdown khi Ctrl+C
+Thay đổi v2:
+  RELEARN-1: Parse `!relearn <domain>` trong links.txt.
+             Xóa profile domain đó trước khi chạy → force re-learn.
+  ISSUE-1:   Gọi write_session_header() khi bắt đầu để issues.md có header rõ ràng.
 """
 import sys
 import io
@@ -23,11 +22,12 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
 
 from config import INIT_STAGGER, AI_MAX_RPM, OUTPUT_DIR, PROGRESS_DIR
-from ai.client             import AIRateLimiter
-from core.session_pool     import DomainSessionPool, PlaywrightPool
-from core.scraper          import run_novel_task
+from ai.client                import AIRateLimiter
+from core.session_pool        import DomainSessionPool, PlaywrightPool
+from core.scraper             import run_novel_task
 from learning.profile_manager import ProfileManager
-from utils.file_io         import load_profiles, ensure_dirs
+from utils.file_io            import load_profiles, save_profiles, ensure_dirs
+from utils.issue_reporter     import write_session_header
 
 
 # ── AppState ──────────────────────────────────────────────────────────────────
@@ -85,17 +85,83 @@ def _output_dir(url: str) -> str:
 
 
 def _progress_path(url: str) -> str:
-    """Progress file path — hash dựa trên story-level output dir để resume
-    đúng progress dù user cung cấp chapter URL khác nhau của cùng một truyện."""
     out_dir   = _output_dir(url)
     domain    = urlparse(url).netloc.replace(".", "_")
-    # Hash out_dir (story-level) thay vì full URL để tránh tạo nhiều progress
-    # files cho cùng một truyện khi start từ các chapter khác nhau.
     dir_hash  = hashlib.md5(out_dir.encode()).hexdigest()[:8]
     base_slug = out_dir.split(os.sep)[-1]
     return os.path.join(PROGRESS_DIR, f"{domain}_{base_slug}_{dir_hash}.json")
 
 
+# ── links.txt parser ──────────────────────────────────────────────────────────
+
+def _parse_links_file(path: str) -> tuple[list[str], list[str]]:
+    """
+    Parse links.txt. Trả về (urls, relearn_domains).
+
+    Hỗ trợ:
+      - Dòng bình thường: URL hợp lệ
+      - `# comment`: bỏ qua
+      - `!relearn <domain>`: xóa profile domain này → force re-learn
+
+    Ví dụ links.txt:
+      https://royalroad.com/fiction/55418/...
+      !relearn royalroad.com
+      https://novelfire.net/...
+    """
+    urls            : list[str] = []
+    relearn_domains : list[str] = []
+
+    with open(path, "r", encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.lower().startswith("!relearn"):
+                # Format: !relearn domain.com
+                parts = line.split(None, 1)
+                if len(parts) == 2:
+                    domain = parts[1].strip().lower()
+                    if domain:
+                        relearn_domains.append(domain)
+                        print(f"  [Config] 🔄 Force re-learn: {domain}", flush=True)
+                else:
+                    print(f"  [Config] ⚠ Bỏ qua dòng !relearn không hợp lệ: {line!r}", flush=True)
+                continue
+            if _valid_url(line):
+                urls.append(line)
+
+    return urls, relearn_domains
+
+
+async def _apply_relearn(
+    relearn_domains : list[str],
+    profiles        : dict,
+    profiles_lock   : asyncio.Lock,
+) -> int:
+    """
+    Xóa các domain trong relearn_domains khỏi profiles dict + ghi disk.
+    Returns số domain đã xóa.
+    """
+    if not relearn_domains:
+        return 0
+
+    removed = 0
+    async with profiles_lock:
+        for domain in relearn_domains:
+            # Tìm key khớp (có thể có www. prefix hoặc không)
+            to_delete = [
+                k for k in profiles
+                if k == domain or k == f"www.{domain}" or f"www.{domain}" == k
+            ]
+            for key in to_delete:
+                del profiles[key]
+                print(f"  [Config] 🗑  Profile '{key}' đã xóa → sẽ re-learn", flush=True)
+                removed += 1
+
+        if removed > 0:
+            await save_profiles(profiles)
+
+    return removed
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -108,17 +174,20 @@ async def main() -> None:
         print(f"[ERR] Không tìm thấy {links_file}")
         return
 
-    with open(links_file, "r", encoding="utf-8") as f:
-        raw_urls = [
-            line.strip()
-            for line in f
-            if line.strip() and not line.strip().startswith("#")
-        ]
+    urls, relearn_domains = _parse_links_file(links_file)
 
-    urls    = [u for u in raw_urls if _valid_url(u)]
-    skipped = len(raw_urls) - len(urls)
-    if skipped:
-        print(f"[WARN] Bỏ qua {skipped} URL không hợp lệ")
+    skipped_invalid = 0
+    # Đếm dòng không hợp lệ (không phải URL, không phải !relearn, không phải comment)
+    with open(links_file, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or line.lower().startswith("!relearn"):
+                continue
+            if not _valid_url(line):
+                skipped_invalid += 1
+
+    if skipped_invalid:
+        print(f"[WARN] Bỏ qua {skipped_invalid} URL không hợp lệ")
     if not urls:
         print("[ERR] Không có URL hợp lệ nào trong links.txt")
         return
@@ -130,7 +199,16 @@ async def main() -> None:
     profiles = await load_profiles()
     pm       = ProfileManager(profiles, app.profiles_lock)
 
+    # RELEARN-1: Xóa profiles của domain được yêu cầu re-learn
+    if relearn_domains:
+        removed = await _apply_relearn(relearn_domains, profiles, app.profiles_lock)
+        if removed == 0:
+            print(f"  [Config] ℹ️  Không tìm thấy profile nào để xóa cho {relearn_domains}", flush=True)
+
     print(f"📋 {len(profiles)} domain profile đã load\n")
+
+    # ISSUE-1: Ghi session header vào issues.md
+    write_session_header(len(urls))
 
     async def _task(url: str, idx: int) -> None:
         await asyncio.sleep(idx * INIT_STAGGER)

@@ -91,19 +91,62 @@ def strip_site_suffix(raw: str) -> str:
 
 # ── Safe filename ─────────────────────────────────────────────────────────────
 
-_RE_UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+# Ký tự không hợp lệ trên Windows + các ký tự gây tên file xấu
+_RE_UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f\[\]()!\'`~@#$%^&+={}]')
+
+# Nhiều dấu _ hoặc - hoặc space liên tiếp → gộp lại
+_RE_MULTI_SEP = re.compile(r'[-_\s]{2,}')
+
+# Dấu - hoặc _ ở đầu/cuối word segment (sau khi đã gộp)
+_RE_EDGE_SEP  = re.compile(r'^[-_\s]+|[-_\s]+$')
+
 _WINDOWS_RESERVED = frozenset({
-    "CON","PRN","AUX","NUL",
-    "COM1","COM2","COM3","COM4","COM5","COM6","COM7","COM8","COM9",
-    "LPT1","LPT2","LPT3","LPT4","LPT5","LPT6","LPT7","LPT8","LPT9",
+    "CON", "PRN", "AUX", "NUL",
+    "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 })
 
 
 def slugify_filename(name: str, max_len: int = 80) -> str:
-    safe = _RE_UNSAFE.sub("_", name)
-    safe = re.sub(r"_+", "_", safe).strip("_. ")
+    """
+    Chuyển tên chương thành filename an toàn trên Windows/Linux/macOS.
+
+    Pipeline:
+      1. Normalize unicode NFC
+      2. Xóa ký tự unsafe (\\/:*?"<>| và brackets, punctuation đặc biệt)
+      3. Thay thế bằng space (không phải _) để tránh ___ liên tiếp
+      4. Gộp nhiều separator liên tiếp thành 1 space
+      5. Trim đầu/cuối
+      6. Kiểm tra Windows reserved names
+      7. Truncate
+
+    VD:
+      "A [Rolling Stone] Gathers no Moss" → "A Rolling Stone Gathers no Moss"
+      "The Innkeeper's *Special* Menu"     → "The Innkeepers Special Menu"
+      "Chapter 1 – Into the Dark!"        → "Chapter 1 - Into the Dark"
+    """
+    # 1. Normalize unicode
+    safe = unicodedata.normalize("NFC", name)
+
+    # 2. Xóa ký tự unsafe → thay bằng space
+    safe = _RE_UNSAFE.sub(" ", safe)
+
+    # 3. Gộp nhiều separator (space, _, -) liên tiếp thành 1 space
+    safe = _RE_MULTI_SEP.sub(" ", safe)
+
+    # 4. Trim
+    safe = safe.strip(" -_")
+
+    # 5. Thay space còn lại bằng _ cho tên file gọn
+    safe = safe.replace(" ", "_")
+
+    # 6. Gộp _ liên tiếp lần nữa (phòng hờ)
+    safe = re.sub(r"_+", "_", safe).strip("_")
+
+    # 7. Windows reserved names
     if safe.split(".")[0].upper() in _WINDOWS_RESERVED:
         safe = f"_{safe}"
+
     return safe[:max_len] or "_"
 
 

@@ -1,18 +1,13 @@
 """
-utils/ads_filter.py — v6: Deferred ads confirmation + retroactive file cleanup.
+utils/ads_filter.py — v7: Smart ads notification + _notified_ads set.
 
-Thay đổi so với v5:
-  NEW-1: scan_edges_for_suspects() — quét edges (đầu/cuối) mỗi chương,
-         track frequency các dòng LẠ (chưa có trong keywords).
-         Không xóa gì cả trong bước này.
-  NEW-2: get_new_frequency_suspects() — trả về dòng lạ xuất hiện
-         trong ≥ N chapter files khác nhau.
-  NEW-3: post_process_directory() — sau khi AI confirm, xóa retroactively
-         từ tất cả .md files trong output_dir. Atomic write.
-  REMOVE: get_candidates_by_frequency() auto_add tier không còn bypass AI.
-          Mọi candidate mới đều phải qua AI trước khi xóa.
+Thay đổi so với v6:
+  NEW: _notified_ads set — track những ads đã từng thông báo.
+       filter() chỉ in ra console khi gặp ads MỚI chưa từng thấy trong session.
+       Ads cũ đã biết → lọc âm thầm, không in gì.
+       Output mới: "[Ads] 🆕 NEW: 'Read at novelfire'" thay vì "[Ads] -234c"
 
-Pipeline ads mới:
+Pipeline ads (không thay đổi):
   [Scraping]
     filter()                  → xóa confirmed keywords ngay (seeds + profile)
     scan_edges_for_suspects() → log dòng lạ edges, KHÔNG xóa
@@ -53,37 +48,25 @@ _SUSPECT_MIN_FILES  = 5    # Xuất hiện trong ≥ N chapter files mới là s
 
 # ── Global keywords ───────────────────────────────────────────────────────────
 _SEED_GLOBAL_KEYWORDS: list[str] = [
-    # Stolen content notices
     "stolen content", "stolen from", "this content is stolen",
     "this chapter is stolen", "has been taken without permission",
-
-    # Author/translation attribution boilerplate
     "please support the author", "support the original",
     "translation by", "mtl by", "machine translated",
     "if you find any errors",
-
-    # Read-at / piracy watermarks
     "read latest chapters at", "read advance chapters at",
     "chapters are updated daily",
     "read at", "read on", "find this novel at",
     "visit to read", "originally published at",
-
-    # Donation / monetization CTAs
     "patreon.com/", "ko-fi.com/",
-
-    # Social share CTAs
     "share to your friends",
     "share this chapter",
     "share this novel",
     "share this story",
     "share on facebook", "share on twitter", "share on reddit",
-
-    # Navigation labels lặp lại
     "previous chapter", "next chapter",
     "table of contents",
 ]
 
-# ── Per-domain seed keywords ──────────────────────────────────────────────────
 _SEED_DOMAIN_KEYWORDS: dict[str, list[str]] = {
     "royalroad.com": [
         "read at royalroad", "read on royalroad",
@@ -110,7 +93,6 @@ _SEED_DOMAIN_KEYWORDS: dict[str, list[str]] = {
     "fanfiction.net"     : ["story text placeholder"],
 }
 
-# ── Regex patterns (global) ───────────────────────────────────────────────────
 _SEED_PATTERNS_RAW: list[str] = [
     r"^Tip:\s+You can use",
     r"<script[\s>]", r"</script>",
@@ -135,13 +117,12 @@ _GENERIC_KEYWORD_BLACKLIST: frozenset[str] = frozenset({
     "realm", "cultivation", "dungeon", "quest", "skill", "class",
 })
 
-# Heuristic: dòng nào khớp pattern này gần như chắc chắn là nội dung truyện
 _STORY_LINE_RE = re.compile(
-    r'^["""''„]'                          # bắt đầu bằng dấu ngoặc kép (dialogue)
-    r'|["""''„]$'                         # kết thúc bằng dấu ngoặc kép
+    r'^["""''„]'
+    r'|["""''„]$'
     r'|^(The |A |An |He |She |I |It |'
     r'They |We |You |But |And |Or |'
-    r'His |Her |My |Our |Their )',         # narrative starters phổ biến
+    r'His |Her |My |Our |Their )',
     re.IGNORECASE,
 )
 
@@ -150,16 +131,12 @@ class AdsFilter:
     """
     Lọc ads/watermark bằng keyword và regex.
 
-    Hai tầng hoạt động:
-      [Real-time]  filter()                  — xóa confirmed keywords
-      [Deferred]   scan_edges_for_suspects() — track dòng lạ edges
-      [Post-sess]  get_new_frequency_suspects() + ai_verify + post_process_directory()
+    v7: Thêm _notified_ads — chỉ print khi gặp ads MỚI trong session.
     """
 
     def __init__(self, domain: str | None = None) -> None:
         self._domain = domain
 
-        # Global confirmed keywords/patterns
         self._global_keywords: set[str] = {kw.lower() for kw in _SEED_GLOBAL_KEYWORDS}
         self._global_patterns: list[re.Pattern[str]] = []
         for raw in _SEED_PATTERNS_RAW:
@@ -168,7 +145,6 @@ class AdsFilter:
             except re.error:
                 pass
 
-        # Domain-specific confirmed keywords/patterns
         self._domain_keywords: set[str] = set()
         self._domain_patterns: list[re.Pattern[str]] = []
         if domain:
@@ -177,20 +153,19 @@ class AdsFilter:
                     for kw in kws:
                         self._domain_keywords.add(kw.lower())
 
-        # Session log: tracks lines removed by filter() (confirmed keywords)
-        # Used for auditing and learning new variants of known keywords
         self._session_log: list[dict] = []
-
-        # Frequency counter: tracks edge-line appearances across chapters
-        # key = line text → {"files": set[filepath], "urls": set[url]}
-        # Dùng để phát hiện watermarks MỚI chưa có trong keywords
         self._freq_counter: dict[str, dict] = {}
+
+        # ── v7 NEW: track ads đã thông báo trong session này ──────────────
+        # Key = normalized line (lowercase stripped)
+        # Chỉ print khi key chưa có trong set này
+        self._notified_ads: set[str] = set()
 
     # ── Factory ───────────────────────────────────────────────────────────
 
     @classmethod
     def load(cls, domain: str | None = None) -> "AdsFilter":
-        """Load từ file + seed keywords. Tự migrate format cũ."""
+        """Load từ file + seed keywords."""
         instance = cls(domain)
         if not os.path.exists(ADS_DB_FILE):
             return instance
@@ -217,17 +192,18 @@ class AdsFilter:
             logger.warning("[AdsFilter] Load thất bại: %s", e)
         return instance
 
-    # ── Core filtering (real-time, confirmed keywords only) ───────────────
+    # ── Core filtering (real-time) ────────────────────────────────────────
 
     def filter(self, text: str, chapter_url: str = "") -> str:
         """
-        Xóa các dòng khớp với CONFIRMED keywords/patterns (seeds + profile).
-        Log các dòng bị xóa vào session_log để audit.
+        Xóa các dòng khớp với CONFIRMED keywords/patterns.
 
-        KHÔNG xử lý 'dòng lạ mới' — việc đó do scan_edges_for_suspects().
+        v7: Chỉ print thông báo khi gặp ads MỚI (chưa có trong _notified_ads).
+            Ads đã biết → lọc âm thầm.
         """
         lines = text.splitlines()
         kept: list[str] = []
+        new_ads_found: list[str] = []
 
         for ln in lines:
             stripped = ln.strip()
@@ -236,8 +212,24 @@ class AdsFilter:
                     "line"       : stripped,
                     "chapter_url": chapter_url,
                 })
+                # ── v7: chỉ thông báo nếu là ads MỚI ─────────────────────
+                key = stripped.lower()
+                if key not in self._notified_ads:
+                    self._notified_ads.add(key)
+                    new_ads_found.append(stripped)
             else:
                 kept.append(ln)
+
+        # In thông báo gộp cho các ads MỚI trong chương này
+        if new_ads_found:
+            for ads_line in new_ads_found[:3]:   # tối đa 3 dòng để không spam
+                short = ads_line[:60] + "…" if len(ads_line) > 60 else ads_line
+                print(f"  [Ads] 🆕 NEW: {short!r}", flush=True)
+            if len(new_ads_found) > 3:
+                print(
+                    f"  [Ads] 🆕 +{len(new_ads_found) - 3} more new ads detected",
+                    flush=True,
+                )
 
         # Gộp blank lines thừa
         result: list[str] = []
@@ -260,18 +252,6 @@ class AdsFilter:
         chapter_url   : str = "",
         chapter_file  : str = "",
     ) -> None:
-        """
-        Quét N dòng đầu và N dòng cuối của chapter content.
-        Track frequency các dòng ngắn/lạ chưa có trong confirmed keywords.
-        KHÔNG xóa bất cứ thứ gì — chỉ ghi nhận để phân tích cuối session.
-
-        Gọi SAU filter() và SAU write_markdown() để scan đúng nội dung đã lưu.
-
-        Args:
-            text:         Chapter content đã qua filter() (confirmed ads đã bị xóa)
-            chapter_url:  URL chương (để audit)
-            chapter_file: Đường dẫn file .md đã save (để post-process sau này)
-        """
         lines = [ln for ln in text.splitlines() if ln.strip()]
         n     = len(lines)
         if n == 0:
@@ -283,44 +263,26 @@ class AdsFilter:
         seen_this_chapter: set[str] = set()
         for ln in edge_lines:
             stripped = ln.strip()
-
-            # Chỉ quan tâm đến dòng có độ dài hợp lý
             if not (_MIN_LINE_LEN <= len(stripped) <= _SUSPECT_MAX_LEN):
                 continue
-
-            # Bỏ qua nếu đã xử lý dòng này trong chapter hiện tại
-            # (tránh đếm 2 lần nếu cùng dòng xuất hiện ở cả đầu lẫn cuối)
             if stripped in seen_this_chapter:
                 continue
             seen_this_chapter.add(stripped)
-
-            # Bỏ qua nếu đã là confirmed keyword
-            lower = stripped.lower()
             if self._is_ads(stripped):
                 continue
-
-            # Bỏ qua nếu có dấu hiệu nội dung truyện
             if self._looks_like_story_content(stripped):
                 continue
-
             self._update_freq(stripped, chapter_url, chapter_file)
 
     def _looks_like_story_content(self, line: str) -> bool:
-        """
-        Heuristic kiểm tra xem dòng có phải nội dung truyện không.
-        Conservative: chỉ loại những dòng RÕ RÀNG là story.
-        """
-        # Dòng dài thường là nội dung story
         words = line.split()
         if len(words) > 10:
             return True
-        # Dialogue / narrative starters phổ biến
         if _STORY_LINE_RE.match(line):
             return True
         return False
 
     def _update_freq(self, line: str, chapter_url: str, chapter_file: str) -> None:
-        """Cập nhật frequency counter. Đếm theo UNIQUE chapter files."""
         if line not in self._freq_counter:
             self._freq_counter[line] = {"files": set(), "urls": set()}
         entry = self._freq_counter[line]
@@ -331,36 +293,23 @@ class AdsFilter:
 
     def get_new_frequency_suspects(
         self,
-        min_files: int = _SUSPECT_MIN_FILES,
+        min_files  : int = _SUSPECT_MIN_FILES,
         max_results: int = 20,
     ) -> list[str]:
-        """
-        Trả về các dòng xuất hiện trong ≥ min_files chapter files khác nhau
-        mà KHÔNG khớp với bất kỳ confirmed keyword nào.
-
-        Đây là watermarks MỚI chưa học được — cần AI xác nhận trước khi xóa.
-
-        Returns:
-            List[str] — dòng text, sorted by file count descending.
-        """
         suspects: list[tuple[str, int]] = []
-
         for line, info in self._freq_counter.items():
             file_count = len(info["files"])
             if file_count < min_files:
                 continue
-            # Double-check: không phải confirmed keyword
             lower = line.lower()
             if (any(kw in lower for kw in self._global_keywords) or
                     any(kw in lower for kw in self._domain_keywords)):
                 continue
             suspects.append((line, file_count))
-
         suspects.sort(key=lambda x: -x[1])
         return [line for line, _ in suspects[:max_results]]
 
     def get_suspect_file_paths(self, line: str) -> list[str]:
-        """Trả về danh sách file paths chứa dòng suspect này."""
         info = self._freq_counter.get(line)
         if not info:
             return []
@@ -373,20 +322,6 @@ class AdsFilter:
         confirmed_lines: list[str],
         output_dir     : str,
     ) -> int:
-        """
-        Xóa retroactively các dòng đã được AI xác nhận là ads khỏi tất cả
-        .md files trong output_dir.
-
-        Dùng exact stripped-line matching (case-insensitive) để an toàn.
-        Atomic write: ghi .tmp rồi os.replace() — tránh corrupt file.
-
-        Args:
-            confirmed_lines: Danh sách dòng text đã được AI confirm là ads.
-            output_dir:      Thư mục chứa chapter .md files.
-
-        Returns:
-            Tổng số dòng đã xóa trên toàn bộ files.
-        """
         if not confirmed_lines or not os.path.isdir(output_dir):
             return 0
 
@@ -395,7 +330,6 @@ class AdsFilter:
             return 0
 
         total_removed = 0
-
         for fname in sorted(os.listdir(output_dir)):
             if not fname.endswith(".md"):
                 continue
@@ -423,16 +357,14 @@ class AdsFilter:
                         "[AdsFilter] post_process: -%d lines từ %s",
                         file_removed, fname,
                     )
-
             except Exception as e:
                 logger.warning("[AdsFilter] post_process_directory %s: %s", fname, e)
 
         return total_removed
 
-    # ── Session log API (từ session_log — confirmed keyword hits) ─────────
+    # ── Session log API ───────────────────────────────────────────────────
 
     def get_session_summary(self) -> dict[str, dict]:
-        """Aggregate session log: line → {count, urls}."""
         summary: dict[str, dict] = {}
         for entry in self._session_log:
             line = entry["line"]
@@ -449,10 +381,6 @@ class AdsFilter:
         min_count  : int = 2,
         max_results: int = 20,
     ) -> list[str]:
-        """
-        Trả về top N dòng bị filter() xóa mà CHƯA được cover bởi keyword rõ ràng.
-        (Các dòng này bị bắt bởi regex pattern, không phải simple keyword.)
-        """
         summary    = self.get_session_summary()
         candidates : list[str] = []
         for line, info in sorted(summary.items(), key=lambda x: -x[1]["count"]):
@@ -476,18 +404,6 @@ class AdsFilter:
         min_count     : int = 3,
         max_results   : int = 20,
     ) -> tuple[list[str], list[str]]:
-        """
-        Phân loại session_log candidates theo tần suất:
-          auto_add  (count ≥ auto_threshold) → đủ tự tin, không cần AI
-          ai_verify (min_count ≤ count < auto_threshold) → cần AI
-
-        NOTE: Cả 2 tầng này đều là từ session_log (confirmed keyword hits).
-              Chúng đã bị xóa khỏi files trong real-time.
-              Mục đích: học keyword mới cho profile.
-
-        Để phát hiện watermarks MỚI chưa có trong keywords, dùng
-        get_new_frequency_suspects() (từ _freq_counter / edge scan).
-        """
         summary   = self.get_session_summary()
         auto_add  : list[str] = []
         ai_verify : list[str] = []
@@ -518,7 +434,6 @@ class AdsFilter:
     # ── Inject từ profile ─────────────────────────────────────────────────
 
     def inject_from_profile(self, profile: "SiteProfile") -> int:
-        """Inject ads_keywords_learned từ profile → domain bucket."""
         added = 0
         for kw in profile.get("ads_keywords_learned") or []:
             if not isinstance(kw, str):
@@ -532,11 +447,7 @@ class AdsFilter:
         return added
 
     def add_keywords(self, keywords: list[str], to_domain: bool = True) -> int:
-        """
-        Thêm keywords mới vào domain bucket (default) hoặc global.
-        Skip nếu trong blacklist, quá ngắn, hoặc đã tồn tại.
-        """
-        added    = 0
+        added      = 0
         use_domain = to_domain and bool(self._domain)
 
         for kw in keywords:
@@ -546,10 +457,8 @@ class AdsFilter:
             if not kw_lower:
                 continue
             if kw_lower in _GENERIC_KEYWORD_BLACKLIST:
-                logger.debug("[AdsFilter] Skip blacklist: %r", kw_lower)
                 continue
             if len(kw_lower) < 8:
-                logger.debug("[AdsFilter] Skip too short: %r", kw_lower)
                 continue
             if kw_lower in self._global_keywords or kw_lower in self._domain_keywords:
                 continue
@@ -562,7 +471,6 @@ class AdsFilter:
         return added
 
     def apply_verified(self, confirmed_lines: list[str]) -> int:
-        """Thêm AI-confirmed lines vào domain keyword bucket."""
         return self.add_keywords(confirmed_lines, to_domain=True)
 
     # ── Core detection ────────────────────────────────────────────────────
@@ -589,10 +497,7 @@ class AdsFilter:
     # ── Save/Load DB ──────────────────────────────────────────────────────
 
     def save(self) -> None:
-        """Lưu tất cả keywords/patterns xuống file (merge, không overwrite domain khác).
-        Thread-safe: dùng module-level lock để tránh race condition khi nhiều task
-        cùng ghi vào ADS_DB_FILE.
-        """
+        """Lưu keywords/patterns xuống file. Thread-safe."""
         with _ADS_DB_WRITE_LOCK:
             existing: dict = {"global": {"keywords": [], "patterns": []}, "domains": {}}
             if os.path.exists(ADS_DB_FILE):
@@ -643,43 +548,6 @@ class AdsFilter:
                 except Exception:
                     pass
 
-
-        existing.setdefault("global",  {"keywords": [], "patterns": []})
-        existing.setdefault("domains", {})
-
-        g_kws = set(existing["global"].get("keywords", []))
-        g_kws.update(self._global_keywords)
-        existing["global"]["keywords"] = sorted(g_kws)
-
-        g_pats = set(existing["global"].get("patterns", []))
-        g_pats.update(p.pattern for p in self._global_patterns)
-        existing["global"]["patterns"] = sorted(g_pats)
-
-        if self._domain and (self._domain_keywords or self._domain_patterns):
-            if self._domain not in existing["domains"]:
-                existing["domains"][self._domain] = {"keywords": [], "patterns": []}
-            d = existing["domains"][self._domain]
-            d_kws = set(d.get("keywords", []))
-            d_kws.update(self._domain_keywords)
-            d["keywords"] = sorted(d_kws)
-            d_pats = set(d.get("patterns", []))
-            d_pats.update(p.pattern for p in self._domain_patterns)
-            d["patterns"] = sorted(d_pats)
-
-        os.makedirs(os.path.dirname(ADS_DB_FILE) or ".", exist_ok=True)
-        tmp = ADS_DB_FILE + ".tmp"
-        try:
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(existing, f, ensure_ascii=False, indent=2)
-            os.replace(tmp, ADS_DB_FILE)
-        except Exception as e:
-            logger.error("[AdsFilter] Lưu thất bại: %s", e)
-            try:
-                if os.path.exists(tmp):
-                    os.remove(tmp)
-            except Exception:
-                pass
-
     # ── Persistent review file ────────────────────────────────────────────
 
     def save_pending_review(
@@ -687,7 +555,6 @@ class AdsFilter:
         domain_slug     : str,
         verified_results: dict[str, bool] | None = None,
     ) -> str | None:
-        """Merge session log vào file review bền vững."""
         summary = self.get_session_summary()
         if not summary:
             return None
@@ -755,13 +622,14 @@ class AdsFilter:
         total_kw  = len(self._global_keywords) + len(self._domain_keywords)
         total_pat = len(self._global_patterns)  + len(self._domain_patterns)
         freq_cnt  = len(self._freq_counter)
+        notified  = len(self._notified_ads)
         if self._domain:
             return (
                 f"{total_kw}kw "
                 f"({len(self._global_keywords)}g+{len(self._domain_keywords)}local)"
-                f"/{total_pat}pat | {freq_cnt} tracked"
+                f"/{total_pat}pat | {freq_cnt} tracked | {notified} notified"
             )
-        return f"{total_kw}kw/{total_pat}pat | {freq_cnt} tracked"
+        return f"{total_kw}kw/{total_pat}pat | {freq_cnt} tracked | {notified} notified"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
