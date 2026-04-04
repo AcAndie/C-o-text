@@ -70,10 +70,12 @@ def prepare_soup(
     Args:
         html:              Raw HTML string
         remove_selectors:  CSS selectors từ profile để xóa (VD: [".ads", ".donate-btn"])
-        content_selector:  CSS selector của content area — các element BÊN TRONG hoặc
-                           LÀ TỔ TIÊN của vùng này sẽ KHÔNG bị xóa bởi remove_selectors.
-                           Ngăn trường hợp remove_selectors như "div#content_parent" xóa
-                           wrapper bao chứa content (fanfiction.net bug).
+        content_selector:  CSS selector của content area. Hai trường hợp được bảo vệ:
+                       (a) el chính là content_el — không xóa chính nó.
+                       (b) el là TỔ TIÊN của content_el — xóa el sẽ phá hủy content.
+                       Các element BÊN TRONG content_el (con cháu) vẫn bị xóa bình thường,
+                       cho phép remove_selectors loại bỏ nav/ads nằm trong content area.
+
 
     Returns:
         Cleaned BeautifulSoup object
@@ -115,9 +117,8 @@ def prepare_soup(
             try:
                 for el in list(soup.select(sel)):
                     if content_el is not None and (
-                        el is content_el                  # (a) chính content
-                        or content_el in el.parents       # (b) el chứa content (redundant nhưng rõ ràng)
-                        or el in content_el.parents       # (c) FIX: el là tổ tiên → KHÔNG xóa
+                        el is content_el             # (a) el chính là content → không xóa
+                        or el in content_el.parents  # (b) el là TỔ TIÊN của content → xóa sẽ kéo theo content
                     ):
                         continue
                     el.decompose()

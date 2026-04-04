@@ -69,6 +69,39 @@ def _dtag(url_or_domain: str) -> str:
     name = netloc.replace("www.", "").split(".")[0]
     return f"{name[:12]:<12}"
 
+# Thêm mới — helper tách story title từ page title
+_CHAPTER_TITLE_RE = re.compile(
+    r"^\s*(?:chapter|chap|ch|episode|ep|part|chuong|phan)\b[\s.\-:]*\d*",
+    re.IGNORECASE | re.UNICODE,
+)
+_KNOWN_SITES = frozenset({
+    "royalroad", "royal road", "scribblehub", "wattpad", "fanfiction",
+    "fanfiction.net", "archiveofourown", "ao3", "webnovel", "novelfire",
+    "novelupdates", "lightnovelreader", "novelfull", "wuxiaworld",
+})
+
+def _extract_story_title(raw_page_title: str) -> str | None:
+    """
+    Tách story title từ <title> tag dạng:
+      "Chapter 1 | Story Name | Site"  → "Story Name"
+      "Story Name - Chapter 1"          → "Story Name"
+      "Story Name"                      → "Story Name"
+    """
+    parts = re.split(r"\s*[\|–—]\s*", raw_page_title)
+    candidates = []
+    for part in parts:
+        part = part.strip()
+        if len(part) < 3:
+            continue
+        if _CHAPTER_TITLE_RE.match(part):      # bỏ phần "Chapter N..."
+            continue
+        if part.lower() in _KNOWN_SITES:       # bỏ tên site
+            continue
+        candidates.append(part)
+    if not candidates:
+        return None
+    # Ưu tiên phần dài nhất (thường là story title đầy đủ nhất)
+    return max(candidates, key=len)
 
 # ── Nav-edge strip ────────────────────────────────────────────────────────────
 
@@ -269,7 +302,11 @@ async def scrape_one_chapter(
     if not content or len(content.strip()) < 100:
         ch_hint = progress.get("chapter_count", 0) + 1
         print(f"  [{tag}] ⏭  #{ch_hint:>4}: 0 chars — {truncate(url, 52)}", flush=True)
-        return await _find_next_and_save(url, progress, progress_path, pool, pw_pool, profile, ai_limiter)
+        return await _find_next_and_save(
+            url, progress, progress_path, pool, pw_pool, profile, ai_limiter,
+            soup=soup, html=html,
+        )
+
 
     stripped = _strip_nav_edges(content)
     if stripped and len(stripped.strip()) >= 100:
@@ -293,11 +330,9 @@ async def scrape_one_chapter(
         title_tag = soup.find("title")
         if title_tag:
             raw = title_tag.get_text(strip=True)
-            m   = re.search(r"[\|–—]", raw)
-            if m:
-                story_candidate = normalize_title(raw[: m.start()].strip())
-                if len(story_candidate) > 3:
-                    progress["story_title"] = story_candidate
+            story_candidate = _extract_story_title(raw)
+            if story_candidate:
+                progress["story_title"] = normalize_title(story_candidate)
 
     # ── Save chapter file ─────────────────────────────────────────────────
     chapter_num = progress.get("chapter_count", 0) + 1
@@ -361,12 +396,18 @@ async def scrape_one_chapter(
 
 async def _find_next_and_save(
     url, progress, progress_path, pool, pw_pool, profile, ai_limiter,
+    *,
+    soup: BeautifulSoup | None = None,
+    html: str | None = None,
 ) -> str | None:
-    try:
-        _, html = await fetch_page(url, pool, pw_pool)
-    except Exception:
-        return None
-    soup     = BeautifulSoup(html, "html.parser")
+    # Chỉ fetch nếu chưa có sẵn (Site A: url đã visited, chưa fetch)
+    if soup is None or html is None:
+        try:
+            _, html = await fetch_page(url, pool, pw_pool)
+        except Exception:
+            return None
+        soup = BeautifulSoup(html, "html.parser")
+
     next_url = find_next_url(soup, url, profile)
     if not next_url:
         try:
@@ -382,6 +423,7 @@ async def _find_next_and_save(
         progress["current_url"]      = next_url
         await save_progress(progress_path, progress)
     return next_url
+
 
 
 # ── Ads finalization (end of session) ─────────────────────────────────────────

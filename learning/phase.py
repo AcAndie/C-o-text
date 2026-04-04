@@ -196,8 +196,12 @@ def _apply_ai1_to_profile(base: SiteProfile, ai1: dict) -> SiteProfile:
         "nav_type", "chapter_url_pattern", "requires_playwright",
     ):
         val = ai1.get(field)
-        if val is not None:
-            result[field] = val  # type: ignore[literal-required]
+        if val is None:
+            continue
+        # Bỏ qua empty string cho các selector/pattern fields
+        if isinstance(val, str) and not val.strip():
+            continue
+        result[field] = val
     rm = ai1.get("remove_selectors")
     if isinstance(rm, list):
         result["remove_selectors"] = rm  # type: ignore[typeddict-unknown-key]
@@ -231,15 +235,22 @@ async def _run_ai_calls(
         ai2 = await ai_validate_selectors(htmls[1], urls[1], acc, ai_limiter)
         if ai2:
             changed: list[str] = []
-            if not ai2.get("content_valid") and ai2.get("content_fix"):
-                acc["content_selector"] = ai2["content_fix"]
-                changed.append(f"content={ai2['content_fix']!r}")
-            if not ai2.get("next_valid") and ai2.get("next_fix"):
-                acc["next_selector"] = ai2["next_fix"]
-                changed.append(f"next={ai2['next_fix']!r}")
-            if not ai2.get("title_valid") and ai2.get("title_fix"):
-                acc["title_selector"] = ai2["title_fix"]
-                changed.append(f"title={ai2['title_fix']!r}")
+            if not ai2.get("content_valid"):
+                fix = ai2.get("content_fix", "").strip()
+                if fix:
+                    acc["content_selector"] = fix
+                    changed.append(f"content={fix!r}")
+            if not ai2.get("next_valid"):
+                fix = ai2.get("next_fix", "").strip()
+                if fix:
+                    acc["next_selector"] = fix
+                    changed.append(f"next={fix!r}")
+            if not ai2.get("title_valid"):
+                fix = ai2.get("title_fix", "").strip()
+                if fix:
+                    acc["title_selector"] = fix
+                    changed.append(f"title={fix!r}")
+
             for sel in (ai2.get("remove_add") or []):
                 if sel and sel not in acc["remove_selectors"]:
                     acc["remove_selectors"].append(sel)
@@ -320,7 +331,7 @@ async def _run_ai_calls(
                 ("title_selector",   "title_selector_final"),
             ):
                 val = ai5.get(key)
-                if val:
+                if val and isinstance(val, str) and val.strip():
                     if acc.get(field) != val:
                         print(f"     → {field} refined: {val!r}", flush=True)
                     acc[field] = val

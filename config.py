@@ -106,8 +106,10 @@ FALLBACK_CONTENT_SELECTORS: list[str] = [
 
 # ── Regex compile sẵn ────────────────────────────────────────────────────────
 RE_CHAP_URL = re.compile(
-    r"(chapter|chuong|chap|/c|/ch|episode|ep|part)[_-]?\d+"
-    r"|/s/\d+/\d+",
+    r"(?:chapter|chuong|chap)[_-]?\d+"        # chapter-5, chap_3, chuong2
+    r"|/ch?[/_-]\d+"                           # /c/123, /c_123, /ch/5, /ch-5
+    r"|(?:episode|ep|part)[_-]?\d+"            # episode-3, ep_5, part-2
+    r"|/s/\d+/\d+",                            # fanfiction.net /s/123/5/
     re.IGNORECASE,
 )
 
@@ -117,8 +119,10 @@ RE_NEXT_BTN = re.compile(
 )
 
 RE_CHAP_HREF = re.compile(
-    r"/(chapter|chuong|chap|c|ep|episode|part)[_-]?\d+"
-    r"|/s/\d+/\d+/",
+    r"/(?:chapter|chuong|chap)[_-]?\d+"       # /chapter-5
+    r"|/ch?[/_-]\d+"                           # /c/123, /ch/5
+    r"|/(?:episode|ep|part)[_-]?\d+"          # /episode-3
+    r"|/s/\d+/\d+/",                           # fanfiction.net
     re.IGNORECASE,
 )
 

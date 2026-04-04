@@ -31,6 +31,8 @@ import json
 import logging
 import os
 import re
+import threading
+
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -43,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 _MIN_LINE_LEN   = 15
 _ADS_REVIEW_DIR = os.path.join(os.path.dirname(ADS_DB_FILE), "ads_review")
-
+_ADS_DB_WRITE_LOCK = threading.Lock()
 # Suspect edge scan config
 _SUSPECT_SCAN_EDGES = 8    # Quét N dòng đầu và N dòng cuối mỗi chapter
 _SUSPECT_MAX_LEN    = 250  # Watermarks hiếm khi dài hơn thế này
@@ -587,19 +589,60 @@ class AdsFilter:
     # ── Save/Load DB ──────────────────────────────────────────────────────
 
     def save(self) -> None:
-        """Lưu tất cả keywords/patterns xuống file (merge, không overwrite domain khác)."""
-        existing: dict = {"global": {"keywords": [], "patterns": []}, "domains": {}}
-        if os.path.exists(ADS_DB_FILE):
+        """Lưu tất cả keywords/patterns xuống file (merge, không overwrite domain khác).
+        Thread-safe: dùng module-level lock để tránh race condition khi nhiều task
+        cùng ghi vào ADS_DB_FILE.
+        """
+        with _ADS_DB_WRITE_LOCK:
+            existing: dict = {"global": {"keywords": [], "patterns": []}, "domains": {}}
+            if os.path.exists(ADS_DB_FILE):
+                try:
+                    with open(ADS_DB_FILE, "r", encoding="utf-8") as f:
+                        raw = json.load(f)
+                    if "global" in raw:
+                        existing = raw
+                    else:
+                        existing["global"]["keywords"] = raw.get("keywords", [])
+                        existing["global"]["patterns"] = raw.get("patterns", [])
+                except Exception:
+                    pass
+
+            existing.setdefault("global",  {"keywords": [], "patterns": []})
+            existing.setdefault("domains", {})
+
+            g_kws = set(existing["global"].get("keywords", []))
+            g_kws.update(self._global_keywords)
+            existing["global"]["keywords"] = sorted(g_kws)
+
+            g_pats = set(existing["global"].get("patterns", []))
+            g_pats.update(p.pattern for p in self._global_patterns)
+            existing["global"]["patterns"] = sorted(g_pats)
+
+            if self._domain and (self._domain_keywords or self._domain_patterns):
+                if self._domain not in existing["domains"]:
+                    existing["domains"][self._domain] = {"keywords": [], "patterns": []}
+                d = existing["domains"][self._domain]
+                d_kws = set(d.get("keywords", []))
+                d_kws.update(self._domain_keywords)
+                d["keywords"] = sorted(d_kws)
+                d_pats = set(d.get("patterns", []))
+                d_pats.update(p.pattern for p in self._domain_patterns)
+                d["patterns"] = sorted(d_pats)
+
+            os.makedirs(os.path.dirname(ADS_DB_FILE) or ".", exist_ok=True)
+            tmp = ADS_DB_FILE + ".tmp"
             try:
-                with open(ADS_DB_FILE, "r", encoding="utf-8") as f:
-                    raw = json.load(f)
-                if "global" in raw:
-                    existing = raw
-                else:
-                    existing["global"]["keywords"] = raw.get("keywords", [])
-                    existing["global"]["patterns"] = raw.get("patterns", [])
-            except Exception:
-                pass
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(existing, f, ensure_ascii=False, indent=2)
+                os.replace(tmp, ADS_DB_FILE)
+            except Exception as e:
+                logger.error("[AdsFilter] Lưu thất bại: %s", e)
+                try:
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
+                except Exception:
+                    pass
+
 
         existing.setdefault("global",  {"keywords": [], "patterns": []})
         existing.setdefault("domains", {})

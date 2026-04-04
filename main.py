@@ -85,12 +85,17 @@ def _output_dir(url: str) -> str:
 
 
 def _progress_path(url: str) -> str:
-    """Progress file path — hash URL 8 chars để tránh collision."""
+    """Progress file path — hash dựa trên story-level output dir để resume
+    đúng progress dù user cung cấp chapter URL khác nhau của cùng một truyện."""
     out_dir   = _output_dir(url)
     domain    = urlparse(url).netloc.replace(".", "_")
-    url_hash  = hashlib.md5(url.encode()).hexdigest()[:8]
+    # Hash out_dir (story-level) thay vì full URL để tránh tạo nhiều progress
+    # files cho cùng một truyện khi start từ các chapter khác nhau.
+    dir_hash  = hashlib.md5(out_dir.encode()).hexdigest()[:8]
     base_slug = out_dir.split(os.sep)[-1]
-    return os.path.join(PROGRESS_DIR, f"{domain}_{base_slug}_{url_hash}.json")
+    return os.path.join(PROGRESS_DIR, f"{domain}_{base_slug}_{dir_hash}.json")
+
+
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

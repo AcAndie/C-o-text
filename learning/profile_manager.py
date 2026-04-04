@@ -99,12 +99,6 @@ class ProfileManager:
         if added > 0:
             logger.debug("[ProfileManager] +%d ads keywords cho %s", added, domain)
 
-    async def update_field(self, domain: str, key: str, value) -> None:
-        """Cập nhật một field trong profile (lazy — chờ flush)."""
-        async with self._lock:
-            p = self._profiles.setdefault(domain, {})  # type: ignore[misc]
-            p[key]      = value  # type: ignore[literal-required]
-            self._dirty = True
 
     async def flush(self) -> None:
         """Ghi profiles xuống disk nếu có thay đổi chưa lưu (safety net)."""
