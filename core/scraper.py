@@ -1,19 +1,26 @@
 """
-core/scraper.py — v13: Tiered ads detection + periodic auto-check.
+core/scraper.py — v14: Deferred ads confirmation + retroactive file cleanup.
 
-Thay đổi so với v12:
-  ADS-1: _ADS_AUTO_THRESHOLD tăng từ 5 → 10 (tín hiệu mạnh hơn)
-  ADS-2: _ADS_AI_MIN_COUNT = 3 (bỏ count 1–2, quá noisy)
-  ADS-3: _ADS_PERIODIC_INTERVAL = 50 — mỗi 50 chương auto-add tier ≥10
-          mà không cần gọi AI (tránh rate limit mid-session)
-  ADS-4: AI verify chỉ chạy cuối session cho tier 3–9
-  FIX-1: Giữ lại html_filter ancestor-protection (từ v12)
-  FIX-2: Giữ lại content_selector-aware remove (từ v12)
+Thay đổi so với v13:
+  ADS-NEW-1: Bỏ _periodic_ads_check() và _ADS_PERIODIC_INTERVAL.
+             Không còn auto-add mid-session nữa.
+  ADS-NEW-2: Sau write_markdown(), gọi ads_filter.scan_edges_for_suspects()
+             để track frequency dòng lạ ở edges — KHÔNG xóa gì cả.
+  ADS-NEW-3: _finalize_ads() nhận thêm output_dir.
+             Sau AI confirm → post_process_directory() xóa retroactively
+             chỉ các dòng MỚI (từ freq_counter, chưa từng bị xóa real-time).
+  ADS-NEW-4: auto-add tier (≥10) vẫn giữ cho session_log candidates
+             (những dòng này đã bị xóa real-time bởi confirmed keywords,
+             auto-add chỉ để học keyword mới cho profile, không cần clean files).
 
-Logic phân tầng:
-  count ≥ 10 → auto-add (không cần AI) — watermark cố định, không bao giờ là nội dung
-  count 3–9  → AI verify cuối session  — ambiguous, cần AI phân biệt
-  count 1–2  → bỏ qua                 — gần như chắc chắn là nội dung story
+Pipeline ads per session:
+  [Real-time]  filter()                     xóa confirmed keywords
+  [Real-time]  scan_edges_for_suspects()    track dòng lạ, KHÔNG xóa
+  [End-sess]   get_candidates_by_frequency  session_log → học keyword mới
+  [End-sess]   get_new_frequency_suspects   freq_counter → watermarks MỚI
+  [End-sess]   ai_verify_ads               AI xác nhận new suspects
+  [End-sess]   post_process_directory      xóa new suspects từ files
+  [End-sess]   add_ads_to_profile          lưu profile
 """
 from __future__ import annotations
 
@@ -46,10 +53,10 @@ from ai.agents            import ai_classify_and_find, ai_find_first_chapter
 
 logger = logging.getLogger(__name__)
 
-# ── Ads tiers ─────────────────────────────────────────────────────────────────
-_ADS_AUTO_THRESHOLD  = 10   # ≥10 lần/session → auto-add, không cần AI
-_ADS_AI_MIN_COUNT    = 3    # 3–9 lần → AI verify cuối session
-_ADS_PERIODIC_INTERVAL = 50 # Kiểm tra auto-add mỗi N chương
+# ── Ads finalization tiers ────────────────────────────────────────────────────
+_ADS_AUTO_THRESHOLD = 10  # session_log: ≥10 lần → auto-learn keyword (đã bị xóa real-time)
+_ADS_AI_MIN_COUNT   = 3   # session_log: 3–9 lần → AI verify để học keyword
+_ADS_FREQ_MIN_FILES = 5   # freq_counter: ≥5 files → new suspect cần AI confirm + clean files
 
 
 # ── Domain tag helper ─────────────────────────────────────────────────────────
@@ -268,12 +275,14 @@ async def scrape_one_chapter(
     if stripped and len(stripped.strip()) >= 100:
         content = stripped
 
+    # ── [1] Xóa confirmed ads (real-time) ────────────────────────────────
     before_len = len(content)
     content    = ads_filter.filter(content, chapter_url=url)
     removed    = before_len - len(content)
     if removed > 100:
-        print(f"  [{tag}] [Ads] -{removed:,}c", flush=True)
+        print(f"  [{tag}] [Ads] -{removed:,}c (confirmed keywords)", flush=True)
 
+    # ── Fingerprint dedup ─────────────────────────────────────────────────
     fp = make_fingerprint(content)
     if fp in fingerprints:
         print(f"  [{tag}] ♻  Loop nội dung — dừng", flush=True)
@@ -290,11 +299,23 @@ async def scrape_one_chapter(
                 if len(story_candidate) > 3:
                     progress["story_title"] = story_candidate
 
+    # ── Save chapter file ─────────────────────────────────────────────────
     chapter_num = progress.get("chapter_count", 0) + 1
     filename    = f"{chapter_num:04d}_{slugify_filename(title, max_len=60)}.md"
     filepath    = os.path.join(output_dir, filename)
     await write_markdown(filepath, f"# {title}\n\n{content}\n")
 
+    # ── [2] Scan edges cho watermarks MỚI (sau khi save) ─────────────────
+    # File đã được lưu với confirmed ads đã xóa.
+    # Scan để detect dòng lạ xuất hiện lặp lại — KHÔNG xóa, chỉ track.
+    # Nếu AI confirm cuối session → post_process_directory() sẽ clean files.
+    ads_filter.scan_edges_for_suspects(
+        content,
+        chapter_url  = url,
+        chapter_file = filepath,
+    )
+
+    # ── Update progress ───────────────────────────────────────────────────
     progress["chapter_count"]    = chapter_num
     progress["last_title"]       = title
     progress["last_scraped_url"] = url
@@ -308,6 +329,7 @@ async def scrape_one_chapter(
         flush=True,
     )
 
+    # ── Find next URL ─────────────────────────────────────────────────────
     next_url = find_next_url(soup, url, profile)
     if not next_url:
         try:
@@ -362,44 +384,6 @@ async def _find_next_and_save(
     return next_url
 
 
-# ── Periodic ads check (no AI, auto-tier only) ────────────────────────────────
-
-async def _periodic_ads_check(
-    ads_filter : AdsFilter,
-    domain     : str,
-    pm         : ProfileManager,
-    tag        : str,
-    chapter_num: int,
-) -> None:
-    """
-    Định kỳ auto-add watermarks tier ≥ _ADS_AUTO_THRESHOLD mà không dùng AI.
-
-    Chạy mỗi _ADS_PERIODIC_INTERVAL chương để bắt watermarks sớm —
-    không chờ đến cuối session tránh Ctrl+C làm mất kết quả.
-
-    Không gọi AI ở đây vì:
-    1. Tránh rate limit trong khi đang scrape chính
-    2. Tier ≥10 đã đủ tự tin để auto-add
-    3. AI verify cho tier 3–9 vẫn chạy ở cuối session
-    """
-    auto_candidates, _ = ads_filter.get_candidates_by_frequency(
-        auto_threshold = _ADS_AUTO_THRESHOLD,
-        min_count      = _ADS_AUTO_THRESHOLD,   # chỉ lấy tier ≥10
-        max_results    = 15,
-    )
-    if not auto_candidates:
-        return
-
-    added = ads_filter.apply_verified(auto_candidates)
-    if added > 0:
-        print(
-            f"  [{tag}] [Ads] 🔒 Ch.{chapter_num} định kỳ: "
-            f"+{added} auto (≥{_ADS_AUTO_THRESHOLD}×) | {ads_filter.stats}",
-            flush=True,
-        )
-        await pm.add_ads_to_profile(domain, auto_candidates)
-
-
 # ── Ads finalization (end of session) ─────────────────────────────────────────
 
 async def _finalize_ads(
@@ -407,32 +391,34 @@ async def _finalize_ads(
     domain     : str,
     ai_limiter : AIRateLimiter,
     pm         : ProfileManager,
+    output_dir : str,
     cancelled  : bool,
 ) -> None:
     """
     Finalize ads sau khi scrape xong / bị cancel.
 
-    Tier structure:
-      Tier 1 — Auto-add (count ≥ _ADS_AUTO_THRESHOLD = 10):
-        Lặp đủ nhiều → watermark cố định, không cần AI.
-      Tier 2 — AI verify (count _ADS_AI_MIN_COUNT ≤ count < threshold):
-        Ambiguous → AI phân biệt ads vs false positive.
-        Chỉ chạy khi NOT cancelled.
-      Tier 3 — Ignore (count 1–2):
-        Quá ít, gần như chắc chắn là nội dung truyện.
+    3 nguồn candidates:
+      [A] session_log tier ≥10 (auto-add)   — đã bị xóa real-time, chỉ cần học keyword
+      [B] session_log tier 3–9 (ai verify)  — đã bị xóa real-time, AI verify để học keyword
+      [C] freq_counter ≥5 files (new)       — CHƯA bị xóa! AI confirm → clean files + learn
+
+    Post-processing (xóa retroactively) CHỈ áp dụng cho [C].
+    [A] và [B] đã bị xóa từ real-time bởi confirmed keywords → không cần clean lại.
     """
     from ai.agents import ai_verify_ads
 
     domain_slug      = domain.replace(".", "_")
     verified_results : dict[str, bool] = {}
 
+    # ── [A] Auto-add: session_log tier ≥10 ───────────────────────────────
+    # Đây là các dòng đã bị xóa real-time bởi confirmed keywords.
+    # Auto-add chỉ để học keyword mới cho profile — không cần clean files.
     auto_candidates, ai_candidates = ads_filter.get_candidates_by_frequency(
         auto_threshold = _ADS_AUTO_THRESHOLD,
         min_count      = _ADS_AI_MIN_COUNT,
         max_results    = 20,
     )
 
-    # ── Tier 1: Auto-add high-frequency ──────────────────────────────────────
     if auto_candidates:
         added = ads_filter.apply_verified(auto_candidates)
         for line in auto_candidates:
@@ -440,43 +426,97 @@ async def _finalize_ads(
         if added > 0:
             print(
                 f"  [Ads] 🔒 +{added} auto-learned "
-                f"(≥{_ADS_AUTO_THRESHOLD}× /phiên) | {ads_filter.stats}",
+                f"(≥{_ADS_AUTO_THRESHOLD}× session_log) | {ads_filter.stats}",
                 flush=True,
             )
             await pm.add_ads_to_profile(domain, auto_candidates)
 
-    # ── Tier 2: AI verify (count 3–9) ────────────────────────────────────────
-    if not cancelled and ai_candidates:
+    # ── [C] New frequency suspects từ edge scan ───────────────────────────
+    # Các dòng này CHƯA bị xóa khỏi files (không khớp keyword nào trong session).
+    # Cần AI xác nhận trước khi xóa.
+    new_suspect_lines = ads_filter.get_new_frequency_suspects(
+        min_files   = _ADS_FREQ_MIN_FILES,
+        max_results = 20,
+    )
+
+    # ── [B + C] AI verify: session_log tier 3–9 + new suspects ───────────
+    # Gộp cả 2 để tiết kiệm AI call.
+    # Sau AI:
+    #   - Confirmed từ [B]: add to profile (đã bị xóa real-time, không cần clean files)
+    #   - Confirmed từ [C]: add to profile + post_process_directory() (chưa bị xóa)
+    all_for_ai  = list(dict.fromkeys(ai_candidates + new_suspect_lines))  # dedupe, preserve order
+    new_suspect_set = set(new_suspect_lines)
+
+    if not cancelled and all_for_ai:
+        b_count = len(ai_candidates)
+        c_count = len(new_suspect_lines)
         print(
-            f"  [Ads] 🤖 AI xác nhận {len(ai_candidates)} dòng (3–9× /phiên)...",
+            f"  [Ads] 🤖 AI xác nhận {len(all_for_ai)} dòng "
+            f"({b_count} session_log + {c_count} freq-new)...",
             flush=True,
         )
         try:
-            confirmed     = await ai_verify_ads(ai_candidates, domain, ai_limiter)
+            confirmed     = await ai_verify_ads(all_for_ai, domain, ai_limiter)
             confirmed_set = set(confirmed)
-            for line in ai_candidates:
+
+            for line in all_for_ai:
                 verified_results[line] = line in confirmed_set
 
             if confirmed:
                 added = ads_filter.apply_verified(confirmed)
-                if added > 0:
+
+                # Phân loại: confirmed từ [C] cần post-process files
+                confirmed_new = [l for l in confirmed if l in new_suspect_set]
+                confirmed_b   = [l for l in confirmed if l not in new_suspect_set]
+
+                if confirmed_b:
                     print(
-                        f"  [Ads] ✅ +{added} AI-confirmed | {ads_filter.stats}",
+                        f"  [Ads] ✅ +{len(confirmed_b)} keyword từ session_log",
                         flush=True,
                     )
+
+                if confirmed_new:
+                    print(
+                        f"  [Ads] 🔍 {len(confirmed_new)} new watermarks → "
+                        f"xóa retroactively từ files...",
+                        flush=True,
+                    )
+                    removed_count = await asyncio.to_thread(
+                        AdsFilter.post_process_directory,
+                        confirmed_new,
+                        output_dir,
+                    )
+                    if removed_count > 0:
+                        print(
+                            f"  [Ads] ✅ Đã xóa {removed_count} dòng từ files "
+                            f"| {ads_filter.stats}",
+                            flush=True,
+                        )
+                    else:
+                        print(f"  [Ads] ℹ️  Không tìm thấy dòng nào để xóa trong files", flush=True)
+
+                if added > 0:
                     await pm.add_ads_to_profile(domain, confirmed)
-                fp_n = len(ai_candidates) - len(confirmed)
+
+                fp_n = len(all_for_ai) - len(confirmed)
                 if fp_n > 0:
-                    print(f"  [Ads] ℹ️  {fp_n} false positive — bỏ qua", flush=True)
+                    print(f"  [Ads] ℹ️  {fp_n} false positive — giữ nguyên trong files", flush=True)
             else:
-                print(f"  [Ads] ℹ️  0 keyword mới từ AI", flush=True)
+                print(f"  [Ads] ℹ️  AI: 0 keyword mới được xác nhận", flush=True)
 
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.warning("[Ads] AI verify thất bại: %s", e)
 
-    # ── Save review file + DB ─────────────────────────────────────────────────
+    elif cancelled and all_for_ai:
+        print(
+            f"  [Ads] 🛑 Cancelled — bỏ qua AI verify "
+            f"({len(all_for_ai)} candidates chưa xác nhận, files giữ nguyên)",
+            flush=True,
+        )
+
+    # ── Save review file + DB ─────────────────────────────────────────────
     review_path = ads_filter.save_pending_review(
         domain_slug,
         verified_results if verified_results else None,
@@ -487,8 +527,9 @@ async def _finalize_ads(
         confirmed_n = sum(1 for v in verified_results.values() if v)
         icon        = "🛑" if cancelled else "📋"
         print(
-            f"  [Ads] {icon} {total} dòng lọc"
+            f"  [Ads] {icon} {total} dòng đã lọc"
             + (f" | {confirmed_n} xác nhận" if confirmed_n else "")
+            + f" | {len(new_suspect_lines)} freq-suspects"
             + f" → {review_path}",
             flush=True,
         )
@@ -605,15 +646,8 @@ async def run_novel_task(
                 consecutive_errors   = 0
                 consecutive_timeouts = 0
 
-                ch_count = progress.get("chapter_count", 0)
-
-                if on_chapter_done and ch_count > prev_count:
+                if on_chapter_done and progress.get("chapter_count", 0) > prev_count:
                     await on_chapter_done()
-
-                # ── Periodic ads check mỗi N chương ──────────────────────────
-                # Chỉ auto-add tier ≥10, không gọi AI để tránh rate limit
-                if ch_count > 0 and ch_count % _ADS_PERIODIC_INTERVAL == 0:
-                    await _periodic_ads_check(ads_filter, domain, pm, tag, ch_count)
 
                 current_url = next_url
 
@@ -649,7 +683,14 @@ async def run_novel_task(
 
         try:
             await asyncio.shield(
-                _finalize_ads(ads_filter, domain, ai_limiter, pm, _cancelled)
+                _finalize_ads(
+                    ads_filter = ads_filter,
+                    domain     = domain,
+                    ai_limiter = ai_limiter,
+                    pm         = pm,
+                    output_dir = output_dir,
+                    cancelled  = _cancelled,
+                )
             )
         except asyncio.CancelledError:
             try:
