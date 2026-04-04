@@ -9,6 +9,7 @@ Learning Phase (5 calls):
   5. final_crosscheck        — Tổng hợp & confidence score từ Chapter 5
 
 Utility:
+  naming_rules        — Xác định story name + chapter naming pattern (1 lần/story)
   find_first_chapter  — Tìm URL Chapter 1 từ trang Index
   classify_and_find   — Phân loại trang + tìm next URL (emergency fallback)
   verify_ads          — Xác nhận dòng text có phải ads/watermark không
@@ -19,11 +20,59 @@ from __future__ import annotations
 class Prompts:
 
     @staticmethod
+    def naming_rules(raw_titles: list[str], base_url: str) -> str:
+        """
+        Phân tích raw <title> tags để xác định story name và chapter naming pattern.
+        Gọi 1 lần khi bắt đầu scrape story mới.
+        """
+        numbered = "\n".join(
+            f"  {i + 1}. {t!r}"
+            for i, t in enumerate(raw_titles)
+        )
+        return f"""Phân tích các raw <title> tags của {len(raw_titles)} chapters liên tiếp để xác định cách đặt tên file.
+
+URL ví dụ: {base_url}
+
+Raw <title> tag content từ các chapters:
+{numbered}
+
+Nhiệm vụ:
+1. Tìm TÊN TRUYỆN — phần text xuất hiện nhất quán qua tất cả chapters (không thay đổi)
+2. Tìm từ khóa chapter (Chapter / Ch. / Episode / Part / ...)
+3. Xác định chapters có subtitle riêng không (phần sau chapter number, ví dụ "Chapter 1 – The Beginning" thì subtitle = "The Beginning")
+4. Tìm prefix cần bóc (nếu story name đứng trước "Chapter N" trong title)
+
+Trả về JSON (CHỈ JSON thuần, không markdown):
+{{
+  "story_name": "Tên truyện đầy đủ và chính xác. Không thêm bớt ký tự.",
+  "story_prefix_to_strip": "Phần prefix xuất hiện trước chapter keyword, cần bóc khi tạo tên file. Chuỗi rỗng nếu chapter keyword đứng đầu title.",
+  "chapter_keyword": "Từ khóa chapter: Chapter | Ch. | Episode | Ep. | Part | Prologue (lowercase, đúng casing như trong title)",
+  "has_chapter_subtitle": false,
+  "notes": "Ghi chú ngắn nếu cần. null nếu không."
+}}
+
+QUAN TRỌNG — phân biệt subtitle thật vs noise:
+  ✓ Subtitle THẬT: "Chapter 1 – The Beginning" → subtitle = "The Beginning"
+  ✓ Subtitle THẬT: "Chapter 1: Into the Dark" → subtitle = "Into the Dark"
+  ✗ KHÔNG phải subtitle: "Chapter 1, a percy jackson fanfic" → đây là story tag/description
+  ✗ KHÔNG phải subtitle: "Chapter 1 | SiteName" → đây là site suffix
+
+Ví dụ 1 — FanFiction.net (prefix, không có subtitle thật):
+  Titles: ["My Novel Chapter 1, a crossover fanfic | FanFiction", "My Novel Chapter 2, a crossover | FanFiction"]
+  → story_name: "My Novel", prefix: "My Novel", keyword: "Chapter", subtitle: false
+
+Ví dụ 2 — RoyalRoad (không có prefix, có subtitle thật):
+  Titles: ["Chapter 1 – A [Rolling Stone] Gathers no Moss | The Wandering Inn | Royal Road",
+           "Chapter 2 – Gathering Moss | The Wandering Inn | Royal Road"]
+  → story_name: "The Wandering Inn", prefix: "", keyword: "Chapter", subtitle: true
+
+Ví dụ 3 — Story với Episode thay vì Chapter:
+  Titles: ["Episode 1 – Pilot | My Web Serial", "Episode 2 – The City | My Web Serial"]
+  → story_name: "My Web Serial", prefix: "", keyword: "Episode", subtitle: true
+"""
+
+    @staticmethod
     def learning_5_final_crosscheck(html_snippet: str, url: str, accumulated_profile: dict) -> str:
-        """
-        FIX: Cải thiện tiêu chí phân biệt watermark cố định vs nội dung truyện biến động.
-        Tránh học keyword quá generic hoặc nội dung story.
-        """
         return f"""Bạn đã phân tích 4 chương trước. Đây là Chapter 5 — hãy cross-check và finalize profile.
 
 URL Chapter 5: {url}
@@ -52,26 +101,21 @@ Trả về JSON (CHỈ JSON thuần):
 
 TIÊU CHÍ ADS KEYWORDS (✓ GIỮ vs ✗ LOẠI):
 
-✓ GIỮ LẠI - Watermark cố định (lặp lại hầu hết chapters):
-  • "Tip: You can use left, right keyboard keys..." (lặp 100/74 chapters)
-  • "If you find any errors, please let us know..." (lặp 74/74 chapters)
-  • "Read at [site]" / "Visit [site]" / "Find this novel at..." (lặp nhiều chapters)
-  • <script type="text/javascript">window.pubfuturetag...</script> (lặp 40+ chapters)
-  • Boilerplate disclaimer của site (đặc trưng, lặp lại)
+✓ GIỮ LẠI - Watermark cố định:
+  • "Tip: You can use left, right keyboard keys..."
+  • "If you find any errors, please let us know..."
+  • "Read at [site]" / "Visit [site]" / "Find this novel at..."
+  • Boilerplate disclaimer của site
 
-✗ LOẠI BỎ - Nội dung truyện hoặc từ generic:
-  • "Searching for" / "searching" (chỉ vài chapters, là nội dung story)
-  • "the primal hunter" / "bloodline of the primal hunter" (tên story/skill, nội dung)
-  • "search" / "log in" / "read" / "find" (quá generic, match cả nội dung truyện)
-  • "royal road" (tên site generic, match dialogue nhân vật)
-  • Tên nhân vật, tên skill, hoặc plot elements (biến động, không cố định)
-  • Dialogue hoặc narrative của story (part của content, không watermark)
-  • Single-chapter/rare entries (chỉ xuất hiện 1-3 chapters)
+✗ LOẠI BỎ - Nội dung truyện:
+  • Tên nhân vật, tên skill, plot elements
+  • Từ generic: "search", "read", "find", "chapter"
+  • Single-chapter/rare entries
 
 confidence rubric:
-  0.95–1.0: Tất cả selectors confirmed, nav tốt, content clean, ads rõ ràng cố định
-  0.80–0.94: Selectors hoạt động nhưng có minor issues
-  0.60–0.79: Có 1-2 vấn đề chưa giải quyết được
+  0.95–1.0: Tất cả selectors confirmed, nav tốt, content clean
+  0.80–0.94: Minor issues
+  0.60–0.79: 1-2 vấn đề chưa giải quyết
   < 0.60: Nhiều vấn đề, cần manual review
 """
 
@@ -86,21 +130,15 @@ HTML (tối đa 10000 ký tự):
 
 Trả về JSON (CHỈ JSON thuần, không markdown fence, không comment):
 {{
-  "content_selector": "CSS selector chứa TOÀN BỘ nội dung truyện (văn bản chương). Ưu tiên #id > .class cụ thể > tag[attr]. KHÔNG ĐƯỢC chọn body, html, main, hay element chứa sidebar/nav.",
+  "content_selector": "CSS selector chứa TOÀN BỘ nội dung truyện. Ưu tiên #id > .class cụ thể. KHÔNG chọn body, html, main, sidebar/nav.",
   "next_selector": "CSS selector của nút/link 'Next Chapter'. Phải là <a> hoặc <button> có href. null nếu không tìm thấy.",
-  "title_selector": "CSS selector của tiêu đề CHƯƠNG (không phải tên truyện). Thường là h1, h2, hoặc div.chapter-title. null nếu không rõ.",
-  "remove_selectors": ["CSS selectors của element cần XÓA trước khi extract: ads, donation banner, chapter nav ở đầu/cuối, social share buttons. Mảng rỗng [] nếu không có."],
-  "nav_type": "Cách tìm chapter tiếp theo: 'selector' (dùng next_selector), 'rel_next' (có <link rel=next>), 'slug_increment' (URL có số tăng dần), 'fanfic' (fanfiction.net /s/id/num/). null nếu không rõ.",
-  "chapter_url_pattern": "Regex Python nhận diện URL chapter của site này. VD royalroad: '/fiction/\\\\d+/[^/]+/chapter/\\\\d+'. null nếu không đủ thông tin.",
+  "title_selector": "CSS selector của tiêu đề CHƯƠNG (không phải tên truyện). null nếu không rõ.",
+  "remove_selectors": ["CSS selectors cần XÓA: ads, donation banner, nav đầu/cuối, social share. [] nếu không có."],
+  "nav_type": "'selector' | 'rel_next' | 'slug_increment' | 'fanfic' | null",
+  "chapter_url_pattern": "Regex Python nhận diện URL chapter. null nếu không đủ thông tin.",
   "requires_playwright": false,
-  "notes": "Ghi chú đặc biệt về site (JS-heavy, paywall, CDN, v.v.). null nếu không có."
+  "notes": "Ghi chú đặc biệt. null nếu không có."
 }}
-
-Quy tắc bắt buộc:
-- content_selector: test lại bằng cách đọc HTML — selector PHẢI match element chứa văn bản truyện thực sự
-- Nếu content div chứa nút Prev/Next bên trong → thêm các selector đó vào remove_selectors
-- requires_playwright: chỉ true nếu thấy bằng chứng site cần JS để render content (VD: div rỗng với data-src)
-- Trả null cho bất kỳ field nào không đủ bằng chứng, KHÔNG suy đoán bừa
 """
 
     @staticmethod
@@ -117,11 +155,6 @@ Selectors cần xác nhận:
 HTML Chapter 2 (tối đa 8000 ký tự):
 {html_snippet}
 
-Kiểm tra từng selector:
-1. content_selector có match element chứa ≥300 ký tự nội dung truyện không?
-2. next_selector có match link/nút dẫn sang Chapter 3 không?
-3. title_selector có match tiêu đề chương không?
-
 Trả về JSON (CHỈ JSON thuần):
 {{
   "content_valid": true,
@@ -131,13 +164,8 @@ Trả về JSON (CHỈ JSON thuần):
   "title_valid": true,
   "title_fix": null,
   "remove_add": ["Thêm selector mới vào remove_selectors nếu thấy noise mới"],
-  "notes": "Nhận xét ngắn. null nếu không có."
+  "notes": null
 }}
-
-Quy tắc:
-- *_fix: chỉ điền nếu *_valid = false. Đưa ra selector TỐT HƠN dựa trên HTML Chapter 2.
-- remove_add: chỉ thêm nếu thấy element rõ ràng là noise/ads KHÔNG có trong Chapter 1
-- Nếu tất cả đều valid → tất cả trả true, các fix = null
 """
 
     @staticmethod
@@ -151,19 +179,15 @@ HTML (tối đa 8000 ký tự):
 Trả về JSON (CHỈ JSON thuần):
 {{
   "has_tables": false,
-  "table_evidence": "Mô tả ngắn về bảng nếu có (VD: 'status table với stat numbers'). null nếu không có.",
+  "table_evidence": null,
   "has_math": false,
   "math_format": null,
-  "math_evidence": ["Ví dụ công thức thực tế tìm thấy trong HTML, tối đa 3"],
-  "special_symbols": ["Ký hiệu đặc biệt quan sát được ngoài ASCII thông thường: —, …, ™, ©, ·, →, ⟨⟩, v.v."],
-  "notes": "Ghi chú đặc biệt về nội dung. null nếu không có."
+  "math_evidence": [],
+  "special_symbols": [],
+  "notes": null
 }}
 
-Hướng dẫn math_format:
-  "latex"         — nội dung dùng $...$ hoặc $$...$$ (inline/block LaTeX)
-  "mathjax"       — nội dung dùng \\(...\\) hoặc \\[...\\] hoặc có class MathJax
-  "plain_unicode" — công thức viết bằng ký tự unicode thường (x², √, ∑, v.v.)
-  null            — không có công thức toán
+math_format: "latex" | "mathjax" | "plain_unicode" | null
 """
 
     @staticmethod
@@ -177,26 +201,13 @@ HTML (tối đa 8000 ký tự):
 
 Trả về JSON (CHỈ JSON thuần):
 {{
-  "system_box": {{
-    "found": false,
-    "selectors": ["CSS selectors của system/notification box. VD: ['.well', 'div.system', '.panel-body']"],
-    "convert_to": "blockquote",
-    "prefix": "**System:**"
-  }},
-  "hidden_text": {{
-    "found": false,
-    "selectors": ["CSS selectors của spoiler/hidden text. VD: ['.spoiler', '.hidden', 'span[style*=color:white]']"],
-    "convert_to": "spoiler_tag"
-  }},
-  "author_note": {{
-    "found": false,
-    "selectors": ["CSS selectors của author note / TN. VD: ['.author-note', '.translator-note', '.an']"],
-    "convert_to": "blockquote_note"
-  }},
+  "system_box": {{"found": false, "selectors": [], "convert_to": "blockquote", "prefix": "**System:**"}},
+  "hidden_text": {{"found": false, "selectors": [], "convert_to": "spoiler_tag"}},
+  "author_note": {{"found": false, "selectors": [], "convert_to": "blockquote_note"}},
   "bold_italic": true,
   "hr_dividers": true,
   "image_alt_text": false,
-  "notes": "Ghi chú về formatting đặc biệt khác. null nếu không có."
+  "notes": null
 }}
 """
 
@@ -232,10 +243,6 @@ Trả về JSON (CHỈ JSON thuần):
 
     @staticmethod
     def verify_ads(candidates: list[str], domain: str) -> str:
-        """
-        Xác nhận danh sách dòng text có phải ads/watermark thật không.
-        Gọi sau mỗi phiên scrape để validate những gì đã bị lọc.
-        """
         numbered = "\n".join(
             f"  {i + 1:>2}. {line!r}"
             for i, line in enumerate(candidates)
@@ -248,29 +255,23 @@ Các dòng đã bị lọc ra khỏi nội dung truyện (xuất hiện nhiều 
 {numbered}
 
 TIÊU CHÍ ADS/WATERMARK (xác nhận là TRUE):
-  ✓ Thông báo stolen content, piracy notice
+  ✓ Stolen content notice, piracy notice
   ✓ "Read at [site]", "Visit [site]", "Find this novel at..."
-  ✓ Quảng cáo Patreon / Ko-fi / donation kêu gọi donate
-  ✓ Attribution dịch thuật lặp đi lặp lại dạng boilerplate (không phải dialogue nhân vật)
-  ✓ Navigation label lặp lại (Prev Chapter / Next Chapter / Table of Contents)
-  ✓ Copyright notice/watermark chèn vào content
+  ✓ Quảng cáo Patreon / Ko-fi / donation
+  ✓ Attribution dịch thuật boilerplate lặp lại
+  ✓ Navigation label lặp lại (Prev/Next/TOC)
+  ✓ Copyright watermark chèn vào content
 
-KHÔNG PHẢI ADS (xác nhận là FALSE — false positive):
+KHÔNG PHẢI ADS (FALSE POSITIVE):
   ✗ Dialogue nhân vật tình cờ đề cập tên website
-  ✗ Nội dung truyện đề cập dịch thuật/ngôn ngữ trong context câu chuyện
-  ✗ Mô tả sách/tài liệu trong fictional world
-  ✗ Bất kỳ câu nào rõ ràng là văn học hư cấu
-  ✗ Từ quá generic ("search", "log in", "read") nếu match cả nội dung truyện
+  ✗ Nội dung truyện đề cập dịch thuật trong context
+  ✗ Từ generic: "search", "log in", "read", "find"
 
-Trả về JSON (CHỈ JSON thuần, không markdown fence):
+Trả về JSON (CHỈ JSON thuần):
 {{
-  "confirmed_ads": [
-    "Chép NGUYÊN VĂN những dòng xác nhận là ads thật. Mảng rỗng [] nếu không có."
-  ],
-  "false_positives": [
-    "Chép NGUYÊN VĂN những dòng là false positive (không phải ads). Mảng rỗng [] nếu không có."
-  ],
-  "notes": "Ghi chú ngắn nếu có pattern đặc biệt. null nếu không cần."
+  "confirmed_ads": ["Chép NGUYÊN VĂN các dòng xác nhận là ads. [] nếu không có."],
+  "false_positives": ["Chép NGUYÊN VĂN các dòng là false positive. [] nếu không có."],
+  "notes": null
 }}
 """
 

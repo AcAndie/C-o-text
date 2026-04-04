@@ -9,6 +9,7 @@ Learning Phase agents (5 calls):
   ai_final_crosscheck()          — AI Call #5
 
 Utility agents:
+  ai_extract_naming_rules()      — Story name + chapter naming pattern (1 lần/story)
   ai_find_first_chapter()        — Tìm Chapter 1 từ index page
   ai_classify_and_find()         — Emergency fallback khi không tìm được next URL
   ai_verify_ads()                — Xác nhận dòng bị filter có phải ads thật không
@@ -234,6 +235,18 @@ _S_CROSSCHECK = {
     "required": ["confidence"],
 }
 
+_S_NAMING_RULES = {
+    "type": "object",
+    "properties": {
+        "story_name"           : {"type": "string"},
+        "story_prefix_to_strip": {"type": "string"},
+        "chapter_keyword"      : {"type": "string"},
+        "has_chapter_subtitle" : {"type": "boolean"},
+        "notes"                : {"type": "string", "nullable": True},
+    },
+    "required": ["story_name", "chapter_keyword", "has_chapter_subtitle"],
+}
+
 _S_FIRST_CHAPTER = {
     "type": "object",
     "properties": {
@@ -390,6 +403,38 @@ async def ai_final_crosscheck(
 
 # ── Utility Agents ────────────────────────────────────────────────────────────
 
+async def ai_extract_naming_rules(
+    raw_titles : list[str],
+    base_url   : str,
+    limiter    : AIRateLimiter,
+) -> dict | None:
+    """
+    Xác định story name + chapter naming pattern từ raw <title> tags.
+    Gọi 1 lần khi bắt đầu scrape story mới.
+
+    Returns dict với keys:
+      story_name, story_prefix_to_strip, chapter_keyword, has_chapter_subtitle
+    """
+    if not raw_titles:
+        return None
+    prompt = Prompts.naming_rules(raw_titles, base_url)
+    try:
+        text   = await _call(prompt, limiter, _S_NAMING_RULES)
+        result = _parse(text)
+        if isinstance(result, dict) and result.get("story_name", "").strip():
+            # Sanitize
+            result["story_name"]            = result["story_name"].strip()
+            result["story_prefix_to_strip"] = (result.get("story_prefix_to_strip") or "").strip()
+            result["chapter_keyword"]       = (result.get("chapter_keyword") or "Chapter").strip()
+            result["has_chapter_subtitle"]  = bool(result.get("has_chapter_subtitle", False))
+            return result
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        print(f"  [AI naming] ⚠ Thất bại: {_fmt(e)}", flush=True)
+    return None
+
+
 async def ai_find_first_chapter(
     html: str, base_url: str, limiter: AIRateLimiter,
 ) -> str | None:
@@ -436,21 +481,10 @@ async def ai_classify_and_find(
 
 async def ai_verify_ads(
     candidates: list[str],
-    domain: str,
-    limiter: AIRateLimiter,
+    domain    : str,
+    limiter   : AIRateLimiter,
 ) -> list[str]:
-    """
-    Xác nhận danh sách dòng bị filter có phải ads/watermark thật không.
-
-    Args:
-        candidates: Top N dòng chưa rõ, lấy từ ads_filter.get_unknown_candidates()
-        domain:     Domain đang scrape (dùng cho context trong prompt)
-        limiter:    AI rate limiter
-
-    Returns:
-        List các dòng được xác nhận là ads thật (subset của candidates).
-        Trả về [] nếu không có gì được xác nhận hoặc AI call thất bại.
-    """
+    """Xác nhận danh sách dòng bị filter có phải ads/watermark thật không."""
     if not candidates:
         return []
 

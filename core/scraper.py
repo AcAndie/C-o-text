@@ -1,26 +1,15 @@
 """
-core/scraper.py — v14: Deferred ads confirmation + retroactive file cleanup.
+core/scraper.py — v15: Per-story naming phase + story-name-based output dirs.
 
-Thay đổi so với v13:
-  ADS-NEW-1: Bỏ _periodic_ads_check() và _ADS_PERIODIC_INTERVAL.
-             Không còn auto-add mid-session nữa.
-  ADS-NEW-2: Sau write_markdown(), gọi ads_filter.scan_edges_for_suspects()
-             để track frequency dòng lạ ở edges — KHÔNG xóa gì cả.
-  ADS-NEW-3: _finalize_ads() nhận thêm output_dir.
-             Sau AI confirm → post_process_directory() xóa retroactively
-             chỉ các dòng MỚI (từ freq_counter, chưa từng bị xóa real-time).
-  ADS-NEW-4: auto-add tier (≥10) vẫn giữ cho session_log candidates
-             (những dòng này đã bị xóa real-time bởi confirmed keywords,
-             auto-add chỉ để học keyword mới cho profile, không cần clean files).
-
-Pipeline ads per session:
-  [Real-time]  filter()                     xóa confirmed keywords
-  [Real-time]  scan_edges_for_suspects()    track dòng lạ, KHÔNG xóa
-  [End-sess]   get_candidates_by_frequency  session_log → học keyword mới
-  [End-sess]   get_new_frequency_suspects   freq_counter → watermarks MỚI
-  [End-sess]   ai_verify_ads               AI xác nhận new suspects
-  [End-sess]   post_process_directory      xóa new suspects từ files
-  [End-sess]   add_ads_to_profile          lưu profile
+Thay đổi so với v14:
+  NAMING-1: run_novel_task() tích hợp naming phase (1 lần/story).
+            output_dir cuối cùng = "output/{story_name}" thay vì URL slug.
+  NAMING-2: _format_chapter_filename() — tạo filename từ naming rules trong progress.
+            Format: 0001_Chapter1_The Beginning.md
+  NAMING-3: run_learning_phase() trả về (profile, sample_titles) thay vì chỉ profile.
+            Naming phase dùng sample_titles → 0 extra fetch khi có Learning Phase.
+  NAMING-4: actual_output_dir được xác định SAU naming phase và lưu vào progress
+            → resume luôn dùng đúng dir, ngay cả khi start_url thay đổi.
 """
 from __future__ import annotations
 
@@ -54,9 +43,9 @@ from ai.agents            import ai_classify_and_find, ai_find_first_chapter
 logger = logging.getLogger(__name__)
 
 # ── Ads finalization tiers ────────────────────────────────────────────────────
-_ADS_AUTO_THRESHOLD = 10  # session_log: ≥10 lần → auto-learn keyword (đã bị xóa real-time)
-_ADS_AI_MIN_COUNT   = 3   # session_log: 3–9 lần → AI verify để học keyword
-_ADS_FREQ_MIN_FILES = 5   # freq_counter: ≥5 files → new suspect cần AI confirm + clean files
+_ADS_AUTO_THRESHOLD = 10
+_ADS_AI_MIN_COUNT   = 3
+_ADS_FREQ_MIN_FILES = 5
 
 
 # ── Domain tag helper ─────────────────────────────────────────────────────────
@@ -69,7 +58,9 @@ def _dtag(url_or_domain: str) -> str:
     name = netloc.replace("www.", "").split(".")[0]
     return f"{name[:12]:<12}"
 
-# Thêm mới — helper tách story title từ page title
+
+# ── Story title extractor (for display / fallback) ────────────────────────────
+
 _CHAPTER_TITLE_RE = re.compile(
     r"^\s*(?:chapter|chap|ch|episode|ep|part|chuong|phan)\b[\s.\-:]*\d*",
     re.IGNORECASE | re.UNICODE,
@@ -80,28 +71,87 @@ _KNOWN_SITES = frozenset({
     "novelupdates", "lightnovelreader", "novelfull", "wuxiaworld",
 })
 
+
 def _extract_story_title(raw_page_title: str) -> str | None:
-    """
-    Tách story title từ <title> tag dạng:
-      "Chapter 1 | Story Name | Site"  → "Story Name"
-      "Story Name - Chapter 1"          → "Story Name"
-      "Story Name"                      → "Story Name"
-    """
     parts = re.split(r"\s*[\|–—]\s*", raw_page_title)
     candidates = []
     for part in parts:
         part = part.strip()
         if len(part) < 3:
             continue
-        if _CHAPTER_TITLE_RE.match(part):      # bỏ phần "Chapter N..."
+        if _CHAPTER_TITLE_RE.match(part):
             continue
-        if part.lower() in _KNOWN_SITES:       # bỏ tên site
+        if part.lower() in _KNOWN_SITES:
             continue
         candidates.append(part)
     if not candidates:
         return None
-    # Ưu tiên phần dài nhất (thường là story title đầy đủ nhất)
     return max(candidates, key=len)
+
+
+# ── Chapter filename formatter ─────────────────────────────────────────────────
+
+# Strip "| Site Name" suffix khỏi subtitle
+_RE_PIPE_SUFFIX = re.compile(r"\s*\|.*$")
+
+
+def _format_chapter_filename(
+    chapter_num : int,
+    raw_title   : str,
+    progress    : ProgressDict,
+) -> str:
+    """
+    Tạo filename cho chapter theo naming rules trong progress.
+
+    Format đích: 0001_Chapter1_The Beginning.md
+      - Phần 1: 4-digit sequential (0001)
+      - Phần 2: chapter identifier (Chapter1, Episode3) — không space giữa kw và số
+      - Phần 3: subtitle (nếu has_chapter_subtitle=True)
+
+    Fallback nếu không match pattern: 0001_cleaned_title.md
+    """
+    chapter_kw   = (progress.get("chapter_keyword") or "Chapter").strip()
+    has_subtitle  = bool(progress.get("has_chapter_subtitle", False))
+    prefix_strip  = (progress.get("story_prefix_strip") or "").strip()
+
+    # Bước 1: Bóc story name prefix (nếu title bắt đầu bằng tên truyện)
+    title = raw_title.strip()
+    if prefix_strip:
+        lo_title  = title.lower()
+        lo_prefix = prefix_strip.lower()
+        if lo_title.startswith(lo_prefix):
+            title = title[len(prefix_strip):].lstrip(" ,;:-–—")
+
+    # Bước 2: Tìm chapter identifier + subtitle
+    kw_esc  = re.escape(chapter_kw)
+    chap_re = re.compile(
+        rf"(?:{kw_esc})\s*(?P<n>\d+)\s*[-–—:.]?\s*(?P<sub>.*)",
+        re.IGNORECASE,
+    )
+    m = chap_re.search(title)
+
+    if m:
+        n       = m.group("n")
+        sub_raw = m.group("sub").strip(" -–—:[]().")
+
+        # Bóc site suffix dạng "| Site Name" khỏi subtitle
+        sub_raw = _RE_PIPE_SUFFIX.sub("", sub_raw).strip()
+
+        # "Chapter1" — không space giữa keyword và số (theo spec)
+        chap_id = f"{chapter_kw}{n}"
+
+        if has_subtitle and sub_raw and len(sub_raw) >= 2:
+            sub_safe = slugify_filename(sub_raw, max_len=50)
+            name = f"{chapter_num:04d}_{chap_id}_{sub_safe}"
+        else:
+            name = f"{chapter_num:04d}_{chap_id}"
+    else:
+        # Fallback: bóc pipe suffix và dùng title đã strip
+        fallback = _RE_PIPE_SUFFIX.sub("", (title or raw_title)).strip()
+        name = f"{chapter_num:04d}_{slugify_filename(fallback, max_len=60)}"
+
+    return slugify_filename(name, max_len=120) + ".md"
+
 
 # ── Nav-edge strip ────────────────────────────────────────────────────────────
 
@@ -307,7 +357,6 @@ async def scrape_one_chapter(
             soup=soup, html=html,
         )
 
-
     stripped = _strip_nav_edges(content)
     if stripped and len(stripped.strip()) >= 100:
         content = stripped
@@ -326,24 +375,25 @@ async def scrape_one_chapter(
         return None
     fingerprints.add(fp)
 
-    if not progress.get("story_title") and progress.get("chapter_count", 0) == 0:
-        title_tag = soup.find("title")
-        if title_tag:
-            raw = title_tag.get_text(strip=True)
-            story_candidate = _extract_story_title(raw)
-            if story_candidate:
-                progress["story_title"] = normalize_title(story_candidate)
+    # Fallback story_title nếu naming phase chưa chạy hoặc thất bại
+    if not progress.get("story_title") and not progress.get("story_name_clean"):
+        if progress.get("chapter_count", 0) == 0:
+            title_tag = soup.find("title")
+            if title_tag:
+                raw = title_tag.get_text(strip=True)
+                story_candidate = _extract_story_title(raw)
+                if story_candidate:
+                    progress["story_title"] = normalize_title(story_candidate)
 
     # ── Save chapter file ─────────────────────────────────────────────────
     chapter_num = progress.get("chapter_count", 0) + 1
-    filename    = f"{chapter_num:04d}_{slugify_filename(title, max_len=60)}.md"
-    filepath    = os.path.join(output_dir, filename)
+
+    # NAMING-2: dùng naming rules từ progress nếu có, fallback về slug title cũ
+    filename = _format_chapter_filename(chapter_num, title, progress)
+    filepath = os.path.join(output_dir, filename)
     await write_markdown(filepath, f"# {title}\n\n{content}\n")
 
     # ── [2] Scan edges cho watermarks MỚI (sau khi save) ─────────────────
-    # File đã được lưu với confirmed ads đã xóa.
-    # Scan để detect dòng lạ xuất hiện lặp lại — KHÔNG xóa, chỉ track.
-    # Nếu AI confirm cuối session → post_process_directory() sẽ clean files.
     ads_filter.scan_edges_for_suspects(
         content,
         chapter_url  = url,
@@ -400,7 +450,6 @@ async def _find_next_and_save(
     soup: BeautifulSoup | None = None,
     html: str | None = None,
 ) -> str | None:
-    # Chỉ fetch nếu chưa có sẵn (Site A: url đã visited, chưa fetch)
     if soup is None or html is None:
         try:
             _, html = await fetch_page(url, pool, pw_pool)
@@ -425,7 +474,6 @@ async def _find_next_and_save(
     return next_url
 
 
-
 # ── Ads finalization (end of session) ─────────────────────────────────────────
 
 async def _finalize_ads(
@@ -436,25 +484,12 @@ async def _finalize_ads(
     output_dir : str,
     cancelled  : bool,
 ) -> None:
-    """
-    Finalize ads sau khi scrape xong / bị cancel.
-
-    3 nguồn candidates:
-      [A] session_log tier ≥10 (auto-add)   — đã bị xóa real-time, chỉ cần học keyword
-      [B] session_log tier 3–9 (ai verify)  — đã bị xóa real-time, AI verify để học keyword
-      [C] freq_counter ≥5 files (new)       — CHƯA bị xóa! AI confirm → clean files + learn
-
-    Post-processing (xóa retroactively) CHỈ áp dụng cho [C].
-    [A] và [B] đã bị xóa từ real-time bởi confirmed keywords → không cần clean lại.
-    """
     from ai.agents import ai_verify_ads
 
     domain_slug      = domain.replace(".", "_")
     verified_results : dict[str, bool] = {}
 
     # ── [A] Auto-add: session_log tier ≥10 ───────────────────────────────
-    # Đây là các dòng đã bị xóa real-time bởi confirmed keywords.
-    # Auto-add chỉ để học keyword mới cho profile — không cần clean files.
     auto_candidates, ai_candidates = ads_filter.get_candidates_by_frequency(
         auto_threshold = _ADS_AUTO_THRESHOLD,
         min_count      = _ADS_AI_MIN_COUNT,
@@ -474,19 +509,12 @@ async def _finalize_ads(
             await pm.add_ads_to_profile(domain, auto_candidates)
 
     # ── [C] New frequency suspects từ edge scan ───────────────────────────
-    # Các dòng này CHƯA bị xóa khỏi files (không khớp keyword nào trong session).
-    # Cần AI xác nhận trước khi xóa.
     new_suspect_lines = ads_filter.get_new_frequency_suspects(
         min_files   = _ADS_FREQ_MIN_FILES,
         max_results = 20,
     )
 
-    # ── [B + C] AI verify: session_log tier 3–9 + new suspects ───────────
-    # Gộp cả 2 để tiết kiệm AI call.
-    # Sau AI:
-    #   - Confirmed từ [B]: add to profile (đã bị xóa real-time, không cần clean files)
-    #   - Confirmed từ [C]: add to profile + post_process_directory() (chưa bị xóa)
-    all_for_ai  = list(dict.fromkeys(ai_candidates + new_suspect_lines))  # dedupe, preserve order
+    all_for_ai  = list(dict.fromkeys(ai_candidates + new_suspect_lines))
     new_suspect_set = set(new_suspect_lines)
 
     if not cancelled and all_for_ai:
@@ -507,15 +535,11 @@ async def _finalize_ads(
             if confirmed:
                 added = ads_filter.apply_verified(confirmed)
 
-                # Phân loại: confirmed từ [C] cần post-process files
                 confirmed_new = [l for l in confirmed if l in new_suspect_set]
                 confirmed_b   = [l for l in confirmed if l not in new_suspect_set]
 
                 if confirmed_b:
-                    print(
-                        f"  [Ads] ✅ +{len(confirmed_b)} keyword từ session_log",
-                        flush=True,
-                    )
+                    print(f"  [Ads] ✅ +{len(confirmed_b)} keyword từ session_log", flush=True)
 
                 if confirmed_new:
                     print(
@@ -558,7 +582,6 @@ async def _finalize_ads(
             flush=True,
         )
 
-    # ── Save review file + DB ─────────────────────────────────────────────
     review_path = ads_filter.save_pending_review(
         domain_slug,
         verified_results if verified_results else None,
@@ -584,7 +607,7 @@ async def _finalize_ads(
 
 async def run_novel_task(
     start_url     : str,
-    output_dir    : str,
+    output_dir    : str,          # URL-based fallback dir từ main.py
     progress_path : str,
     pool          : DomainSessionPool,
     pw_pool       : PlaywrightPool,
@@ -592,11 +615,19 @@ async def run_novel_task(
     ai_limiter    : AIRateLimiter,
     on_chapter_done = None,
 ) -> None:
-    os.makedirs(output_dir, exist_ok=True)
+    # output_dir từ main.py là fallback — sẽ bị override bởi output_dir_final
+    # trong progress nếu naming phase đã chạy thành công.
+    # KHÔNG makedirs ở đây — chờ sau khi xác định actual_output_dir.
+
     domain = urlparse(start_url).netloc.lower()
     tag    = _dtag(domain)
 
+    # actual_output_dir được cập nhật sau naming phase;
+    # khởi tạo bằng fallback để finally block luôn có giá trị hợp lệ.
+    actual_output_dir = output_dir
+
     ads_filter = AdsFilter.load(domain=domain)
+    pre_fetched_titles: list[str] = []
 
     # ── Phase 1 → 2: Learning (nếu cần) ──────────────────────────────────────
     if not pm.has(domain) or not pm.is_profile_fresh(domain):
@@ -608,10 +639,13 @@ async def run_novel_task(
                 logger.warning("[Learn] Failed to clear progress: %s", e)
 
         from learning.phase import run_learning_phase
-        profile = await run_learning_phase(start_url, pool, pw_pool, pm, ai_limiter)
-        if profile is None:
+        result = await run_learning_phase(start_url, pool, pw_pool, pm, ai_limiter)
+        if result is None:
             print(f"  [{tag}] ❌ Learning Phase thất bại. Bỏ qua.", flush=True)
             return
+
+        # NAMING-3: unpack (profile, sample_titles)
+        profile, pre_fetched_titles = result
 
         injected = ads_filter.inject_from_profile(profile)
         if injected > 0:
@@ -619,22 +653,30 @@ async def run_novel_task(
 
         print(f"\n  [{tag}] 🔄 Reset progress → scrape lại từ Ch.1...\n", flush=True)
         await save_progress(progress_path, {
-            "current_url"     : None,
-            "chapter_count"   : 0,
-            "story_title"     : None,
-            "all_visited_urls": [],
-            "fingerprints"    : [],
-            "story_id"        : None,
-            "story_id_regex"  : None,
-            "story_id_locked" : False,
-            "completed"       : False,
-            "completed_at_url": None,
-            "learning_done"   : True,
-            "start_url"       : start_url,
+            "current_url"        : None,
+            "chapter_count"      : 0,
+            "story_title"        : None,
+            "all_visited_urls"   : [],
+            "fingerprints"       : [],
+            "story_id"           : None,
+            "story_id_regex"     : None,
+            "story_id_locked"    : False,
+            "completed"          : False,
+            "completed_at_url"   : None,
+            "learning_done"      : True,
+            "start_url"          : start_url,
+            # Naming phase fields — reset để naming chạy sau
+            "naming_done"        : False,
+            "story_name_clean"   : None,
+            "chapter_keyword"    : None,
+            "has_chapter_subtitle": False,
+            "story_prefix_strip" : None,
+            "output_dir_final"   : None,
         })
     else:
         print(f"  [{tag}] 📂 {pm.summary(domain)}", flush=True)
-        profile  = pm.get(domain)
+        profile            = pm.get(domain)
+        pre_fetched_titles = []   # profile exists → naming phase sẽ tự fetch
         injected = ads_filter.inject_from_profile(profile)
         if injected > 0:
             print(f"  [{tag}] [Ads] +{injected} từ profile | {ads_filter.stats}", flush=True)
@@ -648,6 +690,24 @@ async def run_novel_task(
         print(f"  [{tag}] ❌ Không tìm được điểm bắt đầu: {e}", flush=True)
         return
 
+    # ── NAMING-1: Naming phase (1 lần / story) ────────────────────────────────
+    if not progress.get("naming_done"):
+        from learning.naming import run_naming_phase
+        naming = await run_naming_phase(
+            chapter1_url       = current_url,
+            pool               = pool,
+            pw_pool            = pw_pool,
+            ai_limiter         = ai_limiter,
+            profile            = profile,
+            pre_fetched_titles = pre_fetched_titles or None,
+        )
+        if naming:
+            for k, v in naming.items():
+                progress[k] = v  # type: ignore[literal-required]
+        progress["naming_done"] = True
+        await save_progress(progress_path, progress)
+
+    # Story ID lock
     if not progress.get("story_id_locked"):
         sid_pattern = _build_story_id_regex(current_url)
         if sid_pattern:
@@ -656,7 +716,16 @@ async def run_novel_task(
             await save_progress(progress_path, progress)
             logger.debug("[StoryID] Locked: %s", sid_pattern)
 
-    story_label = progress.get("story_title") or urlparse(start_url).netloc
+    # ── Xác định actual output dir (sau naming) ───────────────────────────────
+    actual_output_dir = progress.get("output_dir_final") or output_dir
+    os.makedirs(actual_output_dir, exist_ok=True)
+
+    # Label ưu tiên: story_name_clean > story_title > domain
+    story_label = (
+        progress.get("story_name_clean")
+        or progress.get("story_title")
+        or urlparse(start_url).netloc
+    )
     print(f"\n{'─'*62}", flush=True)
     print(f"  🚀 [{tag}] {story_label}", flush=True)
     print(f"{'─'*62}", flush=True)
@@ -678,7 +747,7 @@ async def run_novel_task(
                     url           = current_url,
                     progress      = progress,
                     progress_path = progress_path,
-                    output_dir    = output_dir,
+                    output_dir    = actual_output_dir,   # ← story-name dir
                     pool          = pool,
                     pw_pool       = pw_pool,
                     profile       = profile,
@@ -721,7 +790,7 @@ async def run_novel_task(
     finally:
         total     = progress.get("chapter_count", 0)
         completed = progress.get("completed", False)
-        label     = progress.get("story_title") or start_url[:50]
+        label     = progress.get("story_name_clean") or progress.get("story_title") or start_url[:50]
 
         try:
             await asyncio.shield(
@@ -730,7 +799,7 @@ async def run_novel_task(
                     domain     = domain,
                     ai_limiter = ai_limiter,
                     pm         = pm,
-                    output_dir = output_dir,
+                    output_dir = actual_output_dir,      # ← story-name dir
                     cancelled  = _cancelled,
                 )
             )

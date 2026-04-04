@@ -35,7 +35,15 @@ async def run_learning_phase(
     pw_pool    : PlaywrightPool,
     pm         : ProfileManager,
     ai_limiter : AIRateLimiter,
-) -> SiteProfile | None:
+) -> tuple[SiteProfile, list[str]] | None:
+    """
+    Chạy Learning Phase 5-AI-call.
+
+    Returns:
+        (profile, sample_raw_titles) — sample_raw_titles là raw <title> tags
+        từ các chapters đã fetch, để naming phase dùng lại (0 extra fetch).
+        None nếu thất bại.
+    """
     from core.scraper import _dtag  # import local để tránh circular
     domain = urlparse(start_url).netloc.lower()
     tag    = _dtag(domain)
@@ -82,7 +90,14 @@ async def run_learning_phase(
     )
     print(f"{'═'*62}\n", flush=True)
 
-    return profile
+    # ── Extract raw titles cho Naming Phase (0 extra fetch) ───────────────────
+    from learning.naming import get_raw_title_from_html
+    sample_titles: list[str] = [
+        t for t in (get_raw_title_from_html(html) for _, html in chapters)
+        if t
+    ]
+
+    return profile, sample_titles
 
 
 # ── Chapter fetching ──────────────────────────────────────────────────────────
@@ -101,7 +116,7 @@ async def _fetch_chapters(
     from core.scraper import _dtag
     tag = _dtag(domain)
 
-    # ── FIX: Nếu start_url là trang Index → tìm Chapter 1 thật sự trước ─────
+    # ── Nếu start_url là trang Index → tìm Chapter 1 trước ───────────────────
     current_url = start_url
     if not RE_CHAP_URL.search(start_url):
         print(f"  [{tag}] 📋 start_url có vẻ là trang Index → tìm Chapter 1...", flush=True)
@@ -198,7 +213,6 @@ def _apply_ai1_to_profile(base: SiteProfile, ai1: dict) -> SiteProfile:
         val = ai1.get(field)
         if val is None:
             continue
-        # Bỏ qua empty string cho các selector/pattern fields
         if isinstance(val, str) and not val.strip():
             continue
         result[field] = val
@@ -277,21 +291,13 @@ async def _run_ai_calls(
             if ai3.get("special_symbols"):
                 print(f"     → Symbols: {ai3.get('special_symbols', [])[:8]}", flush=True)
 
-            # ── FIX: HTML scan fallback nếu AI #3 báo không có tables ────────
-            # AI chỉ phân tích Ch.3, nhưng <table> có thể xuất hiện ở ch khác.
-            # Nếu bất kỳ chapter nào trong 5 chapters học có <table>, bật flag.
             if not fr["tables"]:
                 has_table_in_html = any("<table" in h.lower() for h in htmls)
                 if has_table_in_html:
                     fr["tables"] = True
-                    print(
-                        f"     → Tables: AI báo không có nhưng HTML scan thấy <table> "
-                        f"→ bật flag",
-                        flush=True,
-                    )
+                    print(f"     → Tables: HTML scan override → bật flag", flush=True)
         else:
             print(f"  [Learn] ⚠ AI #3 thất bại — HTML scan fallback...", flush=True)
-            # AI thất bại hoàn toàn → chỉ dùng HTML scan
             fr = acc.setdefault("formatting_rules", {})
             if any("<table" in h.lower() for h in htmls):
                 fr["tables"] = True
@@ -344,7 +350,7 @@ async def _run_ai_calls(
             ads_keywords = ai5.get("ads_keywords", [])
             print(f"     → confidence = {confidence:.2f}", flush=True)
         else:
-            print(f"  [Learn] ⚠ AI #5 thất bại — dùng confidence mặc định {confidence:.2f}", flush=True)
+            print(f"  [Learn] ⚠ AI #5 thất bại — confidence mặc định {confidence:.2f}", flush=True)
     else:
         print(
             f"  [Learn] ℹ️  {len(htmls)} chapters → confidence mặc định {confidence:.2f}",

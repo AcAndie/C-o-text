@@ -56,7 +56,6 @@ class ProgressDict(TypedDict, total=False):
     all_visited_urls : list[str]
     fingerprints     : list[str]
 
-    # FIX #3: thêm 2 keys bị thiếu
     last_title       : Optional[str]
     last_scraped_url : Optional[str]
 
@@ -70,8 +69,16 @@ class ProgressDict(TypedDict, total=False):
     learning_done : bool
     start_url     : str
 
+    # ── Naming phase (per-story, set once) ───────────────────────────────────
+    naming_done          : bool           # True sau khi naming phase đã chạy
+    story_name_clean     : Optional[str]  # "Monster, No, I'm a Cultivator!"
+    chapter_keyword      : Optional[str]  # "Chapter" | "Episode" | "Ch." | ...
+    has_chapter_subtitle : bool           # True nếu chapter có subtitle phụ
+    story_prefix_strip   : Optional[str]  # prefix cần bóc trước khi parse chap title
+    output_dir_final     : Optional[str]  # "output/Monster, No, I'm a Cultivator!"
 
-# ── AI result types (FIX #2: keys khớp với agents.py) ────────────────────────
+
+# ── AI result types ───────────────────────────────────────────────────────────
 
 class AiClassifyResult(TypedDict, total=False):
     page_type         : str
@@ -91,7 +98,6 @@ class AiInitialProfile(TypedDict, total=False):
 
 
 class AiValidation(TypedDict, total=False):
-    # FIX #2: đổi key names cho khớp với _S_VALIDATE schema và learning/phase.py
     content_valid : bool
     content_fix   : Optional[str]
     next_valid    : bool

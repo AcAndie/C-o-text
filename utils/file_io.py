@@ -64,6 +64,13 @@ def _default_progress() -> ProgressDict:
         completed_at_url = None,
         learning_done    = False,
         start_url        = "",
+        # Naming phase fields
+        naming_done          = False,
+        story_name_clean     = None,
+        chapter_keyword      = None,
+        has_chapter_subtitle = False,
+        story_prefix_strip   = None,
+        output_dir_final     = None,
     )
 
 
