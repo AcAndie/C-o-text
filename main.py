@@ -1,14 +1,17 @@
 """
 main.py — Entry point duy nhất của Cào Text.
 
-Thay đổi v2:
-  RELEARN-1: Parse `!relearn <domain>` trong links.txt.
-             Xóa profile domain đó trước khi chạy → force re-learn.
-  ISSUE-1:   Gọi write_session_header() khi bắt đầu để issues.md có header rõ ràng.
+v3: Pipeline Architecture.
+  CLI-1: Thêm --max-pw-instances N (default=2, override PW_MAX_CONCURRENCY)
+  CLI-2: Thêm --fast-learning (bỏ qua optimizer, chỉ dùng AI selectors)
+  CLI-3: Thêm --no-validation (bỏ qua ProseRichnessBlock — nhanh hơn nhưng ít filter)
+  RELEARN-1: Giữ nguyên `!relearn <domain>` trong links.txt.
+  ISSUE-1:   Gọi write_session_header() khi bắt đầu.
 """
 import sys
 import io
 import asyncio
+import argparse
 import hashlib
 import os
 from datetime import datetime
@@ -21,6 +24,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
 
+import config as _cfg   # import trước để có thể override constants
 from config import INIT_STAGGER, AI_MAX_RPM, OUTPUT_DIR, PROGRESS_DIR
 from ai.client                import AIRateLimiter
 from core.session_pool        import DomainSessionPool, PlaywrightPool
@@ -99,14 +103,9 @@ def _parse_links_file(path: str) -> tuple[list[str], list[str]]:
     Parse links.txt. Trả về (urls, relearn_domains).
 
     Hỗ trợ:
-      - Dòng bình thường: URL hợp lệ
+      - URL hợp lệ
       - `# comment`: bỏ qua
       - `!relearn <domain>`: xóa profile domain này → force re-learn
-
-    Ví dụ links.txt:
-      https://royalroad.com/fiction/55418/...
-      !relearn royalroad.com
-      https://novelfire.net/...
     """
     urls            : list[str] = []
     relearn_domains : list[str] = []
@@ -117,7 +116,6 @@ def _parse_links_file(path: str) -> tuple[list[str], list[str]]:
             if not line or line.startswith("#"):
                 continue
             if line.lower().startswith("!relearn"):
-                # Format: !relearn domain.com
                 parts = line.split(None, 1)
                 if len(parts) == 2:
                     domain = parts[1].strip().lower()
@@ -138,17 +136,11 @@ async def _apply_relearn(
     profiles        : dict,
     profiles_lock   : asyncio.Lock,
 ) -> int:
-    """
-    Xóa các domain trong relearn_domains khỏi profiles dict + ghi disk.
-    Returns số domain đã xóa.
-    """
     if not relearn_domains:
         return 0
-
     removed = 0
     async with profiles_lock:
         for domain in relearn_domains:
-            # Tìm key khớp (có thể có www. prefix hoặc không)
             to_delete = [
                 k for k in profiles
                 if k == domain or k == f"www.{domain}" or f"www.{domain}" == k
@@ -157,11 +149,58 @@ async def _apply_relearn(
                 del profiles[key]
                 print(f"  [Config] 🗑  Profile '{key}' đã xóa → sẽ re-learn", flush=True)
                 removed += 1
-
         if removed > 0:
             await save_profiles(profiles)
-
     return removed
+
+
+# ── CLI argument parser ───────────────────────────────────────────────────────
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog        = "main.py",
+        description = "Cào Text — Web novel scraper với Pipeline Architecture",
+    )
+    parser.add_argument(
+        "links_file",
+        nargs   = "?",
+        default = "links.txt",
+        help    = "File chứa URLs cần cào (default: links.txt)",
+    )
+    parser.add_argument(
+        "--max-pw-instances",
+        type    = int,
+        default = None,
+        metavar = "N",
+        help    = f"Số Playwright instances tối đa (default: {_cfg.PW_MAX_CONCURRENCY})",
+    )
+    parser.add_argument(
+        "--fast-learning",
+        action  = "store_true",
+        help    = "Bỏ qua optimizer, chỉ dùng AI selectors (nhanh hơn ~30%)",
+    )
+    parser.add_argument(
+        "--no-validation",
+        action  = "store_true",
+        help    = "Bỏ qua ProseRichnessBlock (ít filter hơn, nhanh hơn nhẹ)",
+    )
+    return parser
+
+
+def _apply_cli_overrides(args: argparse.Namespace) -> None:
+    """Apply CLI args vào config module (global override)."""
+    if args.max_pw_instances is not None:
+        _cfg.PW_MAX_CONCURRENCY = args.max_pw_instances
+        print(f"  [Config] PW_MAX_CONCURRENCY = {_cfg.PW_MAX_CONCURRENCY}", flush=True)
+
+    if args.fast_learning:
+        # Flag được đọc bởi learning/phase.py
+        os.environ["CAO_FAST_LEARNING"] = "1"
+        print(f"  [Config] Fast learning mode: optimizer disabled", flush=True)
+
+    if args.no_validation:
+        os.environ["CAO_NO_VALIDATION"] = "1"
+        print(f"  [Config] Validation: ProseRichnessBlock disabled", flush=True)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -169,15 +208,21 @@ async def _apply_relearn(
 async def main() -> None:
     ensure_dirs()
 
-    links_file = sys.argv[1] if len(sys.argv) > 1 else "links.txt"
+    # Parse CLI
+    parser = _build_arg_parser()
+    # Tách links_file ra để không conflict với positional args
+    args = parser.parse_args()
+    _apply_cli_overrides(args)
+
+    links_file = args.links_file
     if not os.path.exists(links_file):
         print(f"[ERR] Không tìm thấy {links_file}")
         return
 
     urls, relearn_domains = _parse_links_file(links_file)
 
+    # Đếm dòng không hợp lệ
     skipped_invalid = 0
-    # Đếm dòng không hợp lệ (không phải URL, không phải !relearn, không phải comment)
     with open(links_file, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -199,6 +244,11 @@ async def main() -> None:
     profiles = await load_profiles()
     pm       = ProfileManager(profiles, app.profiles_lock)
 
+    # Apply Playwright semaphore limit
+    if _cfg.PW_MAX_CONCURRENCY > 0:
+        import asyncio as _aio
+        app.pw_pool._semaphore = _aio.Semaphore(_cfg.PW_MAX_CONCURRENCY)
+
     # RELEARN-1: Xóa profiles của domain được yêu cầu re-learn
     if relearn_domains:
         removed = await _apply_relearn(relearn_domains, profiles, app.profiles_lock)
@@ -206,8 +256,6 @@ async def main() -> None:
             print(f"  [Config] ℹ️  Không tìm thấy profile nào để xóa cho {relearn_domains}", flush=True)
 
     print(f"📋 {len(profiles)} domain profile đã load\n")
-
-    # ISSUE-1: Ghi session header vào issues.md
     write_session_header(len(urls))
 
     async def _task(url: str, idx: int) -> None:

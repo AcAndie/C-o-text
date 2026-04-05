@@ -1,6 +1,8 @@
 """
 config.py — Hằng số, regex và helpers thuần túy.
 Không import từ module nội bộ nào.
+
+v2: Thêm PW_MAX_CONCURRENCY, EMPTY_BACKOFF_SCHEDULE cho pipeline architecture.
 """
 import os
 import re
@@ -26,11 +28,6 @@ MAX_CONSECUTIVE_ERRORS   = 5
 MAX_CONSECUTIVE_TIMEOUTS = 3
 TIMEOUT_BACKOFF_BASE     = 30   # seconds
 
-# ── Empty streak / retry ──────────────────────────────────────────────────────
-MAX_EMPTY_STREAK  = 10   # Số chapters rỗng liên tiếp trước khi thử recover (tăng từ 5→10)
-MAX_EMPTY_RETRIES = 1    # Số lần retry sau khi nghi rate-limit
-EMPTY_BACKOFF     = 60   # seconds chờ khi nghi rate-limit
-
 # ── Paths ─────────────────────────────────────────────────────────────────────
 DATA_DIR      = "data"
 OUTPUT_DIR    = "output"
@@ -39,14 +36,10 @@ PROFILES_FILE = os.path.join(DATA_DIR, "site_profiles.json")
 ADS_DB_FILE   = os.path.join(DATA_DIR, "ads_keywords.json")
 
 # ── Learning phase ────────────────────────────────────────────────────────────
-LEARNING_CHAPTERS    = 10   # Số chương fetch để học (tăng từ 5 → 10)
-LEARNING_MIN_CONTENT = 300  # Chars tối thiểu để content hợp lệ
-PROFILE_MAX_AGE_DAYS = 30   # Re-learn nếu profile cũ hơn N ngày
-
-# Số AI calls trong learning phase
-LEARNING_AI_CALLS = 10
-
-# Ngưỡng conflict: nếu 2 AI độc lập disagree trên >= N fields → flag uncertain
+LEARNING_CHAPTERS         = 10
+LEARNING_MIN_CONTENT      = 300
+PROFILE_MAX_AGE_DAYS      = 30
+LEARNING_AI_CALLS         = 10
 LEARNING_CONFLICT_THRESHOLD = 3
 
 # ── AI ────────────────────────────────────────────────────────────────────────
@@ -55,6 +48,17 @@ AI_JITTER  = (0.5, 2.0)
 
 # ── HTTP ──────────────────────────────────────────────────────────────────────
 REQUEST_TIMEOUT = 60
+
+# ── Playwright concurrency (NEW) ─────────────────────────────────────────────
+# Số Playwright instances chạy đồng thời tối đa.
+# Tăng nếu có nhiều RAM, giảm nếu máy yếu.
+# Override bằng CLI: --max-pw-instances N
+PW_MAX_CONCURRENCY: int = int(os.getenv("PW_MAX_CONCURRENCY", "2"))
+
+# ── Empty streak backoff schedule (NEW) ──────────────────────────────────────
+# Khi gặp N chapter liên tiếp không có nội dung → backoff theo schedule này (seconds).
+# [60, 120, 300] = chờ 1 phút → 2 phút → 5 phút trước khi dừng hẳn.
+EMPTY_BACKOFF_SCHEDULE: list[int] = [60, 120, 300]
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
 INIT_STAGGER = 2.0  # seconds giữa các task khi khởi động
@@ -90,8 +94,8 @@ _DELAY_PROFILES: dict[str, tuple[float, float]] = {
     "www.scribblehub.com" : (4.0, 10.0),
     "wattpad.com"         : (3.0,  8.0),
     "www.wattpad.com"     : (3.0,  8.0),
-    "fanfiction.net"      : (4.0, 10.0),
-    "www.fanfiction.net"  : (4.0, 10.0),
+    "fanfiction.net"      : (2.0,  6.0),
+    "www.fanfiction.net"  : (2.0,  6.0),
     "archiveofourown.org" : (2.0,  5.0),
     "www.webnovel.com"    : (3.0,  7.0),
 }
@@ -117,10 +121,10 @@ FALLBACK_CONTENT_SELECTORS: list[str] = [
 
 # ── Regex compile sẵn ────────────────────────────────────────────────────────
 RE_CHAP_URL = re.compile(
-    r"(?:chapter|chuong|chap)[_-]?\d+"        # chapter-5, chap_3, chuong2
-    r"|/ch?[/_-]\d+"                           # /c/123, /c_123, /ch/5, /ch-5
-    r"|(?:episode|ep|part)[_-]?\d+"            # episode-3, ep_5, part-2
-    r"|/s/\d+/\d+",                            # fanfiction.net /s/123/5/
+    r"(?:chapter|chuong|chap)[_-]?\d+"
+    r"|/ch?[/_-]\d+"
+    r"|(?:episode|ep|part)[_-]?\d+"
+    r"|/s/\d+/\d+",
     re.IGNORECASE,
 )
 
@@ -130,10 +134,10 @@ RE_NEXT_BTN = re.compile(
 )
 
 RE_CHAP_HREF = re.compile(
-    r"/(?:chapter|chuong|chap)[_-]?\d+"       # /chapter-5
-    r"|/ch?[/_-]\d+"                           # /c/123, /ch/5
-    r"|/(?:episode|ep|part)[_-]?\d+"          # /episode-3
-    r"|/s/\d+/\d+/",                           # fanfiction.net
+    r"/(?:chapter|chuong|chap)[_-]?\d+"
+    r"|/ch?[/_-]\d+"
+    r"|/(?:episode|ep|part)[_-]?\d+"
+    r"|/s/\d+/\d+/",
     re.IGNORECASE,
 )
 
@@ -148,3 +152,9 @@ RE_CHAP_SLUG = re.compile(
 )
 
 RE_FANFIC = re.compile(r"(/s/\d+/)(\d+)(/.+)?$")
+
+# RE_CHAP_HINT: nhận diện chapter keyword có số theo sau (tránh false positive)
+RE_CHAP_HINT = re.compile(
+    r"\b(?:chapter|chap|episode|ep|part)\s+\d+",
+    re.IGNORECASE,
+)

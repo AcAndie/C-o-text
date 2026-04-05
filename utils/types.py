@@ -1,9 +1,12 @@
 # utils/types.py
 """
 utils/types.py — TypedDict definitions cho toàn bộ project.
+
+v2: Bổ sung pipeline fields vào SiteProfile.
+    Backward compatible — tất cả pipeline fields là Optional.
 """
 from __future__ import annotations
-from typing import Optional, TypedDict
+from typing import Any, Optional, TypedDict
 
 
 # ── Formatting rules ──────────────────────────────────────────────────────────
@@ -31,9 +34,13 @@ class FormattingRules(TypedDict, total=False):
 # ── Site profile ──────────────────────────────────────────────────────────────
 
 class SiteProfile(TypedDict, total=False):
+    # ── Core identity ─────────────────────────────────────────────────────────
     domain               : str
     last_learned         : str
     confidence           : float
+    profile_version      : int          # 1=legacy, 2=pipeline architecture
+
+    # ── Legacy selector fields (v1) — giữ cho backward compat ────────────────
     content_selector     : Optional[str]
     next_selector        : Optional[str]
     title_selector       : Optional[str]
@@ -45,6 +52,18 @@ class SiteProfile(TypedDict, total=False):
     ads_keywords_learned : list[str]
     learned_chapters     : list[int]
     sample_urls          : list[str]
+
+    # ── Pipeline config (v2) ─────────────────────────────────────────────────
+    # Dict với cấu trúc PipelineConfig.to_dict()
+    # None = chưa có pipeline (cần learning hoặc dùng default)
+    pipeline             : Optional[dict]
+    optimizer_score      : float        # Score từ PipelineEvaluator
+    requires_relearn     : bool         # True = migration thất bại, cần relearn
+    migration_notes      : Optional[str]
+
+    # ── Debug / meta ──────────────────────────────────────────────────────────
+    uncertain_fields     : list[str]
+    learning_version     : int          # 1=5-call, 2=10-call
 
 
 # ── Progress ──────────────────────────────────────────────────────────────────
@@ -59,23 +78,23 @@ class ProgressDict(TypedDict, total=False):
     last_title       : Optional[str]
     last_scraped_url : Optional[str]
 
-    story_id        : Optional[str]
-    story_id_regex  : Optional[str]
-    story_id_locked : bool
+    story_id         : Optional[str]
+    story_id_regex   : Optional[str]
+    story_id_locked  : bool
 
     completed        : bool
     completed_at_url : Optional[str]
 
-    learning_done : bool
-    start_url     : str
+    learning_done    : bool
+    start_url        : str
 
-    # ── Naming phase (per-story, set once) ───────────────────────────────────
-    naming_done          : bool           # True sau khi naming phase đã chạy
-    story_name_clean     : Optional[str]  # "Monster, No, I'm a Cultivator!"
-    chapter_keyword      : Optional[str]  # "Chapter" | "Episode" | "Ch." | ...
-    has_chapter_subtitle : bool           # True nếu chapter có subtitle phụ
-    story_prefix_strip   : Optional[str]  # prefix cần bóc trước khi parse chap title
-    output_dir_final     : Optional[str]  # "output/Monster, No, I'm a Cultivator!"
+    # ── Naming phase ──────────────────────────────────────────────────────────
+    naming_done          : bool
+    story_name_clean     : Optional[str]
+    chapter_keyword      : Optional[str]
+    has_chapter_subtitle : bool
+    story_prefix_strip   : Optional[str]
+    output_dir_final     : Optional[str]
 
 
 # ── AI result types ───────────────────────────────────────────────────────────
