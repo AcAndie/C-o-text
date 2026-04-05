@@ -1,37 +1,24 @@
 """
-learning/migrator.py — Migrate SiteProfile format cũ → format mới (với pipeline config).
+learning/migrator.py — Migrate SiteProfile v1 → v2 (pipeline config).
 
-Format cũ (v1):
+v2 changes:
+  MIG-1: Xóa migrate_all() — dead code, không có chỗ nào gọi.
+         Caller (scraper.py) gọi migrate_profile() theo từng domain.
+
+Format v1 (legacy):
     {
         "domain": "royalroad.com",
-        "content_selector": "div.chapter-content",
-        "next_selector": "a.btn-primary[rel='next']",
-        "nav_type": "rel_next",
-        ...
-    }
-
-Format mới (v2):
-    {
-        "domain": "royalroad.com",
-        "pipeline": {
-            "fetch_chain": {...},
-            "extract_chain": {...},
-            ...
-        },
-        # Giữ lại các field cũ để backward compat
         "content_selector": "div.chapter-content",
         ...
     }
 
-migrate_profile():
-    - Đọc profile cũ
-    - Map các field sang PipelineConfig tương ứng
-    - Trả về profile mới + cờ requires_relearn nếu mapping không đủ thông tin
-
-Backward compatibility:
-    PipelineRunner.from_profile() kiểm tra "pipeline" key trước.
-    Nếu không có → trả về None → caller dùng default pipeline.
-    Không breaking change cho code cũ.
+Format v2 (pipeline):
+    {
+        "domain": "royalroad.com",
+        "pipeline": {"fetch_chain": {...}, ...},
+        "content_selector": "...",   ← giữ lại cho backward compat
+        ...
+    }
 """
 from __future__ import annotations
 
@@ -41,15 +28,11 @@ from pipeline.base import ChainConfig, PipelineConfig, StepConfig
 
 logger = logging.getLogger(__name__)
 
-# Profile version hiện tại
 CURRENT_VERSION = 2
 
 
 def needs_migration(profile: dict) -> bool:
-    """
-    Kiểm tra profile có cần migrate không.
-    True nếu: không có "pipeline" key HOẶC version < CURRENT_VERSION.
-    """
+    """True nếu profile không có "pipeline" key hoặc version < 2."""
     if not profile:
         return False
     if "pipeline" not in profile:
@@ -60,32 +43,31 @@ def needs_migration(profile: dict) -> bool:
 
 def migrate_profile(profile: dict) -> tuple[dict, bool]:
     """
-    Migrate profile cũ sang format mới.
+    Migrate profile v1 → v2.
 
     Returns:
         (migrated_profile, requires_relearn)
-        requires_relearn = True nếu migration không đủ thông tin
-                           (thiếu selectors quan trọng → cần re-optimize)
+        requires_relearn = True nếu thiếu selectors quan trọng
+                           → caller nên force relearn thay vì dùng migrated profile
     """
     if not needs_migration(profile):
         return profile, False
 
     domain = profile.get("domain", "unknown")
-    logger.info("[Migrator] Migrating profile for %s", domain)
+    logger.info("[Migrator] Migrating profile: %s", domain)
 
-    # ── Map các field cũ → PipelineConfig ────────────────────────────────────
-    content_sel  = profile.get("content_selector")
-    next_sel     = profile.get("next_selector")
-    title_sel    = profile.get("title_selector")
-    nav_type     = profile.get("nav_type")
-    requires_pw  = bool(profile.get("requires_playwright", False))
-    remove_sels  = profile.get("remove_selectors") or []
+    content_sel = profile.get("content_selector")
+    next_sel    = profile.get("next_selector")
+    title_sel   = profile.get("title_selector")
+    nav_type    = profile.get("nav_type")
+    requires_pw = bool(profile.get("requires_playwright", False))
 
     # Fetch chain
-    if requires_pw:
-        fetch_steps = [StepConfig("playwright"), StepConfig("hybrid")]
-    else:
-        fetch_steps = [StepConfig("hybrid"), StepConfig("playwright")]
+    fetch_steps = (
+        [StepConfig("playwright"), StepConfig("hybrid")]
+        if requires_pw
+        else [StepConfig("hybrid"), StepConfig("playwright")]
+    )
 
     # Extract chain
     extract_steps: list[StepConfig] = []
@@ -95,6 +77,7 @@ def migrate_profile(profile: dict) -> tuple[dict, bool]:
         StepConfig("json_ld"),
         StepConfig("density_heuristic"),
         StepConfig("fallback_list"),
+        StepConfig("ai_extract"),
     ]
 
     # Title chain
@@ -108,8 +91,7 @@ def migrate_profile(profile: dict) -> tuple[dict, bool]:
         StepConfig("url_slug"),
     ]
 
-    # Nav chain — map nav_type sang block tương ứng
-    nav_steps: list[StepConfig] = []
+    # Nav chain
     _NAV_TYPE_MAP = {
         "rel_next"       : "rel_next",
         "selector"       : "selector",
@@ -117,29 +99,30 @@ def migrate_profile(profile: dict) -> tuple[dict, bool]:
         "fanfic"         : "fanfic",
         "select_dropdown": "select_dropdown",
     }
+    nav_steps: list[StepConfig] = []
     if nav_type and nav_type in _NAV_TYPE_MAP:
-        mapped = _NAV_TYPE_MAP[nav_type]
+        mapped     = _NAV_TYPE_MAP[nav_type]
         step_params: dict = {}
         if mapped == "selector" and next_sel:
             step_params = {"selector": next_sel}
         nav_steps.append(StepConfig(mapped, step_params))
 
-    # Thêm selector nav nếu chưa có và có next_sel
+    # Thêm selector nếu có next_sel và chưa trong nav_steps
     if next_sel and not any(
         s.type == "selector" and s.params.get("selector") == next_sel
         for s in nav_steps
     ):
         nav_steps.append(StepConfig("selector", {"selector": next_sel}))
 
-    # Luôn có fallback chain đầy đủ
+    # Fallback chain đầy đủ
     for step_type in ("rel_next", "anchor_text", "slug_increment", "fanfic", "ai_nav"):
         if not any(s.type == step_type for s in nav_steps):
             nav_steps.append(StepConfig(step_type))
 
     # Validate chain
     validate_steps = [
-        StepConfig("length",        {"min_chars": 100}),
-        StepConfig("prose_richness",{"min_word_count": 20}),
+        StepConfig("length",         {"min_chars": 100}),
+        StepConfig("prose_richness", {"min_word_count": 20}),
     ]
 
     pipeline_config = PipelineConfig(
@@ -150,67 +133,33 @@ def migrate_profile(profile: dict) -> tuple[dict, bool]:
         nav_chain      = ChainConfig("navigate", nav_steps),
         validate_chain = ChainConfig("validate", validate_steps),
         score          = float(profile.get("confidence", 0.5)),
-        notes          = f"migrated_from_v1",
+        notes          = "migrated_from_v1",
     )
 
-    # ── Xác định có cần relearn không ────────────────────────────────────────
-    requires_relearn = False
-    missing = []
+    # Xác định có cần relearn không
+    missing: list[str] = []
     if not content_sel:
         missing.append("content_selector")
     if not next_sel and nav_type not in ("rel_next", "slug_increment", "fanfic"):
         missing.append("next_selector")
-    if missing:
-        requires_relearn = True
-        logger.warning(
-            "[Migrator] %s missing critical fields %s → requires_relearn",
-            domain, missing,
-        )
 
-    # ── Build migrated profile ────────────────────────────────────────────────
-    migrated = dict(profile)   # giữ nguyên tất cả fields cũ
+    requires_relearn = bool(missing)
+    if requires_relearn:
+        logger.warning("[Migrator] %s missing %s → requires_relearn", domain, missing)
+
+    migrated                     = dict(profile)
     migrated["pipeline"]         = pipeline_config.to_dict()
     migrated["requires_relearn"] = requires_relearn
     migrated["profile_version"]  = CURRENT_VERSION
-
-    # Ghi chú migration
-    migrated["migration_notes"] = (
-        f"auto_migrated from v1. "
+    migrated["migration_notes"]  = (
+        "auto_migrated from v1. "
         + (f"Missing: {missing}. " if missing else "")
         + ("Requires relearn." if requires_relearn else "Migration complete.")
     )
 
     print(
-        f"  [Migrator] ✅ {domain}: migrated "
-        + (f"(⚠ requires_relearn: {missing})" if requires_relearn else "(complete)"),
+        f"  [Migrator] ✅ {domain}: migrated"
+        + (f" (⚠ requires_relearn: {missing})" if requires_relearn else ""),
         flush=True,
     )
     return migrated, requires_relearn
-
-
-def migrate_all(profiles: dict[str, dict]) -> tuple[dict[str, dict], list[str]]:
-    """
-    Migrate tất cả profiles trong dict.
-
-    Returns:
-        (migrated_profiles, list_of_domains_requiring_relearn)
-    """
-    migrated: dict[str, dict] = {}
-    relearn_domains: list[str] = []
-
-    for domain, profile in profiles.items():
-        if needs_migration(profile):
-            new_profile, requires_relearn = migrate_profile(profile)
-            migrated[domain] = new_profile
-            if requires_relearn:
-                relearn_domains.append(domain)
-        else:
-            migrated[domain] = profile
-
-    if relearn_domains:
-        logger.info(
-            "[Migrator] %d domains need relearn: %s",
-            len(relearn_domains), relearn_domains,
-        )
-
-    return migrated, relearn_domains

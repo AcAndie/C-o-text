@@ -1,22 +1,22 @@
 """
-pipeline/navigator.py — Navigation blocks (tìm URL chương tiếp theo).
+pipeline/navigator.py — Navigation blocks.
 
-Blocks (theo thứ tự ưu tiên trong default chain):
-    RelNextNavBlock      — <link rel="next"> hoặc <a rel="next"> (chuẩn nhất)
-    SelectorNavBlock     — CSS selector đã học từ profile
-    AnchorTextNavBlock   — Tìm link có text "Next", "Next Chapter", v.v.
-    SlugIncrementNavBlock — /chapter-5 → /chapter-6 (URL pattern)
-    FanficNavBlock       — fanfiction.net /s/{id}/{num}/ pattern
-    SelectDropdownNavBlock — Site dùng <select> dropdown để chọn chapter
-    AINavBlock           — AI fallback (tốn API call)
+v2 changes:
+  NAV-1: AINavBlock đọc ai_limiter từ ctx.runtime.ai_limiter thay vì
+         ctx.profile.get("_ai_limiter").
 
-SelectDropdownNavBlock là block MỚI — code cũ chưa có.
-Một số site dùng <select id="chapter-select"> thay vì link thông thường.
+Blocks (theo thứ tự ưu tiên):
+    RelNextNavBlock       — <link rel="next"> / <a rel="next">  (chuẩn nhất)
+    SelectorNavBlock      — CSS selector từ profile
+    AnchorTextNavBlock    — Text "Next", "Next Chapter", v.v.
+    SlugIncrementNavBlock — /chapter-5 → /chapter-6
+    FanficNavBlock        — fanfiction.net /s/{id}/{num}/
+    SelectDropdownNavBlock — <select> chapter dropdown
+    AINavBlock            — AI fallback (tốn API call, chỉ dùng khi mọi thứ fail)
 """
 from __future__ import annotations
 
 import asyncio
-import re
 import time
 from urllib.parse import urljoin
 
@@ -26,14 +26,12 @@ from config import RE_NEXT_BTN, RE_CHAP_SLUG, RE_FANFIC
 from pipeline.base import BlockType, BlockResult, PipelineContext, ScraperBlock
 
 
-# ── 1. Rel Next Block ─────────────────────────────────────────────────────────
+# ── 1. Rel Next ───────────────────────────────────────────────────────────────
 
 class RelNextNavBlock(ScraperBlock):
     """
     Tìm URL tiếp theo qua HTML rel="next".
-    Chuẩn nhất — nếu site implement đúng SEO standard thì dùng cái này.
-    
-    Support: <link rel="next" href="..."> (SEO) và <a rel="next" href="...">
+    Chuẩn SEO — confidence cao nhất vì site tự declare link.
     """
     block_type = BlockType.NAVIGATE
     name       = "rel_next"
@@ -56,7 +54,6 @@ class RelNextNavBlock(ScraperBlock):
                     ),
                     start,
                 )
-
             return self._timed(BlockResult.failed("no rel=next found"), start)
         except asyncio.CancelledError:
             raise
@@ -71,17 +68,15 @@ class RelNextNavBlock(ScraperBlock):
         return cls()
 
 
-# ── 2. Selector Nav Block ─────────────────────────────────────────────────────
+# ── 2. Selector Nav ───────────────────────────────────────────────────────────
 
 class SelectorNavBlock(ScraperBlock):
-    """
-    Tìm next URL bằng CSS selector đã học từ profile.
-    """
+    """CSS selector đã học từ profile."""
     block_type = BlockType.NAVIGATE
     name       = "selector"
 
     def __init__(self, selector: str | None = None) -> None:
-        self.selector = selector   # None → đọc từ ctx.profile["next_selector"]
+        self.selector = selector
 
     async def execute(self, ctx: PipelineContext) -> BlockResult:
         start = time.monotonic()
@@ -103,13 +98,12 @@ class SelectorNavBlock(ScraperBlock):
 
             href = el.get("href")
             if not href:
-                # Selector match nhưng không phải <a> → thử tìm <a> bên trong
                 inner = el.find("a", href=True)
                 href  = inner.get("href") if inner else None
 
             if not href:
                 return self._timed(
-                    BlockResult.failed(f"selector {sel!r} matched but no href"),
+                    BlockResult.failed(f"selector {sel!r}: no href"),
                     start,
                 )
 
@@ -138,13 +132,10 @@ class SelectorNavBlock(ScraperBlock):
         return cls(selector=config.get("selector"))
 
 
-# ── 3. Anchor Text Nav Block ──────────────────────────────────────────────────
+# ── 3. Anchor Text Nav ────────────────────────────────────────────────────────
 
 class AnchorTextNavBlock(ScraperBlock):
-    """
-    Tìm link có anchor text khớp "Next", "Next Chapter", "Tiếp", v.v.
-    Dùng RE_NEXT_BTN từ config.
-    """
+    """Tìm link có anchor text khớp RE_NEXT_BTN."""
     block_type = BlockType.NAVIGATE
     name       = "anchor_text"
 
@@ -167,9 +158,8 @@ class AnchorTextNavBlock(ScraperBlock):
                         ),
                         start,
                     )
-
             return self._timed(
-                BlockResult.failed("no anchor with next-button text found"),
+                BlockResult.failed("no anchor with next-button text"),
                 start,
             )
         except asyncio.CancelledError:
@@ -185,15 +175,10 @@ class AnchorTextNavBlock(ScraperBlock):
         return cls()
 
 
-# ── 4. Slug Increment Block ───────────────────────────────────────────────────
+# ── 4. Slug Increment ─────────────────────────────────────────────────────────
 
 class SlugIncrementNavBlock(ScraperBlock):
-    """
-    Tăng số chapter trong URL slug.
-    /chapter-5 → /chapter-6, /chuong_10 → /chuong_11
-    
-    Dùng RE_CHAP_SLUG từ config.
-    """
+    """/chapter-5 → /chapter-6 bằng regex RE_CHAP_SLUG."""
     block_type = BlockType.NAVIGATE
     name       = "slug_increment"
 
@@ -225,14 +210,10 @@ class SlugIncrementNavBlock(ScraperBlock):
         return cls()
 
 
-# ── 5. Fanfic Nav Block ───────────────────────────────────────────────────────
+# ── 5. Fanfic Nav ─────────────────────────────────────────────────────────────
 
 class FanficNavBlock(ScraperBlock):
-    """
-    fanfiction.net navigation: /s/{story_id}/{chapter_num}/{title}
-    Tăng chapter_num lên 1.
-    Dùng RE_FANFIC từ config.
-    """
+    """fanfiction.net /s/{story_id}/{chapter_num}/{title}"""
     block_type = BlockType.NAVIGATE
     name       = "fanfic"
 
@@ -272,28 +253,18 @@ class FanficNavBlock(ScraperBlock):
         return cls()
 
 
-# ── 6. Select Dropdown Nav Block [NEW] ────────────────────────────────────────
+# ── 6. Select Dropdown Nav ────────────────────────────────────────────────────
 
 class SelectDropdownNavBlock(ScraperBlock):
     """
-    [NEW] Tìm next chapter URL từ <select> dropdown.
-    
-    Một số site (lightnovelreader, novelfull, v.v.) dùng dropdown thay vì link:
-        <select id="chapterList">
-            <option value="/chapter-1">Chapter 1</option>
-            <option value="/chapter-2" selected>Chapter 2</option>  ← current
-            <option value="/chapter-3">Chapter 3</option>           ← next
-        </select>
-    
+    Tìm next chapter từ <select> dropdown.
+
     Logic: tìm <option selected>, lấy <option> kế tiếp trong DOM.
-    
-    select_selector: CSS selector cho <select> element.
-                     None → thử các selectors phổ biến tự động.
+    Fallback: tìm option có value khớp URL hiện tại.
     """
     block_type = BlockType.NAVIGATE
     name       = "select_dropdown"
 
-    # Các selectors phổ biến cho chapter dropdown
     _AUTO_SELECTORS = [
         "select#chapterList",
         "select.chapter-select",
@@ -301,7 +272,7 @@ class SelectDropdownNavBlock(ScraperBlock):
         "select.selectpicker",
         "select#chapter",
         "select.chapter-dropdown",
-        "select",  # last resort
+        "select",
     ]
 
     def __init__(self, select_selector: str | None = None) -> None:
@@ -329,14 +300,12 @@ class SelectDropdownNavBlock(ScraperBlock):
                     if not options:
                         continue
 
-                    # Tìm option đang được selected
                     current_idx = None
                     for i, opt in enumerate(options):
                         if opt.get("selected") is not None:
                             current_idx = i
                             break
 
-                    # Fallback: tìm option có value khớp URL hiện tại
                     if current_idx is None:
                         for i, opt in enumerate(options):
                             val = opt.get("value", "")
@@ -347,9 +316,7 @@ class SelectDropdownNavBlock(ScraperBlock):
                     if current_idx is None or current_idx >= len(options) - 1:
                         continue
 
-                    next_opt = options[current_idx + 1]
-                    next_val = next_opt.get("value", "").strip()
-
+                    next_val = options[current_idx + 1].get("value", "").strip()
                     if not next_val:
                         continue
 
@@ -366,10 +333,7 @@ class SelectDropdownNavBlock(ScraperBlock):
                 except Exception:
                     continue
 
-            return self._timed(
-                BlockResult.failed("no chapter dropdown found"),
-                start,
-            )
+            return self._timed(BlockResult.failed("no chapter dropdown found"), start)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -390,8 +354,9 @@ class SelectDropdownNavBlock(ScraperBlock):
 
 class AINavBlock(ScraperBlock):
     """
-    AI fallback navigation — gọi Gemini để tìm next URL.
+    AI fallback navigation.
     Chỉ dùng khi tất cả heuristic blocks thất bại.
+    Đọc ai_limiter từ ctx.runtime — không còn ctx.profile["_ai_limiter"].
     """
     block_type = BlockType.NAVIGATE
     name       = "ai_nav"
@@ -399,10 +364,10 @@ class AINavBlock(ScraperBlock):
     async def execute(self, ctx: PipelineContext) -> BlockResult:
         start = time.monotonic()
         try:
-            ai_limiter = ctx.profile.get("_ai_limiter")
+            ai_limiter = ctx.runtime.ai_limiter
             if ai_limiter is None:
                 return self._timed(
-                    BlockResult.skipped("no ai_limiter"),
+                    BlockResult.skipped("no ai_limiter in runtime"),
                     start,
                 )
 
@@ -422,7 +387,6 @@ class AINavBlock(ScraperBlock):
                     ),
                     start,
                 )
-
             return self._timed(BlockResult.failed("AI could not find next URL"), start)
         except asyncio.CancelledError:
             raise
@@ -437,7 +401,7 @@ class AINavBlock(ScraperBlock):
         return cls()
 
 
-# ── Registry ──────────────────────────────────────────────────────────────────
+# ── Registry ───────────────────────────────────────────────────────────────────
 
 _NAV_BLOCK_MAP: dict[str, type[ScraperBlock]] = {
     "rel_next"       : RelNextNavBlock,
@@ -451,7 +415,6 @@ _NAV_BLOCK_MAP: dict[str, type[ScraperBlock]] = {
 
 
 def make_nav_block(config: dict) -> ScraperBlock:
-    """Factory: tạo navigation block từ StepConfig dict."""
     block_type = config.get("type", "anchor_text")
     cls = _NAV_BLOCK_MAP.get(block_type)
     if cls is None:

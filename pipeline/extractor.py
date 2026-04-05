@@ -1,27 +1,32 @@
 """
 pipeline/extractor.py — Content extraction blocks.
 
-Blocks (theo thứ tự ưu tiên trong default chain):
-    SelectorExtractBlock     — CSS selector từ learned profile (nhanh nhất)
-    JsonLdExtractBlock       — JSON-LD Article/BlogPosting schema (nhiều site embed sẵn)
-    DensityHeuristicBlock    — Trafilatura-style: tìm block có mật độ text cao nhất
-    XPathExtractBlock        — XPath alternative cho sites dùng id/attribute phức tạp
-    FallbackListExtractBlock — Thử danh sách FALLBACK_CONTENT_SELECTORS đã biết
-    AIExtractBlock           — AI last resort (tốn API calls, chỉ dùng khi mọi thứ fail)
+v2 changes:
+  EXT-1: AIExtractBlock được implement thật — không còn luôn trả về SKIPPED.
+         Gọi Gemini để extract content khi mọi heuristic đều thất bại.
+         Đây là "last resort" thật sự, không phải stub.
 
-Content Quality Scoring (dùng trong DensityHeuristic):
-    Mỗi block element được chấm điểm:
-        text_density = text_len / max(html_len, 1)
-        link_density = link_text_len / max(text_len, 1)
-        score = text_density * (1 - link_density) * log(text_len + 1)
-    Block có score cao nhất = main content.
+  EXT-2: FallbackListExtractBlock bỏ "body text" fallback.
+         extract_plain_text(body) trên toàn bộ <body> lấy ra nav, footer,
+         ads, script text — garbage. Tốt hơn là fail rõ ràng và để
+         AIExtractBlock xử lý.
+
+  EXT-3: AIExtractBlock đọc ai_limiter từ ctx.runtime — không còn
+         ctx.profile.get("_ai_limiter").
+
+Blocks:
+    SelectorExtractBlock     — CSS selector từ profile (fastest)
+    JsonLdExtractBlock       — JSON-LD Article schema
+    DensityHeuristicBlock    — Text density scoring (works on any site)
+    XPathExtractBlock        — XPath alternative
+    FallbackListExtractBlock — Known selector list
+    AIExtractBlock           — Gemini AI extraction (last resort, REAL)
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import math
-import re
 import time
 from typing import Any
 
@@ -30,22 +35,22 @@ from bs4 import BeautifulSoup, Tag
 from config import FALLBACK_CONTENT_SELECTORS
 from pipeline.base import BlockType, BlockResult, PipelineContext, ScraperBlock
 
-_MIN_CONTENT_CHARS = 150   # Tối thiểu để coi là content hợp lệ
-_MIN_PROSE_WORDS   = 30    # Tối thiểu word count cho prose richness check
+_MIN_CONTENT_CHARS = 150
+_MIN_PROSE_WORDS   = 30
 
 
-# ── 1. Selector Extract Block ─────────────────────────────────────────────────
+# ── 1. Selector Extract ────────────────────────────────────────────────────────
 
 class SelectorExtractBlock(ScraperBlock):
-    """
-    Extract content bằng CSS selector đã học từ profile.
-    Primary strategy — nhanh nhất khi profile đã có selector tốt.
-    """
+    """CSS selector đã học — primary strategy, fastest."""
     block_type = BlockType.EXTRACT
     name       = "selector"
 
-    def __init__(self, selector: str | None = None, min_chars: int = _MIN_CONTENT_CHARS) -> None:
-        # selector=None → đọc từ ctx.profile["content_selector"] khi execute
+    def __init__(
+        self,
+        selector : str | None = None,
+        min_chars: int = _MIN_CONTENT_CHARS,
+    ) -> None:
         self.selector  = selector
         self.min_chars = min_chars
 
@@ -54,11 +59,11 @@ class SelectorExtractBlock(ScraperBlock):
         try:
             sel = self.selector or ctx.profile.get("content_selector")
             if not sel:
-                return self._timed(BlockResult.skipped("no selector"), start)
+                return self._timed(BlockResult.skipped("no content_selector"), start)
 
             soup = ctx.soup
             if soup is None:
-                return self._timed(BlockResult.skipped("no soup in context"), start)
+                return self._timed(BlockResult.skipped("no soup"), start)
 
             el = soup.select_one(sel)
             if el is None:
@@ -71,8 +76,7 @@ class SelectorExtractBlock(ScraperBlock):
             if len(text.strip()) < self.min_chars:
                 return self._timed(
                     BlockResult.failed(
-                        f"selector {sel!r} returned only {len(text.strip())} chars "
-                        f"(min={self.min_chars})"
+                        f"selector {sel!r}: {len(text.strip())} chars < {self.min_chars}"
                     ),
                     start,
                 )
@@ -108,18 +112,12 @@ class SelectorExtractBlock(ScraperBlock):
         )
 
 
-# ── 2. JSON-LD Extract Block ──────────────────────────────────────────────────
+# ── 2. JSON-LD Extract ────────────────────────────────────────────────────────
 
 class JsonLdExtractBlock(ScraperBlock):
     """
-    Extract content từ JSON-LD structured data (Article / BlogPosting schema).
-    
-    Nhiều web novel site nhúng Article schema:
-        <script type="application/ld+json">
-        {"@type": "Article", "articleBody": "..."}
-        </script>
-    
-    Kỹ thuật này hoạt động ngay cả khi CSS selectors thay đổi.
+    Extract từ JSON-LD Article/BlogPosting schema.
+    Không cần CSS selector — works even when DOM structure changes.
     """
     block_type = BlockType.EXTRACT
     name       = "json_ld"
@@ -136,8 +134,7 @@ class JsonLdExtractBlock(ScraperBlock):
                     raw = script.get_text(strip=True)
                     if not raw:
                         continue
-                    data = json.loads(raw)
-                    # Handle @graph arrays
+                    data  = json.loads(raw)
                     items = data if isinstance(data, list) else [data]
                     for item in items:
                         body = (
@@ -146,21 +143,28 @@ class JsonLdExtractBlock(ScraperBlock):
                             or item.get("description")
                         )
                         schema_type = item.get("@type", "")
-                        if body and isinstance(body, str) and len(body.strip()) >= _MIN_CONTENT_CHARS:
-                            if schema_type in ("Article", "BlogPosting", "NewsArticle", "WebPage", ""):
-                                return self._timed(
-                                    BlockResult.success(
-                                        data        = body.strip(),
-                                        method_used = f"json_ld:{schema_type or 'unknown'}",
-                                        confidence  = 0.85,
-                                        char_count  = len(body),
-                                    ),
-                                    start,
-                                )
+                        if (
+                            body
+                            and isinstance(body, str)
+                            and len(body.strip()) >= _MIN_CONTENT_CHARS
+                            and schema_type in (
+                                "Article", "BlogPosting", "NewsArticle",
+                                "WebPage", "",
+                            )
+                        ):
+                            return self._timed(
+                                BlockResult.success(
+                                    data        = body.strip(),
+                                    method_used = f"json_ld:{schema_type or 'unknown'}",
+                                    confidence  = 0.85,
+                                    char_count  = len(body),
+                                ),
+                                start,
+                            )
                 except (json.JSONDecodeError, AttributeError):
                     continue
 
-            return self._timed(BlockResult.failed("no usable JSON-LD found"), start)
+            return self._timed(BlockResult.failed("no usable JSON-LD"), start)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -174,29 +178,20 @@ class JsonLdExtractBlock(ScraperBlock):
         return cls()
 
 
-# ── 3. Density Heuristic Block ────────────────────────────────────────────────
+# ── 3. Density Heuristic ──────────────────────────────────────────────────────
 
 class DensityHeuristicBlock(ScraperBlock):
     """
-    Trafilatura-inspired content extraction bằng text density scoring.
-    
-    Không cần CSS selector — tìm block có mật độ text cao nhất:
-        score = text_density × (1 - link_density) × log(text_len + 1)
-    
-    Loại bỏ blocks có link_density cao (navigation menus, footers).
-    Ưu tiên blocks có nhiều <p> tags (văn xuôi).
-    
-    Works on ANY site kể cả khi selector hỏng hoàn toàn.
+    Trafilatura-style: tìm block có mật độ text cao nhất.
+    score = text_density × (1 - link_density) × log(text_len + 1)
+
+    Works on any site without any selector knowledge.
     """
     block_type = BlockType.EXTRACT
     name       = "density_heuristic"
 
-    # Tags được xét là "content container"
-    _CANDIDATE_TAGS = frozenset({
-        "article", "main", "section", "div", "td",
-    })
-    # Tags bị loại (chắc chắn không phải content)
-    _SKIP_TAGS = frozenset({
+    _CANDIDATE_TAGS = frozenset({"article", "main", "section", "div", "td"})
+    _SKIP_TAGS      = frozenset({
         "script", "style", "nav", "header", "footer",
         "aside", "form", "noscript", "iframe",
     })
@@ -218,9 +213,7 @@ class DensityHeuristicBlock(ScraperBlock):
                 if not isinstance(el, Tag):
                     continue
                 tag = el.name.lower() if el.name else ""
-                if tag in self._SKIP_TAGS:
-                    continue
-                if tag not in self._CANDIDATE_TAGS:
+                if tag in self._SKIP_TAGS or tag not in self._CANDIDATE_TAGS:
                     continue
 
                 score, text_len = self._score_element(el)
@@ -230,26 +223,25 @@ class DensityHeuristicBlock(ScraperBlock):
 
             if best_el is None or best_score == 0:
                 return self._timed(
-                    BlockResult.failed("no content block found by density heuristic"),
+                    BlockResult.failed("no content block found by density"),
                     start,
                 )
 
             text = _format_element(best_el, ctx.profile.get("formatting_rules"))
             if len(text.strip()) < self.min_chars:
                 return self._timed(
-                    BlockResult.failed(f"density winner too short: {len(text.strip())} chars"),
+                    BlockResult.failed(f"density winner too short: {len(text.strip())}c"),
                     start,
                 )
 
-            # Confidence: dựa trên score (cao = chắc hơn)
             confidence = min(0.85, 0.4 + best_score * 0.1)
 
             return self._timed(
                 BlockResult.success(
-                    data        = text,
-                    method_used = "density_heuristic",
-                    confidence  = confidence,
-                    char_count  = len(text),
+                    data          = text,
+                    method_used   = "density_heuristic",
+                    confidence    = confidence,
+                    char_count    = len(text),
                     density_score = round(best_score, 3),
                 ),
                 start,
@@ -260,30 +252,23 @@ class DensityHeuristicBlock(ScraperBlock):
             return self._timed(BlockResult.failed(str(e) or repr(e)), start)
 
     def _score_element(self, el: Tag) -> tuple[float, int]:
-        """Tính content score và text length cho một element."""
-        full_html = str(el)
-        html_len  = max(len(full_html), 1)
-
-        # Lấy text, tính độ dài
-        text = el.get_text(separator=" ", strip=True)
-        text_len = len(text)
+        full_html    = str(el)
+        html_len     = max(len(full_html), 1)
+        text         = el.get_text(separator=" ", strip=True)
+        text_len     = len(text)
         if text_len < 50:
             return 0.0, 0
 
-        # Link density — cao = navigation, không phải content
-        link_text = "".join(
-            a.get_text(separator=" ", strip=True)
-            for a in el.find_all("a")
+        link_text    = "".join(
+            a.get_text(separator=" ", strip=True) for a in el.find_all("a")
         )
-        link_len     = len(link_text)
-        link_density = link_len / max(text_len, 1)
-
-        if link_density > 0.6:   # >60% text là links → bỏ qua
+        link_density = len(link_text) / max(text_len, 1)
+        if link_density > 0.6:
             return 0.0, 0
 
         text_density = text_len / html_len
         p_count      = len(el.find_all("p"))
-        p_bonus      = min(p_count * 0.05, 0.3)   # Tối đa +0.3 cho nhiều <p>
+        p_bonus      = min(p_count * 0.05, 0.3)
 
         score = (
             text_density
@@ -304,20 +289,10 @@ class DensityHeuristicBlock(ScraperBlock):
         return cls(min_chars=int(config.get("min_chars", _MIN_CONTENT_CHARS)))
 
 
-# ── 4. XPath Extract Block ────────────────────────────────────────────────────
+# ── 4. XPath Extract ──────────────────────────────────────────────────────────
 
 class XPathExtractBlock(ScraperBlock):
-    """
-    Extract content bằng XPath expression.
-    Alternative cho CSS selector khi site dùng id/attribute phức tạp.
-    
-    Ví dụ XPath hữu ích:
-        //div[@id='chapter-content']
-        //article[contains(@class,'chapter')]
-        //*[@itemprop='articleBody']
-    
-    Dùng lxml parser cho XPath support.
-    """
+    """XPath alternative cho sites dùng id/attribute phức tạp. Requires lxml."""
     block_type = BlockType.EXTRACT
     name       = "xpath"
 
@@ -344,19 +319,12 @@ class XPathExtractBlock(ScraperBlock):
                     start,
                 )
 
-            # Lấy text từ node đầu tiên
             node = nodes[0]
-            if hasattr(node, "text_content"):
-                text = node.text_content()
-            else:
-                text = str(node)
+            text = (node.text_content() if hasattr(node, "text_content") else str(node)).strip()
 
-            text = text.strip()
             if len(text) < self.min_chars:
                 return self._timed(
-                    BlockResult.failed(
-                        f"xpath result too short: {len(text)} chars"
-                    ),
+                    BlockResult.failed(f"xpath result too short: {len(text)}c"),
                     start,
                 )
 
@@ -370,10 +338,7 @@ class XPathExtractBlock(ScraperBlock):
                 start,
             )
         except ImportError:
-            return self._timed(
-                BlockResult.skipped("lxml not installed"),
-                start,
-            )
+            return self._timed(BlockResult.skipped("lxml not installed"), start)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -393,14 +358,15 @@ class XPathExtractBlock(ScraperBlock):
         )
 
 
-# ── 5. Fallback List Extract Block ────────────────────────────────────────────
+# ── 5. Fallback List Extract ──────────────────────────────────────────────────
 
 class FallbackListExtractBlock(ScraperBlock):
     """
-    Thử lần lượt danh sách FALLBACK_CONTENT_SELECTORS đã biết.
-    Dùng khi không có profile selector và density heuristic thất bại.
-    
-    Fallback list từ config.py — các selectors phổ biến nhất trên web novel sites.
+    Thử lần lượt FALLBACK_CONTENT_SELECTORS đã biết.
+
+    Không còn "body text" fallback — extract_plain_text(<body>) là garbage
+    vì nó kéo cả nav/footer/ads vào. Thất bại rõ ràng tốt hơn garbage.
+    Nếu fallback list cũng fail → AIExtractBlock sẽ xử lý.
     """
     block_type = BlockType.EXTRACT
     name       = "fallback_list"
@@ -440,23 +406,9 @@ class FallbackListExtractBlock(ScraperBlock):
                 except Exception:
                     continue
 
-            # Last resort: body text
-            body = soup.find("body")
-            if body and isinstance(body, Tag):
-                from core.formatter import extract_plain_text
-                text = extract_plain_text(body)
-                if len(text.strip()) >= self.min_chars:
-                    return self._timed(
-                        BlockResult.fallback(
-                            data        = text,
-                            method_used = "body_text",
-                            confidence  = 0.4,
-                        ),
-                        start,
-                    )
-
+            # KHÔNG fallback sang body text — AIExtractBlock xử lý case này
             return self._timed(
-                BlockResult.failed("all fallback selectors failed"),
+                BlockResult.failed("all known selectors exhausted"),
                 start,
             )
         except asyncio.CancelledError:
@@ -482,23 +434,30 @@ class FallbackListExtractBlock(ScraperBlock):
 
 class AIExtractBlock(ScraperBlock):
     """
-    AI-powered content extraction — last resort.
-    
-    Gọi Gemini để extract nội dung khi tất cả heuristic blocks thất bại.
-    Tốn API call nhưng đảm bảo lấy được content trong mọi trường hợp.
-    
-    Kết quả tốt → update profile content_selector để lần sau không cần AI nữa.
+    AI-powered content extraction — last resort THẬT SỰ.
+
+    Gọi Gemini để identify và extract chapter content khi tất cả
+    heuristic blocks thất bại. Đây là "last resort" thật, không phải stub.
+
+    Confidence thấp hơn selector (0.75) vì AI có thể miss formatting
+    đặc biệt (tables, system boxes, v.v.) mà profile-based extraction
+    sẽ xử lý tốt hơn.
+
+    Đọc ai_limiter từ ctx.runtime — không còn ctx.profile["_ai_limiter"].
     """
     block_type = BlockType.EXTRACT
     name       = "ai_extract"
 
+    def __init__(self, min_chars: int = _MIN_CONTENT_CHARS) -> None:
+        self.min_chars = min_chars
+
     async def execute(self, ctx: PipelineContext) -> BlockResult:
         start = time.monotonic()
         try:
-            ai_limiter = ctx.profile.get("_ai_limiter")
+            ai_limiter = ctx.runtime.ai_limiter
             if ai_limiter is None:
                 return self._timed(
-                    BlockResult.skipped("no ai_limiter in context"),
+                    BlockResult.skipped("no ai_limiter in runtime"),
                     start,
                 )
 
@@ -506,18 +465,25 @@ class AIExtractBlock(ScraperBlock):
             if not html:
                 return self._timed(BlockResult.skipped("no html"), start)
 
-            # Gọi AI classify + extract
-            from ai.agents import ai_classify_and_find
-            result = await ai_classify_and_find(html, ctx.url, ai_limiter)
+            from ai.agents import ai_extract_content
+            content = await ai_extract_content(html, ctx.url, ai_limiter)
 
-            if not result:
-                return self._timed(BlockResult.failed("AI returned None"), start)
+            if not content or len(content.strip()) < self.min_chars:
+                return self._timed(
+                    BlockResult.failed(
+                        f"AI returned {len(content.strip()) if content else 0} chars"
+                        f" (min={self.min_chars})"
+                    ),
+                    start,
+                )
 
-            # ai_classify_and_find trả về next_url, không phải content
-            # → cần dùng extract riêng. Dùng density heuristic với soup.
-            # AI extract thực sự sẽ được build trong learning/optimizer.py
             return self._timed(
-                BlockResult.skipped("ai_extract deferred to optimizer"),
+                BlockResult.fallback(   # fallback vì không từ learned selector
+                    data        = content.strip(),
+                    method_used = "ai_extract",
+                    confidence  = 0.75,
+                    char_count  = len(content),
+                ),
                 start,
             )
         except asyncio.CancelledError:
@@ -533,20 +499,17 @@ class AIExtractBlock(ScraperBlock):
         return cls()
 
 
-# ── Utility: format element to markdown ──────────────────────────────────────
+# ── Utility ────────────────────────────────────────────────────────────────────
 
 def _format_element(el: Tag, formatting_rules: dict | None) -> str:
-    """
-    Format một BeautifulSoup element thành Markdown.
-    Dùng MarkdownFormatter nếu có formatting_rules, else extract_plain_text.
-    """
+    """Format element → Markdown dùng MarkdownFormatter hoặc plain text."""
     from core.formatter import MarkdownFormatter, extract_plain_text
     if formatting_rules:
         return MarkdownFormatter(formatting_rules).format(el)
     return extract_plain_text(el)
 
 
-# ── Registry ──────────────────────────────────────────────────────────────────
+# ── Registry ───────────────────────────────────────────────────────────────────
 
 _EXTRACT_BLOCK_MAP: dict[str, type[ScraperBlock]] = {
     "selector"         : SelectorExtractBlock,
@@ -559,7 +522,6 @@ _EXTRACT_BLOCK_MAP: dict[str, type[ScraperBlock]] = {
 
 
 def make_extract_block(config: dict) -> ScraperBlock:
-    """Factory: tạo extract block từ StepConfig dict."""
     block_type = config.get("type", "fallback_list")
     cls = _EXTRACT_BLOCK_MAP.get(block_type)
     if cls is None:

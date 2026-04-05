@@ -1,72 +1,57 @@
 """
 pipeline/executor.py — ChainExecutor và PipelineRunner.
 
-ChainExecutor:
-    Nhận một ChainConfig + PipelineContext.
-    Thử từng step theo thứ tự, dừng khi có kết quả ok (SUCCESS/FALLBACK).
-    Ghi kết quả vào context và block_results.
+v2 changes:
+  EXEC-1: PipelineRunner inject RuntimeContext vào ctx.runtime thay vì
+          nhét live objects vào ctx.profile dict (anti-pattern cũ).
 
-PipelineRunner:
-    Orchestrate toàn bộ pipeline cho một chapter:
-        1. fetch_chain   → ctx.html, ctx.fetch_method
-        2. (parse soup)  → ctx.soup
-        3. (html_filter) → ctx.soup cleaned
-        4. extract_chain → ctx.content, ctx.selector_used
-        5. title_chain   → ctx.title_clean (majority vote từ nhiều sources)
-        6. nav_chain     → ctx.next_url
-        7. validate_chain → ctx.is_valid, ctx.validation_score
+  EXEC-2: Title vote dùng confidence-weighted voting thay vì unweighted.
+          Trước: "Chapter 5" (slug, conf=0.40) có thể đánh bại
+                 "Chapter 5 – The Beginning" (selector, conf=0.95).
+          Bây giờ: confidence của mỗi block là trọng số vote của nó.
 
-    Inject runtime dependencies (_pool, _pw_pool, _ai_limiter) vào ctx.profile
-    trước khi chạy blocks — đây là cách blocks truy cập shared resources
-    mà không cần pass qua constructor.
+  EXEC-3: _build_soup đổi thành build_soup (public). Không ai nên import
+          private function từ module khác.
 
-Title Majority Vote:
-    Chạy TẤT CẢ title blocks (không dừng sớm).
-    Chọn title được đề xuất nhiều nhất (lowercase comparison).
-    Tie-break: title dài nhất.
+  EXEC-4: Sau fetch chain, executor đọc BlockResult.metadata["js_heavy"]
+          và set ctx.detected_js_heavy — KHÔNG để block tự mutate profile.
+          Caller (scraper.py) nhận signal này và persist nếu cần.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections import Counter
 from typing import Any
 
 from bs4 import BeautifulSoup
 
 from pipeline.base import (
     BlockResult, BlockStatus, BlockType,
-    ChainConfig, PipelineConfig, PipelineContext, StepConfig,
+    ChainConfig, PipelineConfig, PipelineContext,
+    RuntimeContext, StepConfig,
 )
 
 logger = logging.getLogger(__name__)
 
 
-# ── Block factories (lazy import để tránh circular) ───────────────────────────
+# ── Block factories ────────────────────────────────────────────────────────────
 
 def _make_block(chain_type: str, step: StepConfig):
-    """
-    Factory: tạo block instance từ chain_type + StepConfig.
-    Lazy import để tránh circular dependency.
-    """
+    """Factory: tạo block instance từ chain_type + StepConfig (lazy import)."""
     cfg = step.to_dict()
 
     if chain_type == "fetch":
         from pipeline.fetcher import make_fetch_block
         return make_fetch_block(cfg)
-
     if chain_type == "extract":
         from pipeline.extractor import make_extract_block
         return make_extract_block(cfg)
-
     if chain_type == "navigate":
         from pipeline.navigator import make_nav_block
         return make_nav_block(cfg)
-
     if chain_type == "title":
         from pipeline.title_extractor import make_title_block
         return make_title_block(cfg)
-
     if chain_type == "validate":
         from pipeline.validator import make_validate_block
         return make_validate_block(cfg)
@@ -74,17 +59,46 @@ def _make_block(chain_type: str, step: StepConfig):
     raise ValueError(f"Unknown chain_type: {chain_type!r}")
 
 
-# ── ChainExecutor ─────────────────────────────────────────────────────────────
+# ── HTML filter + soup builder ────────────────────────────────────────────────
+
+async def build_soup(ctx: PipelineContext) -> None:
+    """
+    Parse HTML → BeautifulSoup và apply html_filter.
+    Kết quả ghi vào ctx.soup.
+
+    Public function — optimizer.py và bất kỳ module nào có thể import
+    mà không cần hack private function.
+    """
+    if not ctx.html:
+        return
+
+    profile           = ctx.profile
+    remove_selectors  = profile.get("remove_selectors") or []
+    content_selector  = profile.get("content_selector")
+    title_selector    = profile.get("title_selector")
+
+    try:
+        from core.html_filter import prepare_soup
+        ctx.soup = await asyncio.to_thread(
+            prepare_soup,
+            ctx.html,
+            remove_selectors,
+            content_selector,
+            title_selector,
+        )
+    except Exception as e:
+        logger.warning("[Executor] html_filter thất bại, dùng raw parse: %s", e)
+        ctx.soup = BeautifulSoup(ctx.html, "html.parser")
+
+
+# ── ChainExecutor ──────────────────────────────────────────────────────────────
 
 class ChainExecutor:
     """
     Thực thi một chain (ordered list of strategies).
 
-    Thử từng step theo thứ tự.
-    Dừng tại step đầu tiên có kết quả ok (SUCCESS hoặc FALLBACK).
-    Ghi tất cả kết quả vào ctx.block_results.
-
-    special_mode="title_vote": không dừng sớm, chạy hết → majority vote.
+    Chế độ mặc định: first-wins — dừng tại step đầu tiên có ok result.
+    Chế độ title_vote: chạy hết tất cả blocks, chọn bằng weighted vote.
     """
 
     def __init__(self, chain: ChainConfig, special_mode: str = "") -> None:
@@ -92,24 +106,22 @@ class ChainExecutor:
         self.special_mode = special_mode
 
     async def run(self, ctx: PipelineContext) -> BlockResult:
-        """
-        Chạy chain. Trả về BlockResult tốt nhất.
-        """
         if self.special_mode == "title_vote":
             return await self._run_title_vote(ctx)
         return await self._run_first_wins(ctx)
 
     async def _run_first_wins(self, ctx: PipelineContext) -> BlockResult:
-        """
-        Standard chain: dừng tại step đầu tiên thành công.
-        """
+        """Standard: dừng tại step đầu tiên thành công."""
         last_result = BlockResult.failed("chain is empty")
 
         for step in self.chain.steps:
             try:
                 block = _make_block(self.chain.chain_type, step)
             except ValueError as e:
-                logger.warning("[Chain:%s] unknown block %r: %s", self.chain.chain_type, step.type, e)
+                logger.warning(
+                    "[Chain:%s] unknown block %r: %s",
+                    self.chain.chain_type, step.type, e,
+                )
                 continue
 
             block_key = f"{self.chain.chain_type}:{step.type}"
@@ -126,11 +138,9 @@ class ChainExecutor:
             last_result = result
 
             if result.status == BlockStatus.SKIPPED:
-                # Block không applicable → thử tiếp
                 continue
 
             if result.ok:
-                # Thành công → dừng
                 logger.debug(
                     "[Chain:%s] ✓ %s (conf=%.2f dur=%.0fms)",
                     self.chain.chain_type, step.type,
@@ -138,13 +148,11 @@ class ChainExecutor:
                 )
                 return result
 
-            # Failed → log và thử step tiếp theo
             logger.debug(
                 "[Chain:%s] ✗ %s — %s",
                 self.chain.chain_type, step.type, result.error or "failed",
             )
 
-        # Tất cả steps thất bại
         logger.debug(
             "[Chain:%s] all %d steps failed",
             self.chain.chain_type, len(self.chain.steps),
@@ -153,15 +161,24 @@ class ChainExecutor:
 
     async def _run_title_vote(self, ctx: PipelineContext) -> BlockResult:
         """
-        Title vote mode: chạy hết tất cả title blocks, chọn majority.
+        Title vote: chạy hết tất cả title blocks, chọn bằng confidence-weighted vote.
 
-        Mỗi block vote cho title của mình (lowercase).
-        Winner = title được vote nhiều nhất.
-        Tie-break: title dài nhất.
-        Confidence = winning_votes / total_votes.
+        Cơ chế:
+        - Mỗi block vote cho title của mình với trọng số = confidence của nó.
+        - Winner = title có tổng trọng số lớn nhất.
+        - Tie-break: title dài nhất (thường đầy đủ hơn).
+        - Final confidence = tổng trọng số của winner / tổng trọng số tất cả.
+
+        Ví dụ:
+            url_slug      "Chapter 5"                  conf=0.40  weight=0.40
+            title_tag     "Chapter 5 – The Beginning"  conf=0.65  weight=0.65
+            selector      "Chapter 5 – The Beginning"  conf=0.95  weight=0.95
+            → "chapter 5 – the beginning" total_weight=1.60 vs "chapter 5" total=0.40
+            → Winner: "Chapter 5 – The Beginning" với confidence=1.60/2.00=0.80
         """
-        candidates: list[str] = []
-        methods: list[str]    = []
+        candidates:    list[str]   = []
+        confidences:   list[float] = []
+        methods:       list[str]   = []
 
         for step in self.chain.steps:
             try:
@@ -179,93 +196,64 @@ class ChainExecutor:
 
             ctx.record(block_key, result)
 
-            if result.ok and result.data and isinstance(result.data, str):
+            if result.ok and isinstance(result.data, str):
                 title = result.data.strip()
                 if len(title) >= 3:
                     candidates.append(title)
+                    confidences.append(result.confidence)
                     methods.append(step.type)
 
         if not candidates:
             return BlockResult.failed("all title blocks failed")
 
-        # Majority vote (lowercase comparison)
-        counts       = Counter(t.lower() for t in candidates)
-        top2         = counts.most_common(2)
-        winner_lower = top2[0][0]
-        winner_count = top2[0][1]
+        # Confidence-weighted voting
+        vote_weights:  dict[str, float] = {}   # lowercase title → total weight
+        original_case: dict[str, str]   = {}   # lowercase → best case version
 
-        # Lấy lại original case
-        winner = next(
-            (t for t in candidates if t.lower() == winner_lower),
-            candidates[0],
-        )
+        for title, conf in zip(candidates, confidences):
+            key = title.lower()
+            vote_weights[key]  = vote_weights.get(key, 0.0) + conf
+            if key not in original_case:
+                original_case[key] = title
+            # Nếu cùng title nhưng case khác → giữ version dài hơn
+            elif len(title) > len(original_case[key]):
+                original_case[key] = title
 
-        # Tie → chọn dài nhất
-        if len(top2) > 1 and top2[0][1] == top2[1][1]:
-            winner = max(candidates, key=len)
-            winner_lower = winner.lower()
-            winner_count = counts[winner_lower]
+        # Chọn winner
+        winner_lower = max(vote_weights, key=vote_weights.__getitem__)
+        top_weight   = vote_weights[winner_lower]
 
-        confidence = winner_count / len(candidates)
+        # Tie-break: nếu có nhiều title cùng weight → dài nhất
+        top_weight_val = max(vote_weights.values())
+        tied_keys = [k for k, w in vote_weights.items() if w == top_weight_val]
+        if len(tied_keys) > 1:
+            winner_lower = max(tied_keys, key=len)
+
+        winner       = original_case[winner_lower]
+        total_weight = sum(vote_weights.values())
+        confidence   = vote_weights[winner_lower] / total_weight if total_weight > 0 else 0.0
 
         return BlockResult.success(
             data        = winner,
             method_used = "title_vote",
-            confidence  = confidence,
+            confidence  = round(confidence, 3),
+            vote_weights = dict(vote_weights),
             candidates  = candidates,
-            vote_counts = dict(counts),
         )
 
 
-# ── HTML Filter helper ────────────────────────────────────────────────────────
-
-async def _build_soup(ctx: PipelineContext) -> None:
-    """
-    Parse HTML → soup và apply html_filter (remove_selectors, hidden elements).
-    Kết quả ghi vào ctx.soup.
-    """
-    if not ctx.html:
-        return
-
-    profile = ctx.profile
-    remove_selectors  = profile.get("remove_selectors") or []
-    content_selector  = profile.get("content_selector")
-    title_selector    = profile.get("title_selector")
-
-    try:
-        from core.html_filter import prepare_soup
-        ctx.soup = await asyncio.to_thread(
-            prepare_soup,
-            ctx.html,
-            remove_selectors,
-            content_selector,
-            title_selector,
-        )
-    except Exception as e:
-        logger.warning("[Executor] html_filter failed, fallback to raw parse: %s", e)
-        ctx.soup = BeautifulSoup(ctx.html, "html.parser")
-
-
-# ── PipelineRunner ────────────────────────────────────────────────────────────
+# ── PipelineRunner ─────────────────────────────────────────────────────────────
 
 class PipelineRunner:
     """
     Orchestrate toàn bộ pipeline cho một chapter.
 
-    Nhận PipelineConfig (đã load từ profile) và thực thi 5 chains theo thứ tự.
-    Inject runtime deps vào ctx.profile trước khi chạy.
+    Tạo RuntimeContext và inject vào ctx.runtime trước khi chạy bất kỳ block nào.
+    Blocks truy cập pool/pw_pool/ai_limiter qua ctx.runtime — KHÔNG qua ctx.profile.
 
-    Usage:
-        runner = PipelineRunner(pipeline_config)
-        ctx = await runner.run(
-            url        = chapter_url,
-            profile    = site_profile,
-            progress   = progress_dict,
-            pool       = domain_session_pool,
-            pw_pool    = playwright_pool,
-            ai_limiter = ai_rate_limiter,
-        )
-        # ctx.content, ctx.title_clean, ctx.next_url, ctx.is_valid
+    Xử lý signals từ blocks:
+        - fetch_result.metadata["js_heavy"] → ctx.detected_js_heavy = True
+          (Caller scraper.py sẽ persist thông tin này vào profile)
     """
 
     def __init__(self, config: PipelineConfig) -> None:
@@ -273,42 +261,43 @@ class PipelineRunner:
 
     async def run(
         self,
-        url       : str,
-        profile   : dict,
-        progress  : dict,
-        pool      : Any   = None,
-        pw_pool   : Any   = None,
-        ai_limiter: Any   = None,
-        # Pre-fetched HTML (từ learning phase, không fetch lại)
+        url            : str,
+        profile        : dict,
+        progress       : dict,
+        pool           : Any   = None,
+        pw_pool        : Any   = None,
+        ai_limiter     : Any   = None,
         prefetched_html: str | None = None,
     ) -> PipelineContext:
         """
         Thực thi full pipeline cho một chapter URL.
 
         Args:
-            url:            URL chapter cần scrape
-            profile:        SiteProfile dict
-            progress:       ProgressDict
-            pool:           DomainSessionPool (curl)
-            pw_pool:        PlaywrightPool
-            ai_limiter:     AIRateLimiter
+            url:             URL chapter cần scrape
+            profile:         SiteProfile dict (READ-ONLY, không mutate)
+            progress:        ProgressDict
+            pool:            DomainSessionPool (curl)
+            pw_pool:         PlaywrightPool
+            ai_limiter:      AIRateLimiter
             prefetched_html: HTML đã fetch sẵn (learning phase reuse)
 
         Returns:
-            PipelineContext sau khi chạy xong — caller đọc .content, .title_clean, etc.
+            PipelineContext — caller đọc .content, .title_clean, .next_url, etc.
+            Chú ý ctx.detected_js_heavy — nếu True, caller nên persist vào profile.
         """
         from pipeline.context import make_context
 
         ctx = make_context(url=url, profile=dict(profile), progress=progress)
 
-        # Inject runtime deps vào ctx.profile (blocks access qua ctx.profile["_key"])
-        ctx.profile["_pool"]       = pool
-        ctx.profile["_pw_pool"]    = pw_pool
-        ctx.profile["_ai_limiter"] = ai_limiter
+        # ── Inject runtime deps (KHÔNG put vào ctx.profile) ──────────────────
+        ctx.runtime = RuntimeContext.create(
+            pool       = pool,
+            pw_pool    = pw_pool,
+            ai_limiter = ai_limiter,
+        )
 
         # ── 1. Fetch ──────────────────────────────────────────────────────────
         if prefetched_html is not None:
-            # Dùng HTML có sẵn — không chạy fetch chain
             ctx.html         = prefetched_html
             ctx.status_code  = 200
             ctx.fetch_method = "prefetched"
@@ -321,8 +310,13 @@ class PipelineRunner:
             ctx.fetch_method = fetch_result.method_used
             ctx.status_code  = fetch_result.metadata.get("status_code", 200)
 
+            # Đọc signal js_heavy từ block metadata — KHÔNG để block mutate profile
+            if fetch_result.metadata.get("js_heavy"):
+                ctx.detected_js_heavy = True
+                logger.info("[Runner] js_heavy detected for %s", url)
+
         # ── 2. Parse + filter HTML ────────────────────────────────────────────
-        await _build_soup(ctx)
+        await build_soup(ctx)
 
         if ctx.soup is None:
             logger.warning("[Runner] soup is None after parse for %s", url)
@@ -334,9 +328,10 @@ class PipelineRunner:
             ctx.content       = extract_result.data
             ctx.selector_used = extract_result.metadata.get("selector")
 
-        # ── 4. Extract title (majority vote) ─────────────────────────────────
-        title_exec   = ChainExecutor(self.config.title_chain, special_mode="title_vote")
-        title_result = await title_exec.run(ctx)
+        # ── 4. Extract title (confidence-weighted vote) ───────────────────────
+        title_result = await ChainExecutor(
+            self.config.title_chain, special_mode="title_vote"
+        ).run(ctx)
         if title_result.ok:
             ctx.title_clean = title_result.data
             ctx.title_raw   = title_result.data
@@ -356,7 +351,7 @@ class PipelineRunner:
     def from_profile(cls, profile: dict) -> "PipelineRunner | None":
         """
         Tạo PipelineRunner từ SiteProfile dict.
-        Trả về None nếu profile không có pipeline config (cần learning).
+        Trả về None nếu profile không có pipeline config.
         """
         pipeline_data = profile.get("pipeline")
         if not pipeline_data or not isinstance(pipeline_data, dict):
@@ -370,14 +365,11 @@ class PipelineRunner:
 
     @classmethod
     def default(cls, domain: str) -> "PipelineRunner":
-        """
-        Tạo PipelineRunner với default config (chạy được ngay, chưa optimized).
-        Dùng khi domain chưa có profile.
-        """
+        """Default runner cho domain chưa có profile."""
         return cls(PipelineConfig.default_for_domain(domain))
 
 
-# ── Convenience: run single chapter ──────────────────────────────────────────
+# ── Convenience shortcut ───────────────────────────────────────────────────────
 
 async def run_chapter(
     url            : str,
@@ -390,9 +382,7 @@ async def run_chapter(
 ) -> PipelineContext:
     """
     Shortcut: tạo PipelineRunner từ profile và chạy một chapter.
-
-    Nếu profile có pipeline config → dùng config đó.
-    Nếu không → dùng default config (naive fallback chain).
+    Dùng bởi core/scraper.py.
     """
     from urllib.parse import urlparse
     domain = urlparse(url).netloc.lower()

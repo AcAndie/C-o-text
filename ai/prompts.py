@@ -648,7 +648,39 @@ Trả về JSON (CHỈ JSON thuần):
   "notes": null
 }}
 """
-
+    @staticmethod
+    def extract_content(html_snippet: str, url: str) -> str:
+        """
+        Last-resort content extraction khi tất cả heuristics fail.
+        Dùng bởi AIExtractBlock (pipeline/extractor.py).
+        """
+        return f"""Bạn là chuyên gia extract nội dung từ trang web novel.
+Nhiệm vụ: Tìm và extract ĐÚNG NỘI DUNG CHƯƠNG TRUYỆN từ HTML dưới đây.
+ 
+URL: {url}
+HTML (tối đa 8000 ký tự):
+{html_snippet}
+ 
+QUY TẮC:
+  ✓ LẤY: Văn bản truyện, dialogue nhân vật, mô tả cảnh vật/hành động
+  ✗ BỎ: Navigation (Prev/Next), header/footer site, quảng cáo, author notes (nếu không rõ),
+         watermark, metadata (số từ, rating), comment section
+ 
+FORMAT OUTPUT:
+  - Giữ nguyên đoạn văn, xuống dòng đúng chỗ
+  - Giữ ** bold ** và * italic * nếu có
+  - KHÔNG thêm bất kỳ text nào không có trong trang gốc
+ 
+Trả về JSON (CHỈ JSON thuần, không markdown):
+{{
+  "content": "Toàn bộ nội dung chương đã extract — ít nhất 200 ký tự nếu trang có content.",
+  "confidence": 0.85,
+  "notes": "Mô tả ngắn nếu có điều gì bất thường. null nếu không có."
+}}
+ 
+confidence: 0.0-1.0 — mức độ chắc chắn bạn đã extract đúng content.
+Nếu không tìm thấy nội dung truyện: confidence < 0.3 và content = "".
+"""
 
 # ── Helper ────────────────────────────────────────────────────────────────────
 

@@ -54,7 +54,7 @@ async def run_naming_phase(
     Returns:
         Dict với naming rules, hoặc None nếu AI thất bại (caller dùng fallback dir)
     """
-    from core.scraper import _dtag  # local import — tránh circular
+    from utils.string_helpers import domain_tag as _dtag
     tag = _dtag(chapter1_url)
 
     if pre_fetched_titles:

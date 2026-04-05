@@ -32,7 +32,7 @@ from bs4 import BeautifulSoup
 from pipeline.base import (
     ChainConfig, PipelineConfig, PipelineContext, StepConfig,
 )
-from pipeline.executor import ChainExecutor, PipelineRunner, _build_soup
+from pipeline.executor import ChainExecutor, PipelineRunner
 
 logger = logging.getLogger(__name__)
 

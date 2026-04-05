@@ -875,6 +875,49 @@ async def ai_verify_ads(
         print(f"  [AI verify_ads] ⚠ Thất bại: {_fmt(e)}", flush=True)
     return []
 
+# Schema cho ai_extract_content
+_S_EXTRACT_CONTENT = {
+    "type": "object",
+    "properties": {
+        "content"   : {"type": "string"},
+        "confidence": {"type": "number"},
+        "notes"     : {"type": "string", "nullable": True},
+    },
+    "required": ["content", "confidence"],
+}
+ 
+ 
+async def ai_extract_content(
+    html     : str,
+    url      : str,
+    limiter  : AIRateLimiter,
+) -> str | None:
+    """
+    Extract chapter content từ HTML bằng AI — last resort cho AIExtractBlock.
+ 
+    Dùng khi tất cả heuristic blocks (selector, json_ld, density, fallback_list)
+    đã thất bại. Gọi Gemini để identify main content.
+ 
+    Returns:
+        str — chapter content đã extract, hoặc None nếu thất bại.
+    """
+    prompt = Prompts.extract_content(_snippet(html, 8000), url)
+    try:
+        text   = await _call(prompt, limiter, _S_EXTRACT_CONTENT)
+        result = _parse(text)
+        if isinstance(result, dict):
+            content = (result.get("content") or "").strip()
+            conf    = float(result.get("confidence", 0.0))
+            if len(content) >= 150 and conf >= 0.3:
+                return content
+            if len(content) >= 150:
+                # Content đủ dài nhưng AI không tự tin — vẫn trả về
+                return content
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        print(f"  [AI extract] ⚠ Thất bại: {_fmt(e)}", flush=True)
+    return None
 
 # ── Sanitization helpers ──────────────────────────────────────────────────────
 

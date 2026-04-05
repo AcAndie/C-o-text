@@ -64,7 +64,7 @@ async def run_learning_phase(
         fetched_chapters = [(url, html)] — tái dùng cho scraping
         None nếu thất bại nghiêm trọng
     """
-    from core.scraper import _dtag
+    from utils.string_helpers import domain_tag as _dtag
     domain = urlparse(start_url).netloc.lower()
     tag    = _dtag(domain)
 
@@ -148,7 +148,7 @@ async def _fetch_chapters(
         chapters   = [(url, playwright_html)]
         curl_htmls = [curl_html] — dùng để detect JS-heavy trong optimizer
     """
-    from core.scraper import _dtag
+    from utils.string_helpers import domain_tag as _dtag
     tag = _dtag(domain)
 
     chapters  : list[tuple[str, str]] = []

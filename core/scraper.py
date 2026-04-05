@@ -1,17 +1,21 @@
 """
-core/scraper.py — v18: Pipeline Architecture.
+core/scraper.py — v19: Slim orchestrator.
 
-Thay đổi so với v17:
-  PIPE-1: scrape_one_chapter() dùng pipeline/executor.py (PipelineRunner)
-          thay vì gọi trực tiếp extractor/navigator/html_filter.
-  PIPE-2: run_novel_task() migrate profile cũ → format mới trước khi scrape.
-  PIPE-3: Bỏ hardcode backoff logic — EmptyStreakBackoffRetry xử lý trong validator.
-  PIPE-4: find_start_chapter() giữ nguyên (không liên quan pipeline).
+v19 changes vs v18:
+  SLIM-1: _format_chapter_filename + _strip_nav_edges
+          → core/chapter_writer.py
 
-Các module bị xóa khỏi import trực tiếp (vẫn còn, dùng bởi pipeline blocks):
-  - core/html_filter.py   → gọi bởi pipeline/executor.py::_build_soup()
-  - core/extractor.py     → gọi bởi pipeline/extractor.py blocks
-  - core/navigator.py     → gọi bởi pipeline/navigator.py blocks (và learning phase)
+  SLIM-2: _extract_story_title + _build_story_id_regex
+          + _is_chapter_url + _story_id_ok
+          → core/story_meta.py
+
+  SLIM-3: _dtag
+          → utils/string_helpers.domain_tag()
+          Circular import với learning/ đã được fix.
+
+  ARCH-1: ctx.detected_js_heavy được xử lý tại đây (orchestrator level)
+          thay vì để HybridFetchBlock tự mutate ctx.profile.
+          Scraper cập nhật profile in-memory, pm.flush() cuối task persist xuống disk.
 """
 from __future__ import annotations
 
@@ -29,18 +33,26 @@ from config import (
 )
 from utils.file_io        import load_progress, save_progress, write_markdown
 from utils.string_helpers import (
-    is_junk_page, make_fingerprint, normalize_title, slugify_filename, truncate,
+    domain_tag as _dtag,
+    is_junk_page, make_fingerprint, normalize_title, truncate,
 )
 from utils.ads_filter     import AdsFilter
 from utils.types          import ProgressDict, SiteProfile
 from utils.issue_reporter import IssueReporter
+
+# Extracted helpers
+from core.chapter_writer  import format_chapter_filename, strip_nav_edges
+from core.story_meta      import (
+    extract_story_title, build_story_id_regex,
+    is_chapter_url, story_id_ok,
+)
 from core.session_pool    import DomainSessionPool, PlaywrightPool
-from core.navigator       import find_next_url   # giữ dùng cho learning phase
+from core.navigator       import find_next_url
 from learning.profile_manager import ProfileManager
 from ai.client            import AIRateLimiter
 from ai.agents            import ai_classify_and_find, ai_find_first_chapter
 
-# Pipeline imports
+# Pipeline
 from pipeline.executor    import run_chapter as pipeline_run_chapter
 from pipeline.context     import context_summary
 
@@ -52,171 +64,7 @@ _ADS_FREQ_MIN_FILES = 5
 MAX_EMPTY_STREAK    = 5
 
 
-def _dtag(url_or_domain: str) -> str:
-    if url_or_domain.startswith("http"):
-        netloc = urlparse(url_or_domain).netloc.lower()
-    else:
-        netloc = url_or_domain.lower()
-    name = netloc.replace("www.", "").split(".")[0]
-    return f"{name[:12]:<12}"
-
-
-_CHAPTER_TITLE_RE = re.compile(
-    r"^\s*(?:chapter|chap|ch|episode|ep|part|chuong|phan)\b[\s.\-:]*\d*",
-    re.IGNORECASE | re.UNICODE,
-)
-_KNOWN_SITES = frozenset({
-    "royalroad", "royal road", "scribblehub", "wattpad", "fanfiction",
-    "fanfiction.net", "archiveofourown", "ao3", "webnovel", "novelfire",
-    "novelupdates", "lightnovelreader", "novelfull", "wuxiaworld",
-})
-
-
-def _extract_story_title(raw_page_title: str) -> str | None:
-    parts = re.split(r"\s*[\|–—]\s*", raw_page_title)
-    candidates = []
-    for part in parts:
-        part = part.strip()
-        if len(part) < 3:
-            continue
-        if _CHAPTER_TITLE_RE.match(part):
-            continue
-        if part.lower() in _KNOWN_SITES:
-            continue
-        candidates.append(part)
-    return max(candidates, key=len) if candidates else None
-
-
-_RE_PIPE_SUFFIX = re.compile(r"\s*\|.*$")
-
-
-def _format_chapter_filename(
-    chapter_num: int,
-    raw_title  : str,
-    progress   : ProgressDict,
-) -> str:
-    chapter_kw   = (progress.get("chapter_keyword") or "Chapter").strip()
-    has_subtitle = bool(progress.get("has_chapter_subtitle", False))
-    prefix_strip = (progress.get("story_prefix_strip") or "").strip()
-
-    title = raw_title.strip()
-    if prefix_strip:
-        lo_title  = title.lower()
-        lo_prefix = prefix_strip.lower()
-        if lo_title.startswith(lo_prefix):
-            title = title[len(prefix_strip):].lstrip(" ,;:-–—")
-
-    kw_esc  = re.escape(chapter_kw)
-    chap_re = re.compile(
-        rf"(?:{kw_esc})\s*(?P<n>\d+)\s*[-–—:.]?\s*(?P<sub>.*)",
-        re.IGNORECASE,
-    )
-    m = chap_re.search(title)
-    if m:
-        n       = m.group("n")
-        sub_raw = m.group("sub").strip(" -–—:[]().")
-        sub_raw = _RE_PIPE_SUFFIX.sub("", sub_raw).strip()
-        chap_id = f"{chapter_kw}{n}"
-        if has_subtitle and sub_raw and len(sub_raw) >= 2:
-            sub_safe = slugify_filename(sub_raw, max_len=50)
-            name = f"{chapter_num:04d}_{chap_id}_{sub_safe}"
-        else:
-            name = f"{chapter_num:04d}_{chap_id}"
-    else:
-        fallback = _RE_PIPE_SUFFIX.sub("", (title or raw_title)).strip()
-        name = f"{chapter_num:04d}_{slugify_filename(fallback, max_len=60)}"
-
-    return slugify_filename(name, max_len=120) + ".md"
-
-
-_RE_WORD_COUNT = re.compile(
-    r"^\[\s*[\d,.\s]+words?\s*\]$|^\[\s*\.+\s*words?\s*\]$",
-    re.IGNORECASE,
-)
-_NAV_EDGE_SCAN = 7
-
-
-def _strip_nav_edges(text: str) -> str:
-    lines = text.splitlines()
-    n = len(lines)
-    if n < 8:
-        return text
-    EDGE    = _NAV_EDGE_SCAN
-    top_set = {lines[i].strip() for i in range(min(EDGE, n)) if lines[i].strip()}
-    bot_set = {lines[n-1-i].strip() for i in range(min(EDGE, n)) if lines[n-1-i].strip()}
-    repeated = top_set & bot_set
-
-    def _is_nav(line: str) -> bool:
-        s = line.strip()
-        if not s:
-            return True
-        if _RE_WORD_COUNT.match(s):
-            return True
-        if len(s) <= 10 and re.match(r"^[A-Za-z\s]+$", s):
-            return True
-        return s in repeated
-
-    start = 0
-    for i in range(min(EDGE, n)):
-        if _is_nav(lines[i]):
-            start = i + 1
-        else:
-            break
-    while start < n and not lines[start].strip():
-        start += 1
-
-    end = n
-    for i in range(min(EDGE, n)):
-        idx = n - 1 - i
-        if idx <= start:
-            break
-        if not lines[idx].strip() or _is_nav(lines[idx]):
-            end = idx
-        else:
-            break
-    while end > start and not lines[end-1].strip():
-        end -= 1
-
-    return "\n".join(lines[start:end]) if start < end else text
-
-
-def _build_story_id_regex(url: str) -> str | None:
-    try:
-        path     = urlparse(url).path
-        segments = [s for s in path.split("/") if s]
-        if len(segments) >= 3 and segments[0] == "s" and segments[1].isdigit():
-            return re.escape(f"/s/{segments[1]}/")
-        for i, seg in enumerate(segments):
-            if seg.isdigit() and i > 0:
-                story_path = "/" + "/".join(segments[:i+1]) + "/"
-                return re.escape(story_path)
-    except Exception:
-        pass
-    return None
-
-
-def _is_chapter_url(url: str, profile: SiteProfile) -> bool:
-    pattern = profile.get("chapter_url_pattern")
-    if pattern:
-        try:
-            if re.search(pattern, url, re.IGNORECASE):
-                return True
-        except re.error:
-            pass
-    return bool(RE_CHAP_URL.search(url))
-
-
-def _story_id_ok(url: str, progress: ProgressDict) -> bool:
-    if not progress.get("story_id_locked"):
-        return True
-    pattern = progress.get("story_id_regex")
-    if not pattern:
-        return True
-    try:
-        return bool(re.search(pattern, url))
-    except re.error:
-        return True
-
+# ── find_start_chapter ────────────────────────────────────────────────────────
 
 async def find_start_chapter(
     start_url     : str,
@@ -246,7 +94,7 @@ async def find_start_chapter(
     soup      = BeautifulSoup(html, "html.parser")
     page_type = detect_page_type(soup, start_url)
 
-    if page_type == "chapter" and _is_chapter_url(start_url, profile):
+    if page_type == "chapter" and is_chapter_url(start_url, profile):
         tag = _dtag(start_url)
         print(f"  [{tag}] 📖 Start chapter: {start_url[:65]}", flush=True)
         progress["start_url"] = start_url
@@ -262,7 +110,7 @@ async def find_start_chapter(
 
     result = await ai_classify_and_find(html, start_url, ai_limiter)
     if result:
-        if result.get("page_type") == "chapter" and _is_chapter_url(start_url, profile):
+        if result.get("page_type") == "chapter" and is_chapter_url(start_url, profile):
             progress["start_url"] = start_url
             return start_url, progress
         for key in ("first_chapter_url", "next_url"):
@@ -275,7 +123,7 @@ async def find_start_chapter(
     raise RuntimeError(f"Không tìm được điểm bắt đầu: {start_url}")
 
 
-# ── PIPE-1: scrape_one_chapter dùng pipeline ─────────────────────────────────
+# ── scrape_one_chapter ────────────────────────────────────────────────────────
 
 async def scrape_one_chapter(
     url             : str,
@@ -291,8 +139,8 @@ async def scrape_one_chapter(
     prefetched_html : str | None = None,
 ) -> str | None:
     tag          = _dtag(url)
-    all_visited  : set[str] = set(progress.get("all_visited_urls") or [])
-    fingerprints : set[str] = set(progress.get("fingerprints") or [])
+    all_visited  = set(progress.get("all_visited_urls") or [])
+    fingerprints = set(progress.get("fingerprints") or [])
 
     if url in all_visited:
         return await _find_next_fallback(
@@ -300,7 +148,7 @@ async def scrape_one_chapter(
             ai_limiter, issue_reporter=issue_reporter,
         )
 
-    # ── PIPE-1: Chạy pipeline ─────────────────────────────────────────────────
+    # ── Chạy pipeline ─────────────────────────────────────────────────────────
     try:
         ctx = await pipeline_run_chapter(
             url             = url,
@@ -320,6 +168,15 @@ async def scrape_one_chapter(
             issue_reporter.report("BLOCKED", url, detail=err_msg[:120], chapter_num=ch_num)
         raise
 
+    # ── ARCH-1: Xử lý js_heavy signal từ pipeline ─────────────────────────────
+    # Block KHÔNG được mutate profile. Scraper (orchestrator) làm việc này.
+    if ctx.detected_js_heavy and not profile.get("requires_playwright"):
+        profile["requires_playwright"] = True  # type: ignore[typeddict-unknown-key]
+        logger.info(
+            "[Scraper] JS-heavy site detected: %s — profile updated (will flush at end)",
+            urlparse(url).netloc,
+        )
+
     # ── Kiểm tra kết quả pipeline ─────────────────────────────────────────────
     html    = ctx.html
     content = ctx.content
@@ -335,8 +192,7 @@ async def scrape_one_chapter(
     # Index page guard
     if not RE_CHAP_URL.search(url) and ctx.soup:
         from core.navigator import detect_page_type
-        page_type = detect_page_type(ctx.soup, url)
-        if page_type == "index":
+        if detect_page_type(ctx.soup, url) == "index":
             print(f"  [{tag}] ⛔ INDEX page guard — dừng", flush=True)
             progress["completed"]        = True
             progress["completed_at_url"] = url
@@ -359,7 +215,7 @@ async def scrape_one_chapter(
         )
 
     # Strip nav edges
-    stripped = _strip_nav_edges(content)
+    stripped = strip_nav_edges(content)
     if stripped and len(stripped.strip()) >= 100:
         content = stripped
 
@@ -367,7 +223,7 @@ async def scrape_one_chapter(
     if title and re.fullmatch(r"Chapter \d+", title):
         issue_reporter.report(
             "TITLE_FALLBACK", url,
-            detail=f"Title extracted as '{title}' — may be URL slug fallback",
+            detail=f"Title='{title}' — may be URL slug fallback",
             chapter_num=progress.get("chapter_count", 0) + 1,
         )
 
@@ -381,23 +237,22 @@ async def scrape_one_chapter(
         return None
     fingerprints.add(fp)
 
-    # Story title (nếu chưa có)
+    # Story title nếu chưa có
     if not progress.get("story_title") and not progress.get("story_name_clean"):
         if progress.get("chapter_count", 0) == 0 and ctx.soup:
             title_tag = ctx.soup.find("title")
             if title_tag:
-                raw = title_tag.get_text(strip=True)
-                story_candidate = _extract_story_title(raw)
+                raw              = title_tag.get_text(strip=True)
+                story_candidate  = extract_story_title(raw)
                 if story_candidate:
                     progress["story_title"] = normalize_title(story_candidate)
 
     # Save chapter
     chapter_num = progress.get("chapter_count", 0) + 1
-    filename    = _format_chapter_filename(chapter_num, title, progress)
+    filename    = format_chapter_filename(chapter_num, title, progress)
     filepath    = os.path.join(output_dir, filename)
     await write_markdown(filepath, f"# {title}\n\n{content}\n")
 
-    # Scan edges for ads
     ads_filter.scan_edges_for_suspects(
         content,
         chapter_url  = url,
@@ -420,10 +275,9 @@ async def scrape_one_chapter(
     )
     issue_reporter.mark_chapter_ok()
 
-    # Next URL từ pipeline context (đã tính sẵn)
+    # Next URL
     next_url = ctx.next_url
 
-    # Fallback nếu pipeline nav thất bại
     if not next_url and ctx.soup:
         next_url = find_next_url(ctx.soup, url, profile)
 
@@ -447,7 +301,7 @@ async def scrape_one_chapter(
         print(f"  [{tag}] 🏁 Hết truyện", flush=True)
         return None
 
-    if not _story_id_ok(next_url, progress):
+    if not story_id_ok(next_url, progress):
         print(f"  [{tag}] ⛔ Story ID guard: {next_url[:55]}", flush=True)
         return None
 
@@ -459,6 +313,8 @@ async def scrape_one_chapter(
     await save_progress(progress_path, progress)
     return next_url
 
+
+# ── _find_next_fallback ───────────────────────────────────────────────────────
 
 async def _find_next_fallback(
     url, progress, progress_path, pool, pw_pool, profile, ai_limiter,
@@ -492,6 +348,8 @@ async def _find_next_fallback(
         await save_progress(progress_path, progress)
     return next_url
 
+
+# ── _finalize_ads ─────────────────────────────────────────────────────────────
 
 async def _finalize_ads(
     ads_filter : AdsFilter,
@@ -574,7 +432,7 @@ async def run_novel_task(
     pre_fetched_titles : list[str] = []
     fetched_chapters   : list[tuple[str, str]] = []
 
-    # ── PIPE-2: Migrate profile cũ nếu cần ───────────────────────────────────
+    # Migrate profile cũ nếu cần
     if pm.has(domain):
         existing = pm.get(domain)
         from learning.migrator import needs_migration, migrate_profile
@@ -583,12 +441,11 @@ async def run_novel_task(
             migrated, requires_relearn = migrate_profile(existing)
             await pm.save_profile(domain, migrated)  # type: ignore[arg-type]
             if requires_relearn:
-                print(f"  [{tag}] ⚠ Profile migration incomplete → force relearn", flush=True)
-                # Xóa pipeline key để trigger relearn
+                print(f"  [{tag}] ⚠ Migration incomplete → force relearn", flush=True)
                 del migrated["pipeline"]  # type: ignore[misc]
                 await pm.save_profile(domain, migrated)  # type: ignore[arg-type]
 
-    # ── Phase 1→2: Learning ───────────────────────────────────────────────────
+    # Learning phase
     if not pm.has(domain) or not pm.is_profile_fresh(domain):
         if os.path.exists(progress_path):
             try:
@@ -637,14 +494,14 @@ async def run_novel_task(
         })
     else:
         print(f"  [{tag}] 📂 {pm.summary(domain)}", flush=True)
-        profile          = pm.get(domain)
+        profile            = pm.get(domain)
         pre_fetched_titles = []
         fetched_chapters   = []
-        injected = ads_filter.inject_from_profile(profile)
+        injected           = ads_filter.inject_from_profile(profile)
         if injected > 0:
             print(f"  [{tag}] [Ads] +{injected} từ profile | {ads_filter.stats}", flush=True)
 
-    # ── Phase 3: Full Scrape Mode ─────────────────────────────────────────────
+    # Find start chapter
     try:
         current_url, progress = await find_start_chapter(
             start_url, progress_path, pool, pw_pool, ai_limiter, profile,
@@ -653,7 +510,7 @@ async def run_novel_task(
         print(f"  [{tag}] ❌ Không tìm được điểm bắt đầu: {e}", flush=True)
         return
 
-    # ── Naming Phase ──────────────────────────────────────────────────────────
+    # Naming phase
     if not progress.get("naming_done"):
         from learning.naming import run_naming_phase
         naming = await run_naming_phase(
@@ -671,7 +528,7 @@ async def run_novel_task(
         await save_progress(progress_path, progress)
 
     if not progress.get("story_id_locked"):
-        sid_pattern = _build_story_id_regex(current_url)
+        sid_pattern = build_story_id_regex(current_url)
         if sid_pattern:
             progress["story_id_regex"]  = sid_pattern
             progress["story_id_locked"] = True
@@ -691,7 +548,6 @@ async def run_novel_task(
     print(f"  🚀 [{tag}] {story_label}", flush=True)
     print(f"{'─'*62}", flush=True)
 
-    # Build prefetch map
     prefetch_map: dict[str, str] = {url: html for url, html in fetched_chapters}
 
     consecutive_errors   = 0
@@ -707,8 +563,8 @@ async def run_novel_task(
             await asyncio.sleep(get_delay(current_url))
 
             try:
-                prev_count  = progress.get("chapter_count", 0)
-                prefetched  = prefetch_map.pop(current_url, None)
+                prev_count = progress.get("chapter_count", 0)
+                prefetched = prefetch_map.pop(current_url, None)
 
                 next_url = await scrape_one_chapter(
                     url             = current_url,
@@ -735,8 +591,8 @@ async def run_novel_task(
                     consecutive_empty += 1
                     if consecutive_empty >= MAX_EMPTY_STREAK:
                         print(
-                            f"\n  [{tag}] ⏸  Tạm dừng: {MAX_EMPTY_STREAK} chương"
-                            f" liên tiếp không có nội dung.",
+                            f"\n  [{tag}] ⏸  {MAX_EMPTY_STREAK} chương liên tiếp"
+                            f" không có nội dung.",
                             flush=True,
                         )
                         issue_reporter.report(
@@ -801,6 +657,7 @@ async def run_novel_task(
         except Exception as e:
             logger.warning("[Finalize] Ads error: %s", e)
 
+        # pm.flush() persist profile changes (bao gồm requires_playwright từ js_heavy signal)
         try:
             await asyncio.shield(pm.flush())
         except Exception:
