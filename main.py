@@ -177,7 +177,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--fast-learning",
         action  = "store_true",
-        help    = "Bỏ qua optimizer, chỉ dùng AI selectors (nhanh hơn ~30%)",
+        help    = "Bỏ qua optimizer, chỉ dùng AI selectors (nhanh hơn ~30%%)",
     )
     parser.add_argument(
         "--no-validation",
@@ -257,6 +257,49 @@ async def main() -> None:
 
     print(f"📋 {len(profiles)} domain profile đã load\n")
     write_session_header(len(urls))
+
+    # ── Phase 1: Sequential learning ──────────────────────────────────────────────
+    # Học tất cả domains cần học TRƯỚC, tuần tự từng domain một.
+    # Phase 2 (scraping) sẽ tìm thấy profiles và không học lại → không bao giờ
+    # học + cào đồng thời.
+    from core.scraper import run_learning_only
+
+    print(f"🎓 Phase 1: Kiểm tra và học {len(urls)} domain(s)...\n", flush=True)
+    seen_learning: set[str] = set()
+    for url in urls:
+        domain = urlparse(url).netloc.lower()
+        if domain in seen_learning:
+            continue
+        seen_learning.add(domain)
+        try:
+            await run_learning_only(
+                start_url     = url,
+                progress_path = _progress_path(url),
+                pool          = pool,
+                pw_pool       = app.pw_pool,
+                pm            = pm,
+                ai_limiter    = app.ai_limiter,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"  [WARN] Learning thất bại cho {url[:55]}: {e}", flush=True)
+
+    print(f"\n🚀 Phase 2: Bắt đầu cào {len(urls)} truyện...\n", flush=True)
+
+    # ── Phase 2: Concurrent scraping ───────────────────────────────────────────────
+    async def _task(url: str, idx: int) -> None:
+        await asyncio.sleep(idx * INIT_STAGGER)
+        await run_novel_task(
+            start_url       = url,
+            output_dir      = _output_dir(url),
+            progress_path   = _progress_path(url),
+            pool            = pool,
+            pw_pool         = app.pw_pool,
+            pm              = pm,
+            ai_limiter      = app.ai_limiter,
+            on_chapter_done = app.inc_total,
+        )
 
     async def _task(url: str, idx: int) -> None:
         await asyncio.sleep(idx * INIT_STAGGER)

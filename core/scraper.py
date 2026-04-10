@@ -830,3 +830,53 @@ async def run_novel_task(
 
         icon = "✔" if completed else ("🛑" if _cancelled else "⏸")
         print(f"\n  {icon} [{tag}] {story_label} — {total} chapters\n", flush=True)
+
+
+# ── run_learning_only ─────────────────────────────────────────────────────────
+
+async def run_learning_only(
+    start_url    : str,
+    progress_path: str,
+    pool         : DomainSessionPool,
+    pw_pool      : PlaywrightPool,
+    pm           : ProfileManager,
+    ai_limiter   : AIRateLimiter,
+) -> bool:
+    """
+    Chạy CHỈ learning phase cho một domain. Skip nếu profile đã fresh.
+
+    Được gọi bởi main.py Phase 1 để đảm bảo tất cả profiles sẵn sàng
+    TRƯỚC KHI scraping bắt đầu. Scraping (Phase 2) sẽ tìm thấy profile
+    và skip learning → không học + cào đồng thời.
+
+    Returns:
+        True  — profile sẵn sàng (loaded hoặc vừa learned)
+        False — learning thất bại
+    """
+    domain = urlparse(start_url).netloc.lower()
+    tag    = _dtag(domain)
+
+    # Profile đã fresh → no-op
+    if pm.has(domain) and pm.is_profile_fresh(domain):
+        print(f"  [{tag}] ✅ Profile fresh — skip learning", flush=True)
+        return True
+
+    print(f"  [{tag}] 📚 Phase 1: Learning domain...", flush=True)
+
+    ads_filter     = AdsFilter.load(domain=domain)
+    issue_reporter = IssueReporter(domain=domain)
+
+    result = await _ensure_profile(
+        start_url      = start_url,
+        domain         = domain,
+        tag            = tag,
+        pool           = pool,
+        pw_pool        = pw_pool,
+        pm             = pm,
+        ai_limiter     = ai_limiter,
+        ads_filter     = ads_filter,
+        issue_reporter = issue_reporter,
+        progress_path  = progress_path,
+    )
+
+    return result is not None

@@ -7,15 +7,25 @@ Public API:
 
 Logic:
     1. Parse HTML
-    2. Xóa các elements trong remove_selectors
+    2. Xóa _ALWAYS_REMOVE tags (script, style, ...)
+    3. Xóa KNOWN_NOISE_SELECTORS (global safety net — TRƯỚC profile selectors)
+    4. Xóa profile remove_selectors (learned per-domain)
        (KHÔNG xóa nếu là ancestor của content hoặc title selector)
-    3. Trả về soup đã filtered
+    5. Trả về soup đã filtered
+
+KNOWN_NOISE_SELECTORS vs remove_selectors:
+    KNOWN_NOISE_SELECTORS : site-agnostic, hardcoded, luôn áp dụng
+    remove_selectors      : learned per-domain, từ AI/profile
+    Hai lớp bổ sung cho nhau — profile có thể miss noise,
+    global list catch những trường hợp phổ biến.
 """
 from __future__ import annotations
 
 import logging
 
 from bs4 import BeautifulSoup, Tag
+
+from config import KNOWN_NOISE_SELECTORS
 
 logger = logging.getLogger(__name__)
 
@@ -30,20 +40,32 @@ def prepare_soup(
     title_selector   : str | None = None,
 ) -> BeautifulSoup:
     """
-    Parse HTML và apply remove_selectors.
+    Parse HTML và apply 3-layer filtering.
 
-    Safety: không xóa element nào là ancestor của content hay title.
+    Safety: không xóa element nào là ancestor của content hay title selector.
+    Layer này chỉ apply cho remove_selectors (learned), không cho KNOWN_NOISE
+    (global list không bao giờ overlap với content selectors đúng).
     """
     soup = BeautifulSoup(html, "html.parser")
 
-    # Luôn xóa noise tags
+    # Layer 1: Luôn xóa noise tags
     for tag in soup.find_all(_ALWAYS_REMOVE):
         tag.decompose()
 
+    # Layer 2: Known noise selectors — global safety net
+    # Áp dụng TRƯỚC profile selectors để tránh pollution ảnh hưởng content detect
+    for sel in KNOWN_NOISE_SELECTORS:
+        try:
+            for el in soup.select(sel):
+                el.decompose()
+        except Exception as e:
+            logger.debug("[HtmlFilter] KNOWN_NOISE selector error %r: %s", sel, e)
+
+    # Layer 3: Profile-specific remove selectors
     if not remove_selectors:
         return soup
 
-    # Xác định các "protected" elements
+    # Xác định các "protected" elements (content và title containers)
     protected: list[Tag] = []
     for sel in (content_selector, title_selector):
         if sel:
@@ -54,7 +76,6 @@ def prepare_soup(
             except Exception:
                 pass
 
-    # Apply remove selectors
     for sel in remove_selectors:
         if not sel or not sel.strip():
             continue
@@ -73,10 +94,8 @@ def prepare_soup(
 def _is_protected(el: Tag, protected: list[Tag]) -> bool:
     """True nếu el là ancestor hoặc chính là một protected element."""
     for p in protected:
-        # p là el, hoặc p là hậu duệ của el (tức el là ancestor của p)
         if el == p:
             return True
-        # Check if p is a descendant of el
         try:
             if el in p.parents:
                 return True

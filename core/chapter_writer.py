@@ -2,13 +2,19 @@
 core/chapter_writer.py — Chapter filename formatting và content post-processing.
 
 Fix P2-11: lru_cache cho _get_chapter_re() thay vì re.compile() trong hot path.
-  format_chapter_filename() gọi re.compile() với cùng chapter_keyword pattern
-  mỗi lần. 1000 chapters = 1000 compilations lãng phí vì chapter_keyword
-  thường không đổi trong suốt 1 story (luôn là "Chapter", "Episode", v.v.).
 
-  Sau: _get_chapter_re(chapter_kw) được cache bởi lru_cache(maxsize=32).
-  maxsize=32 đủ cho edge cases (user scrape 32 stories với keyword khác nhau
-  cùng lúc). Trong thực tế thường chỉ cần 2-3 entries.
+Fix FILENAME-B: Bỏ has_chapter_subtitle gate.
+  Trước: subtitle chỉ được include vào filename khi has_chapter_subtitle=True.
+         "Chapter 23: Interlude 1" với has_chapter_subtitle=False → "0023_Chapter23.md"
+         → Hai chapter khác nhau có thể cùng tên file.
+  Sau:   Subtitle luôn được dùng khi có.
+         Logic: nếu có subtitle → chỉ dùng subtitle (số thứ tự 0023 đã là prefix).
+                nếu không có   → keyword+number là identifier.
+
+  "Chapter 23: Interlude 1" → "0023_Interlude_1.md"   (unique)
+  "Chapter 23"              → "0023_Chapter23.md"     (no subtitle fallback)
+  "Prologue"                → "0001_Prologue.md"      (no keyword match)
+  "Chapter 1"               → "0001_Chapter1.md"      (no subtitle)
 """
 from __future__ import annotations
 
@@ -36,14 +42,7 @@ _NAV_EDGE_SCAN = 7
 def _get_chapter_re(chapter_kw: str) -> re.Pattern:
     """
     Compile và cache regex cho chapter keyword.
-
-    Fix P2-11: gọi từ format_chapter_filename() — hot path, mỗi chapter.
-    lru_cache đảm bảo mỗi keyword chỉ compile một lần duy nhất.
-
-    Args:
-        chapter_kw: keyword như "Chapter", "Episode", "Ch.", v.v.
-                    Phải là str thuần (không có ký tự đặc biệt regex)
-                    vì được escape bởi re.escape().
+    Fix P2-11: hot path, lru_cache đảm bảo chỉ compile một lần.
     """
     kw_esc = re.escape(chapter_kw)
     return re.compile(
@@ -62,19 +61,22 @@ def format_chapter_filename(
     """
     Tạo tên file .md cho một chapter.
 
-    Logic:
+    Logic (Fix FILENAME-B):
         1. Bóc story prefix nếu có (VD: "Monster Cultivator Chapter 5" → "Chapter 5")
-        2. Parse chapter keyword + số (VD: "Chapter 5 – The Rise")
-        3. Nếu has_subtitle=True → thêm subtitle vào filename
-        4. Fallback: slugify toàn bộ title
+        2. Parse chapter keyword + số
+        3. Nếu có subtitle → dùng CHỈ subtitle làm tên file
+           (số thứ tự 0000 đã là prefix duy nhất, tránh "0023_Chapter23_Chapter23")
+        4. Nếu không có subtitle → dùng keyword+number
+        5. Fallback: slugify toàn bộ title
 
-    Args:
-        chapter_num: Số thứ tự chapter trong progress (1-based)
-        raw_title:   Title thô từ pipeline
-        progress:    ProgressDict chứa naming rules từ Naming Phase
+    Examples:
+        "Chapter 23: Interlude 1" → "0023_Interlude_1.md"
+        "Chapter 23"              → "0023_Chapter23.md"
+        "Prologue: The Beginning" → "0001_Prologue_The_Beginning.md"
+        "Prologue"                → "0001_Prologue.md"
+        "Interlude 1"             → "0023_Interlude_1.md"  (no keyword match → full title)
     """
     chapter_kw   = (progress.get("chapter_keyword") or "Chapter").strip()
-    has_subtitle = bool(progress.get("has_chapter_subtitle", False))
     prefix_strip = (progress.get("story_prefix_strip") or "").strip()
 
     title = raw_title.strip()
@@ -89,23 +91,30 @@ def format_chapter_filename(
     # Bóc pipe suffix
     title = _RE_PIPE_SUFFIX.sub("", title).strip()
 
-    # Fix P2-11: dùng cached regex thay vì re.compile() mỗi lần
+    # Fix P2-11: dùng cached regex
     m = _get_chapter_re(chapter_kw).search(title)
 
     if m:
         n       = m.group("n")
         sub_raw = m.group("sub").strip(" -–—:[]().")
         sub_raw = _RE_PIPE_SUFFIX.sub("", sub_raw).strip()
-        chap_id = f"{chapter_kw}{n}"
 
-        if has_subtitle and sub_raw and len(sub_raw) >= 2:
-            sub_safe = slugify_filename(sub_raw, max_len=50)
-            name     = f"{chapter_num:04d}_{chap_id}_{sub_safe}"
+        if sub_raw and len(sub_raw) >= 2:
+            # Fix FILENAME-B: có subtitle → dùng CHỈ subtitle.
+            # "Chapter 23: Interlude 1" → "0023_Interlude_1.md"
+            # Không prefix "Chapter23_" vì 0023 đã là unique identifier.
+            name = f"{chapter_num:04d}_{slugify_filename(sub_raw, max_len=80)}"
         else:
-            name = f"{chapter_num:04d}_{chap_id}"
+            # Không có subtitle → keyword+number là identifier duy nhất.
+            # "Chapter 23" → "0023_Chapter23.md"
+            chap_id = f"{chapter_kw}{n}"
+            name    = f"{chapter_num:04d}_{chap_id}"
     else:
+        # Không match chapter keyword → dùng toàn bộ title.
+        # "Prologue" → "0001_Prologue.md"
+        # "Interlude 1" → "0001_Interlude_1.md"
         fallback = (title or raw_title).strip()
-        name     = f"{chapter_num:04d}_{slugify_filename(fallback, max_len=60)}"
+        name     = f"{chapter_num:04d}_{slugify_filename(fallback, max_len=80)}"
 
     return slugify_filename(name, max_len=120) + ".md"
 

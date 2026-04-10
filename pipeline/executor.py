@@ -282,6 +282,16 @@ class PipelineRunner:
             ctx.content       = extract_result.data
             ctx.selector_used = extract_result.metadata.get("selector")
 
+            # Mandatory post-extraction cleaning — strip noise slipped past selectors
+            from utils.content_cleaner import clean_extracted_content
+            cleaned = clean_extracted_content(ctx.content)
+            if cleaned != ctx.content:
+                logger.debug(
+                    "[Runner] content_cleaner: %d→%d chars for %s",
+                    len(ctx.content), len(cleaned), url[:55],
+                )
+            ctx.content = cleaned
+
         # 4. Extract title
         title_result = await ChainExecutor(
             self.config.title_chain, special_mode="title_vote"

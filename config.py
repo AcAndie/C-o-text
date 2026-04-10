@@ -130,6 +130,27 @@ FALLBACK_CONTENT_SELECTORS: list[str] = [
     "div.entry-content",
 ]
 
+# Known noise selectors — luôn removed trong html_filter TRƯỚC profile selectors.
+# Site-agnostic safety net: catch những elements không bao giờ là chapter content.
+KNOWN_NOISE_SELECTORS: list[str] = [
+    # FanFiction.net
+    "#profile_top",            # Story metadata box (author, stats, ratings)
+    "#pre_story_links",        # Breadcrumb navigation above story
+    
+    # Royal Road
+    ".author-note-portlet",    # Author sidebar widget
+    ".portlet.blog-post",      # Author blog posts in sidebar
+    ".comment-container",      # Comment section container
+    ".comments-list",          # Comments list
+    ".reading-settings",       # Reading settings panel (popover)
+    "#settings-popover",       # Settings popover (ID variant)
+    
+    # ScribbleHub / generic
+    ".chapter-comments",
+    "#chapter-comments",
+    ".author-bio-box",
+    "[class='reading-options']",
+]
 # ── Regex compile sẵn ────────────────────────────────────────────────────────
 RE_CHAP_URL = re.compile(
     r"(?:chapter|chuong|chap)[_-]?\d+"

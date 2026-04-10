@@ -90,6 +90,29 @@ Trả về JSON (CHỈ JSON thuần, không markdown):
   "title_container": "CSS selector của div/section chứa title (để kiểm tra conflict). null nếu title là top-level.",
   "notes": "Ghi chú đặc biệt về cấu trúc site. null nếu không có."
 }}
+# Thêm vào learning_1_dom_structure, trước "QUAN TRỌNG — title_is_inside_remove_candidate:"
+
+CONTENT_SELECTOR BOUNDARY CHECK (⚠ CRITICAL — đọc trước khi chọn selector):
+Trước khi return content_selector, tự hỏi:
+  "Nếu extract text từ selector này, tôi có nhận được ĐÚNG CHỈ văn bản truyện không?"
+
+content_selector KHÔNG ĐƯỢC bao gồm các phần sau:
+  ✗ Story stats block    : "By: X", "Words: N,NNN", "Follows: N", "Published: X",
+                            "Rated: T", "Reviews:", "Favs:", "id: XXXXXXXX"
+  ✗ Author profile/bio   : Author name widget, Bio section, Achievements
+  ✗ Comment section      : "Log in to comment", "BEGIN COMMENTS", comment list
+  ✗ Site settings panel  : "Font Size", "Theme (Entire Website)", "Dim background",
+                            "Reader Width", reading options
+  ✗ Chapter navigation   : Prev/Next buttons khi chúng nằm NGOÀI prose area
+
+Nếu selector của bạn bao gồm bất kỳ phần nào trên → CHỌN SELECTOR CON (child) HẸP HƠN.
+Ưu tiên: #storytext, .chapter-inner, .chapter-content, article.chapter,
+          div[id*="text"], div[class*="content"]:not([class*="nav"]):not([class*="comment"])
+
+KNOWN NOISE SELECTORS (loại bỏ khỏi content area nếu chúng nằm bên trong):
+  FanFiction.net : #profile_top (KHÔNG BAO GIỜ là content)
+  Royal Road     : .author-note-portlet, .comment-container, .reading-settings
+  Generic        : [class*="comment"], [id*="comment"], .author-bio, [class*="setting"]
 
 QUAN TRỌNG — title_is_inside_remove_candidate:
   Đặt true nếu chapter_title NẰM BÊN TRONG một element mà bình thường
@@ -123,6 +146,14 @@ QUY TẮC TUYỆT ĐỐI — remove_selectors:
   Trước khi thêm selector X vào remove_selectors, hãy kiểm tra:
   "Nếu tôi xóa X, tôi có vô tình xóa chapter title hoặc chapter content không?"
   Nếu CÓ hoặc KHÔNG CHẮC → KHÔNG thêm X vào remove_selectors.
+
+CONTENT PURITY RULE:
+Trước khi chọn content_selector, verify nó KHÔNG bao gồm:
+  - Story info stats (Words:, Follows:, Published:, id: ...) → thường trong #profile_top, .story-info
+  - Comment/review widgets
+  - Reading settings/options panels
+  - Author bio sections
+Nếu nghi ngờ → chọn selector CON hẹp hơn, chấp nhận miss một số content hơn là lấy noise.
 
 PHÂN BIỆT:
   • chapter_title ≠ story_title ≠ author_name
@@ -465,7 +496,10 @@ NHIỆM VỤ — Simulation:
   3. Apply next_selector → tìm next URL
   4. Apply remove_selectors → liệt kê elements bị xóa
   5. Đánh giá từng bước: đúng hay sai?
-
+  6. CONTENT PURITY CHECK: Đếm dòng trong extracted content có chứa:
+     "By:", "Words:", "Follows:", "Log in to comment", "Font Size", "Theme"
+     Nếu > 2 dòng như vậy → content_selector bị contaminated → báo cáo trong issues_found
+     và suggest selector con hẹp hơn.
 Trả về JSON (CHỈ JSON thuần):
 {{
   "content_extracted": "200+ chars đầu của content đã extract (để verify). null nếu extract thất bại.",
