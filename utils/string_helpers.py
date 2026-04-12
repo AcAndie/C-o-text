@@ -14,6 +14,15 @@ Fix TITLE-1: strip_site_suffix() — thêm "FanFiction" (không .net) + fanfic d
     Pass 1 (_SITE_SUFFIX)     : strip "| FanFiction"
     Pass 2 (_FANFIC_DESCRIPTOR): strip ", a {fandom} fanfic"
     Result: "{story} {chapter}" → title extractor xử lý tiếp
+
+Fix TITLE-2: strip_site_suffix() — thêm pass 3 cho word count artifact.
+  NovelFire (và một số site khác) append "[ ... words ]" hoặc "[1,234 words]"
+  trực tiếp vào <h1> và <title>. Pattern này không phải site suffix (không có |–—)
+  nên _SITE_SUFFIX không catch được. Thêm _WORD_COUNT_ARTIFACT pass.
+
+  Ví dụ:
+    "The Primal Hunter-Chapter 27: Evolution[ ... words ]"
+    → Pass 3: "The Primal Hunter-Chapter 27: Evolution"
 """
 from __future__ import annotations
 
@@ -65,6 +74,14 @@ _FANFIC_DESCRIPTOR = re.compile(
     re.IGNORECASE,
 )
 
+# Fix TITLE-2: Word count artifacts appended by some sites directly to h1/title.
+# Formats seen: "[ ... words ]", "[1,234 words]", "[ 12345 words ]"
+# Does NOT have a separator char (|–—) so _SITE_SUFFIX misses it.
+_WORD_COUNT_ARTIFACT = re.compile(
+    r"\s*\[\s*[\d,.\s]*\.?\s*words?\s*\]\s*$",
+    re.IGNORECASE,
+)
+
 
 def normalize_title(text: str) -> str:
     if not text:
@@ -76,16 +93,22 @@ def normalize_title(text: str) -> str:
 
 def strip_site_suffix(text: str) -> str:
     """
-    Strip site name suffix và FFN-style fanfic descriptor khỏi title.
+    Strip site name suffix, FFN fanfic descriptor, và word count artifacts.
 
-    Two passes:
-      Pass 1: "Monster? No... Chapter 23: Interlude 1, a percy jackson fanfic | FanFiction"
-           →  "Monster? No... Chapter 23: Interlude 1, a percy jackson fanfic"
-      Pass 2: "Monster? No... Chapter 23: Interlude 1, a percy jackson fanfic"
-           →  "Monster? No... Chapter 23: Interlude 1"
+    Three passes:
+      Pass 1 (_SITE_SUFFIX):         "... | FanFiction" → strip
+      Pass 2 (_FANFIC_DESCRIPTOR):   ", a percy jackson fanfic" → strip
+      Pass 3 (_WORD_COUNT_ARTIFACT): "[ ... words ]" → strip
+
+    Pass 3 order (sau pass 1+2) để tránh false positive khi site suffix
+    và word count xuất hiện cùng nhau:
+      "Chapter 5 [1,234 words] | NovelFire"
+      → Pass 1: "Chapter 5 [1,234 words]"
+      → Pass 3: "Chapter 5"
     """
     text = _SITE_SUFFIX.sub("", text).strip()
     text = _FANFIC_DESCRIPTOR.sub("", text).strip()
+    text = _WORD_COUNT_ARTIFACT.sub("", text).strip()
     return text
 
 

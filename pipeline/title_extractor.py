@@ -10,6 +10,14 @@ Blocks (theo thứ tự ưu tiên trong default chain):
 
 Tất cả blocks đều chạy qua normalize_title() để chuẩn hóa kết quả.
 Kết quả cuối được chọn qua majority vote trong TitleChainBlock (executor xử lý).
+
+Fix TITLE-A: SelectorTitleBlock apply strip_site_suffix() khi el.name == "title".
+  Trước: selector="title" → normalize(raw) → full raw title với site suffix còn nguyên.
+         AI#5 thường learn "title" làm title_selector, route sang SelectorTitleBlock
+         thay vì TitleTagBlock, mất hoàn toàn suffix stripping.
+  Sau:   Khi element là <title> HTML tag → apply strip_site_suffix() trước normalize().
+         Đây là semantic contract của <title> element: nó LUÔN LUÔN chứa site suffix.
+         Không phải special-case mà là hoàn thiện contract giống TitleTagBlock.
 """
 from __future__ import annotations
 
@@ -52,7 +60,16 @@ class SelectorTitleBlock(ScraperBlock):
                     start,
                 )
 
-            text = normalize_title(el.get_text(strip=True))
+            raw = el.get_text(strip=True)
+
+            # Fix TITLE-A: <title> HTML element luôn chứa site suffix và fanfic
+            # descriptor — apply strip_site_suffix() như TitleTagBlock làm.
+            # Condition: el.name check DOM element type, không phải selector string,
+            # vì selector "div.chapter-container h1" cũng có thể chứa "title" substring.
+            if el.name and el.name.lower() == "title":
+                raw = strip_site_suffix(raw)
+
+            text = normalize_title(raw)
             if len(text) < _MIN_TITLE_LEN:
                 return self._timed(
                     BlockResult.failed(f"title too short: {text!r}"),

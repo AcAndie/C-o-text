@@ -16,6 +16,13 @@ Fix FILENAME-C: _is_garbage_subtitle() guard.
     - "a {fandom} fanfic" / "a {fandom} fanfiction" (FFN format)
     - "translated by ..." / "edited by ..."
     - Dài > 60 chars mà không có dấu câu tự nhiên (.) (!) (?) (,)
+
+Fix FILENAME-D: Strip comma khỏi sub_raw trước khi check _is_garbage_subtitle().
+  Root cause: Sau khi bóc chapter keyword và số, FFN để lại dấu phẩy đứng đầu
+  trong phần subtitle vì format title là "Chapter N, a {fandom} fanfic".
+  regex group("sub") trả về ", a percy jackson..." — có leading comma.
+  _GARBAGE_SUBTITLE_PATTERNS dùng pattern ^a\\s+ không match khi có "," ở đầu.
+  Fix: thêm "," vào strip chars khi build sub_raw.
 """
 from __future__ import annotations
 
@@ -104,18 +111,19 @@ def format_chapter_filename(
     """
     Tạo tên file .md cho một chapter.
 
-    Logic (Fix FILENAME-B + Fix FILENAME-C):
+    Logic (Fix FILENAME-B + Fix FILENAME-C + Fix FILENAME-D):
         1. Bóc story prefix nếu có
         2. Bóc pipe suffix
         3. Parse chapter keyword + số
-        4. Validate subtitle: nếu là garbage → fallback về keyword+number
-        5. Nếu subtitle thật → dùng CHỈ subtitle làm tên file
-        6. Nếu không có subtitle → keyword+number
-        7. Fallback: slugify toàn bộ title
+        4. Strip leading comma khỏi sub_raw (Fix FILENAME-D)
+        5. Validate subtitle: nếu là garbage → fallback về keyword+number
+        6. Nếu subtitle thật → dùng CHỈ subtitle làm tên file
+        7. Nếu không có subtitle → keyword+number
+        8. Fallback: slugify toàn bộ title
 
     Examples:
         "Chapter 23: Interlude 1"                   → "0023_Interlude_1.md"
-        "Chapter 1, a percy jackson fanfic"          → "0001_Chapter1.md"   (Fix C)
+        "Chapter 1, a percy jackson fanfic"          → "0001_Chapter1.md"   (Fix C+D)
         "Chapter 23"                                 → "0023_Chapter23.md"
         "Prologue: The Beginning"                    → "0001_Prologue_The_Beginning.md"
         "Prologue"                                   → "0001_Prologue.md"
@@ -140,7 +148,11 @@ def format_chapter_filename(
 
     if m:
         n       = m.group("n")
-        sub_raw = m.group("sub").strip(" -–—:[]().")
+        # Fix FILENAME-D: strip comma trước khi strip các separators khác.
+        # FFN format "Chapter N, a {fandom} fanfic" → group("sub") = ", a ..."
+        # _GARBAGE_SUBTITLE_PATTERNS[0] dùng ^a\s+ → không match khi có leading comma.
+        # Strip "," ở đây để garbage check hoạt động đúng.
+        sub_raw = m.group("sub").strip(" ,-–—:[]().")
         sub_raw = _RE_PIPE_SUFFIX.sub("", sub_raw).strip()
 
         # Fix FILENAME-C: validate subtitle trước khi dùng

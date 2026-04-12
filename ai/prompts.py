@@ -27,6 +27,11 @@ Utility:
   find_first_chapter  — Tìm URL Chapter 1 từ trang Index
   classify_and_find   — Phân loại trang + tìm next URL (emergency fallback)
   verify_ads          — Xác nhận dòng text có phải ads/watermark không
+
+Fix ADS-B (layer 1): learning_7_ads_deepscan() prompt thêm explicit FORMAT constraint.
+  Root cause: AI trả về HTML script tag content và markdown heading vì prompt
+  không nói rõ "plain text only". Thêm FORMAT BẮT BUỘC section vào prompt.
+  Layer 2 (validation guard) ở ai/agents.py::ai_ads_deepscan().
 """
 from __future__ import annotations
 
@@ -42,10 +47,6 @@ class Prompts:
         html1: str, url1: str,
         html2: str, url2: str,
     ) -> str:
-        """
-        AI#1 — Ch.1+2: Initial DOM structure mapping.
-        Phân tích 2 chapters, liệt kê và phân loại TỪNG element quan trọng.
-        """
         return f"""Bạn là chuyên gia phân tích cấu trúc HTML của web novel site.
 Phân tích HTML của Chapter 1 và Chapter 2 để học cấu trúc DOM.
 
@@ -90,7 +91,6 @@ Trả về JSON (CHỈ JSON thuần, không markdown):
   "title_container": "CSS selector của div/section chứa title (để kiểm tra conflict). null nếu title là top-level.",
   "notes": "Ghi chú đặc biệt về cấu trúc site. null nếu không có."
 }}
-# Thêm vào learning_1_dom_structure, trước "QUAN TRỌNG — title_is_inside_remove_candidate:"
 
 CONTENT_SELECTOR BOUNDARY CHECK (⚠ CRITICAL — đọc trước khi chọn selector):
 Trước khi return content_selector, tự hỏi:
@@ -106,13 +106,6 @@ content_selector KHÔNG ĐƯỢC bao gồm các phần sau:
   ✗ Chapter navigation   : Prev/Next buttons khi chúng nằm NGOÀI prose area
 
 Nếu selector của bạn bao gồm bất kỳ phần nào trên → CHỌN SELECTOR CON (child) HẸP HƠN.
-Ưu tiên: #storytext, .chapter-inner, .chapter-content, article.chapter,
-          div[id*="text"], div[class*="content"]:not([class*="nav"]):not([class*="comment"])
-
-KNOWN NOISE SELECTORS (loại bỏ khỏi content area nếu chúng nằm bên trong):
-  FanFiction.net : #profile_top (KHÔNG BAO GIỜ là content)
-  Royal Road     : .author-note-portlet, .comment-container, .reading-settings
-  Generic        : [class*="comment"], [id*="comment"], .author-bio, [class*="setting"]
 
 QUAN TRỌNG — title_is_inside_remove_candidate:
   Đặt true nếu chapter_title NẰM BÊN TRONG một element mà bình thường
@@ -125,10 +118,6 @@ QUAN TRỌNG — title_is_inside_remove_candidate:
         html1: str, url1: str,
         html2: str, url2: str,
     ) -> str:
-        """
-        AI#2 — Ch.1+2: Independent cross-check (CÙNG DATA với AI#1, độc lập).
-        Không biết kết quả AI#1. Phân tích độc lập để cross-check.
-        """
         return f"""Bạn là chuyên gia phân tích HTML độc lập. Phân tích HTML của 2 chapters
 và xác định selectors một cách HOÀN TOÀN ĐỘC LẬP.
 
@@ -153,7 +142,7 @@ Trước khi chọn content_selector, verify nó KHÔNG bao gồm:
   - Comment/review widgets
   - Reading settings/options panels
   - Author bio sections
-Nếu nghi ngờ → chọn selector CON hẹp hơn, chấp nhận miss một số content hơn là lấy noise.
+Nếu nghi ngờ → chọn selector CON hẹp hơn.
 
 PHÂN BIỆT:
   • chapter_title ≠ story_title ≠ author_name
@@ -182,10 +171,6 @@ confidence: 0.0-1.0 — mức độ chắc chắn của bạn về TẤT CẢ se
         html4: str, url4: str,
         consensus_selectors: dict,
     ) -> str:
-        """
-        AI#3 — Ch.3+4: Selector stability validation.
-        Dùng consensus từ AI#1+#2, verify trên 2 chapters mới.
-        """
         return f"""Xác nhận các CSS selectors có STABLE (ổn định) qua nhiều chapters không.
 
 Selectors cần verify (consensus từ phân tích trước):
@@ -240,10 +225,6 @@ stability_score: 1.0 = tất cả selectors hoạt động đúng trên cả 4 c
         content_selector: str | None,
         title_selector: str | None,
     ) -> str:
-        """
-        AI#4 — Ch.5: Remove selectors audit.
-        Kiểm tra từng selector trong remove list có conflict không.
-        """
         remove_list = "\n".join(
             f"  {i+1}. {sel!r}"
             for i, sel in enumerate(current_remove_selectors)
@@ -263,12 +244,10 @@ HTML Ch.5 (tối đa 8000 ký tự):
 
 NHIỆM VỤ: Với TỪNG selector trong remove_selectors, kiểm tra:
   Q1: Selector này có phải là TỔ TIÊN (ancestor) của content_selector không?
-      Nghĩa là: nếu xóa selector này, content có bị mất không?
   Q2: Selector này có phải là TỔ TIÊN của title_selector không?
-      Nghĩa là: nếu xóa selector này, chapter title có bị mất không?
   Q3: Selector này có CHỨA content hoặc title bên trong không?
 
-Nếu Q1, Q2, hoặc Q3 = YES → selector đó là DANGEROUS, phải loại khỏi remove list.
+Nếu Q1, Q2, hoặc Q3 = YES → selector đó là DANGEROUS.
 
 Trả về JSON (CHỈ JSON thuần):
 {{
@@ -284,9 +263,7 @@ Trả về JSON (CHỈ JSON thuần):
   ],
   "safe_selectors": ["Selectors đã verify SAFE để remove"],
   "dangerous_selectors": ["Selectors NGUY HIỂM — phải xóa khỏi remove list"],
-  "suggested_replacements": {{
-    "dangerous_selector": "selector_an_toan_hon_thay_the"
-  }},
+  "suggested_replacements": {{}},
   "notes": null
 }}
 
@@ -299,9 +276,6 @@ verdict: "SAFE" | "DANGEROUS" | "UNCERTAIN"
         title_selector: str | None,
         author_selector: str | None,
     ) -> str:
-        """
-        AI#5 — Ch.6: Title extraction deep-dive + author contamination check.
-        """
         return f"""Phân tích sâu về cách lấy chapter title — phát hiện và ngăn author contamination.
 
 URL Ch.6: {url6}
@@ -312,13 +286,8 @@ HTML Ch.6 (tối đa 8000 ký tự):
 {html6}
 
 NHIỆM VỤ:
-1. Tìm TẤT CẢ các cách có thể lấy chapter title:
-   - Qua CSS selector (h1, h2, .chapter-title, ...)
-   - Qua <title> tag
-   - Qua og:title meta tag
-2. Với TỪNG cách, xác định:
-   - Kết quả trích xuất là gì?
-   - Có lẫn tên tác giả, tên truyện, tên site không?
+1. Tìm TẤT CẢ các cách có thể lấy chapter title
+2. Với TỪNG cách, xác định kết quả và độ sạch
 3. Chọn selector/source TỐT NHẤT — cho kết quả SẠCH NHẤT (chỉ chapter title)
 4. Xác định tên tác giả để LOẠI TRỪ khi lấy title
 
@@ -331,14 +300,10 @@ PHÂN BIỆT:
 Trả về JSON (CHỈ JSON thuần):
 {{
   "best_title_selector": "Selector cho SẠCH NHẤT chapter title only. null nếu phải dùng <title> tag.",
-  "title_source_ranking": [
-    {{"source": "h1.chapter-title", "sample": "Chapter 9 – Core Strength", "clean": true}},
-    {{"source": "title_tag", "sample": "Chapter 9 – Core Strength - Rock falls | RR", "clean": false}}
-  ],
   "author_name_detected": "zechamp",
   "author_contamination_risk": false,
   "title_cleanup_needed": false,
-  "title_cleanup_note": "Nếu true: mô tả cần cleanup gì (strip suffix, split, ...)",
+  "title_cleanup_note": null,
   "recommended_title_selector": "Selector tốt nhất sau khi xem xét tất cả",
   "notes": null
 }}
@@ -350,9 +315,6 @@ Trả về JSON (CHỈ JSON thuần):
 
     @staticmethod
     def learning_6_special_content(html7: str, url7: str) -> str:
-        """
-        AI#6 — Ch.7: Special content detection.
-        """
         return f"""Phân tích Chapter 7 để phát hiện nội dung đặc biệt cần formatting riêng.
 
 URL Ch.7: {url7}
@@ -391,6 +353,9 @@ math_format: "latex" | "mathjax" | "plain_unicode" | null
     def learning_7_ads_deepscan(html8: str, url8: str) -> str:
         """
         AI#7 — Ch.8: Ads & watermark deep scan.
+
+        Fix ADS-B: Thêm FORMAT BẮT BUỘC section để ngăn AI trả về
+        HTML tags, script content, hoặc markdown headings làm ads_keywords.
         """
         return f"""Quét sâu để phát hiện tất cả ads, watermarks và boilerplate trong chapter.
 
@@ -415,9 +380,20 @@ TIÊU CHÍ WATERMARK (✓ GIỮ vs ✗ LOẠI):
     • Dialogue nhân vật
     • Single-chapter entries
 
+FORMAT BẮT BUỘC cho ads_keywords (⚠ QUAN TRỌNG):
+  ✓ Chỉ PLAIN TEXT — text xuất hiện trong nội dung đã extract sau khi strip HTML
+  ✓ Lowercase, tối đa 200 ký tự, tối thiểu 5 ký tự
+  ✗ KHÔNG được là HTML/CSS/JavaScript code (không có < > {{ }} tags)
+  ✗ KHÔNG được là markdown heading (không bắt đầu bằng #)
+  ✗ KHÔNG được là URL hoặc domain (không có ://)
+  ✗ KHÔNG được là raw script tag content
+
+  Ví dụ ĐÚNG  : "read at novelfire.net", "tap the middle of the screen to reveal reading options"
+  Ví dụ SAI   : "<script>window.pubfuture...</script>", "# the primal hunter -", "https://..."
+
 Trả về JSON (CHỈ JSON thuần):
 {{
-  "ads_keywords": ["watermark text lowercase — chỉ cố định, xuất hiện ≥80% chapters"],
+  "ads_keywords": ["plain text watermark lowercase — chỉ cố định, xuất hiện ≥80% chapters"],
   "ads_selectors": ["CSS selectors của ads elements trong content area — an toàn để remove"],
   "top_edge_pattern": "Text pattern xuất hiện ở đầu chapter — null nếu không có",
   "bottom_edge_pattern": "Text pattern xuất hiện ở cuối chapter — null nếu không có",
@@ -435,9 +411,6 @@ Trả về JSON (CHỈ JSON thuần):
         next_selector: str | None,
         nav_type: str | None,
     ) -> str:
-        """
-        AI#8 — Ch.9: Navigation stress test.
-        """
         return f"""Kiểm tra hệ thống navigation của site trên chapter thực tế.
 
 URL Ch.9: {url9}
@@ -449,11 +422,7 @@ HTML Ch.9 (tối đa 8000 ký tự):
 
 NHIỆM VỤ:
 1. Verify next_selector có hoạt động trên chapter này không
-2. Tìm link "Next Chapter" bằng TẤT CẢ phương pháp:
-   - CSS selector
-   - rel="next" attribute
-   - Text "Next" / "Next Chapter" / "Tiếp"
-   - URL pattern increment
+2. Tìm link "Next Chapter" bằng TẤT CẢ phương pháp
 3. Xác nhận chapter_url_pattern có match URL này không
 
 Trả về JSON (CHỈ JSON thuần):
@@ -474,9 +443,6 @@ Trả về JSON (CHỈ JSON thuần):
         html10: str, url10: str,
         profile_so_far: dict,
     ) -> str:
-        """
-        AI#9 — Ch.10: Full profile simulation + quality scoring.
-        """
         return f"""Simulate áp dụng profile lên Chapter 10 và đánh giá chất lượng.
 
 URL Ch.10: {url10}
@@ -496,23 +462,21 @@ NHIỆM VỤ — Simulation:
   3. Apply next_selector → tìm next URL
   4. Apply remove_selectors → liệt kê elements bị xóa
   5. Đánh giá từng bước: đúng hay sai?
-  6. CONTENT PURITY CHECK: Đếm dòng trong extracted content có chứa:
-     "By:", "Words:", "Follows:", "Log in to comment", "Font Size", "Theme"
-     Nếu > 2 dòng như vậy → content_selector bị contaminated → báo cáo trong issues_found
-     và suggest selector con hẹp hơn.
+  6. CONTENT PURITY CHECK: báo cáo nếu extracted content chứa metadata/noise
+
 Trả về JSON (CHỈ JSON thuần):
 {{
-  "content_extracted": "200+ chars đầu của content đã extract (để verify). null nếu extract thất bại.",
+  "content_extracted": "200+ chars đầu của content đã extract. null nếu extract thất bại.",
   "content_char_count": 5420,
   "content_quality": "good",
   "title_extracted": "Chapter 10 – Something",
   "title_quality": "good",
   "next_url_found": "https://...",
   "nav_quality": "good",
-  "removed_elements": ["Liệt kê elements đã bị remove — mô tả ngắn gọn"],
+  "removed_elements": ["Liệt kê elements đã bị remove"],
   "removal_safe": true,
   "overall_score": 0.95,
-  "issues_found": ["Mô tả vấn đề nếu có. [] nếu không có vấn đề."],
+  "issues_found": [],
   "field_scores": {{
     "content": 1.0,
     "title": 1.0,
@@ -532,10 +496,6 @@ overall_score: 0.0-1.0
 
     @staticmethod
     def learning_10_master_synthesis(synthesis_summary: str, domain: str) -> str:
-        """
-        AI#10 — Master synthesis.
-        Nhận summary từ 9 AI calls trước, output profile CUỐI CÙNG.
-        """
         return f"""Bạn là AI tổng hợp profile cuối cùng cho web novel scraper.
 Nhận kết quả từ 9 AI analysis calls trước và tổng hợp thành profile tối ưu.
 
@@ -547,25 +507,26 @@ Domain: {domain}
 
 NHIỆM VỤ:
 1. Tổng hợp tất cả kết quả thành profile CUỐI CÙNG
-2. Khi các AI calls disagree → chọn kết quả có:
-   - Confidence cao hơn
-   - Được xác nhận bởi nhiều AI hơn
-   - Có evidence rõ ràng hơn
+2. Khi các AI calls disagree → chọn kết quả có confidence cao hơn
 3. Loại bỏ HOÀN TOÀN bất kỳ remove_selector nào từng bị đánh dấu DANGEROUS
 4. Merge ads_keywords từ tất cả calls
 5. Tính confidence tổng thể
 
-QUY TẮC BẤT BIẾN (không được vi phạm):
+QUY TẮC BẤT BIẾN:
   ✗ KHÔNG thêm selector vào remove_selectors nếu nó từng được đánh dấu dangerous
   ✗ KHÔNG để chapter_title_selector trống nếu có bất kỳ AI nào tìm được
   ✗ KHÔNG chọn author_selector làm chapter_title_selector
+
+FORMAT ads_keywords (⚠):
+  ✓ Chỉ plain text, lowercase, 5-200 ký tự
+  ✗ Không HTML tags, không markdown heading (#), không URLs
 
 Trả về JSON (CHỈ JSON thuần):
 {{
   "content_selector": "Selector tốt nhất đã được verify",
   "next_selector": "Selector tốt nhất hoặc null",
-  "chapter_title_selector": "Selector SẠCH NHẤT cho chapter title — không lẫn author/story",
-  "remove_selectors": ["Chỉ selectors đã verify SAFE — không có dangerous selector"],
+  "chapter_title_selector": "Selector SẠCH NHẤT cho chapter title",
+  "remove_selectors": ["Chỉ selectors đã verify SAFE"],
   "nav_type": "rel_next",
   "chapter_url_pattern": "Regex đã verify hoặc null",
   "requires_playwright": false,
@@ -581,11 +542,11 @@ Trả về JSON (CHỈ JSON thuần):
     "hidden_text": {{"found": false, "selectors": [], "convert_to": "spoiler_tag"}},
     "author_note": {{"found": false, "selectors": [], "convert_to": "blockquote_note"}}
   }},
-  "ads_keywords": ["merged list từ tất cả calls, lowercase, chỉ watermark cố định"],
+  "ads_keywords": ["plain text only — merged list, lowercase"],
   "confidence": 0.95,
-  "uncertain_fields": ["Fields nào còn uncertain sau tổng hợp"],
-  "conflict_summary": "Mô tả ngắn các conflicts đã resolve và cách resolve",
-  "notes": "Ghi chú về site quirks quan trọng"
+  "uncertain_fields": [],
+  "conflict_summary": null,
+  "notes": null
 }}
 
 confidence rubric:
@@ -596,7 +557,7 @@ confidence rubric:
 """
 
     # ══════════════════════════════════════════════════════════════════════════
-    # UTILITY PROMPTS (giữ nguyên)
+    # UTILITY PROMPTS
     # ══════════════════════════════════════════════════════════════════════════
 
     @staticmethod
@@ -682,39 +643,37 @@ Trả về JSON (CHỈ JSON thuần):
   "notes": null
 }}
 """
+
     @staticmethod
     def extract_content(html_snippet: str, url: str) -> str:
-        """
-        Last-resort content extraction khi tất cả heuristics fail.
-        Dùng bởi AIExtractBlock (pipeline/extractor.py).
-        """
         return f"""Bạn là chuyên gia extract nội dung từ trang web novel.
 Nhiệm vụ: Tìm và extract ĐÚNG NỘI DUNG CHƯƠNG TRUYỆN từ HTML dưới đây.
- 
+
 URL: {url}
 HTML (tối đa 8000 ký tự):
 {html_snippet}
- 
+
 QUY TẮC:
   ✓ LẤY: Văn bản truyện, dialogue nhân vật, mô tả cảnh vật/hành động
   ✗ BỎ: Navigation (Prev/Next), header/footer site, quảng cáo, author notes (nếu không rõ),
          watermark, metadata (số từ, rating), comment section
- 
+
 FORMAT OUTPUT:
   - Giữ nguyên đoạn văn, xuống dòng đúng chỗ
   - Giữ ** bold ** và * italic * nếu có
   - KHÔNG thêm bất kỳ text nào không có trong trang gốc
- 
+
 Trả về JSON (CHỈ JSON thuần, không markdown):
 {{
   "content": "Toàn bộ nội dung chương đã extract — ít nhất 200 ký tự nếu trang có content.",
   "confidence": 0.85,
-  "notes": "Mô tả ngắn nếu có điều gì bất thường. null nếu không có."
+  "notes": null
 }}
- 
-confidence: 0.0-1.0 — mức độ chắc chắn bạn đã extract đúng content.
+
+confidence: 0.0-1.0
 Nếu không tìm thấy nội dung truyện: confidence < 0.3 và content = "".
 """
+
 
 # ── Helper ────────────────────────────────────────────────────────────────────
 

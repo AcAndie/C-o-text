@@ -2,25 +2,15 @@
 ai/agents.py — patch P2-B + P2-C trên nền Batch 1.
 
 P2-B: snippet() early-exit nếu raw html đã <= max_len.
-  Trước: mọi HTML đều qua BeautifulSoup parse + serialize (str(soup)) dù
-         HTML đã nhỏ hơn max_len. Parse + serialize không miễn phí —
-         200KB HTML mất ~15-30ms trên BS4.
-  Sau:  Nếu len(html) <= max_len → return html trực tiếp, bỏ qua parse.
-        Trade-off được chấp nhận: HTML raw có thể chứa script/style tags
-        nhưng với AI analysis, chúng ít quan trọng hơn latency tiết kiệm.
-        Với trang lớn (> max_len) vẫn strip script/style như cũ.
-
-        Lưu ý: check len(html) chứ không phải len(cleaned) — cleaned có thể
-        nhỏ hơn html sau khi strip scripts, nhưng nếu html đã nhỏ thì
-        cleaned chắc chắn cũng nhỏ → parse luôn cho output đầy đủ.
-
 P2-C: _parse() thay greedy regex bằng json.JSONDecoder.raw_decode().
-  Trước: re.search(r"(\\{[\\s\\S]*\\}|\\[[\\s\\S]*\\])", text) trên response
-         rất dài → catastrophic backtracking với nested structures.
-  Sau:  Dùng json.JSONDecoder.raw_decode() để tìm JSON object/array đầu tiên
-        từ mỗi vị trí '{' và '['. Không dùng regex → không có ReDoS risk.
-        Chậm hơn một chút khi text không có JSON (phải thử nhiều vị trí),
-        nhưng đây là exceptional path — normal path là text đã là JSON thuần.
+
+Fix ADS-B: ai_ads_deepscan() thêm validation guard lọc garbage keywords.
+  Root cause: AI#7 prompt không nói rõ "plain text only" → AI trả về
+  HTML script tag content (<script>...</script>) và markdown heading (#)
+  vì chúng technically là "ads" nhưng sai format — không bao giờ xuất hiện
+  trong extracted content để filter được.
+  Fix: thêm 4 conditions vào list comprehension sau khi parse.
+  Guard này là layer thứ 2 — layer thứ 1 là prompt (xem ai/prompts.py).
 """
 from __future__ import annotations
 
@@ -108,34 +98,20 @@ def _parse(text: str | None) -> dict | list | None:
     Parse JSON từ AI response text.
 
     P2-C: thay greedy regex bằng json.JSONDecoder.raw_decode().
-
-    Strategy:
-        1. Strip markdown fences (```json ... ```)
-        2. Thử parse toàn bộ string trực tiếp (fast path — AI response thường sạch)
-        3. Nếu fail: tìm JSON object/array đầu tiên bằng raw_decode() tại
-           mỗi vị trí '{' và '[' (no regex, no ReDoS)
-        4. Trả về None nếu không tìm được JSON hợp lệ
-
-    raw_decode(s, idx) parse JSON bắt đầu từ vị trí idx, trả về (obj, end_idx).
-    Không cần match đến hết string — perfect cho "extract first JSON from text".
     """
     if not text:
         return None
 
     text = text.strip()
-    # Strip markdown fences
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
     text = text.strip()
 
-    # Fast path: text đã là JSON thuần (đa số trường hợp với structured output)
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # Slow path: tìm JSON object hoặc array đầu tiên trong text
-    # Dùng raw_decode thay vì regex — không có ReDoS risk
     decoder = json.JSONDecoder()
     for start_char, search_start in (("{", 0), ("[", 0)):
         pos = 0
@@ -158,23 +134,11 @@ def snippet(html: str, max_len: int = 10000) -> str:
     """
     Cắt HTML xuống max_len chars để gửi cho AI.
 
-    Fix P1-10: đổi tên từ _snippet → snippet (public function).
-    Fix P2-14: không cắt giữa tag đang mở.
-
-    P2-B: early-exit nếu html đã nhỏ hơn max_len — tránh parse không cần thiết.
-
-    Logic:
-        1. [P2-B] Nếu len(html) <= max_len → return html trực tiếp.
-           HTML raw có thể có script/style nhưng phần lớn trang web novel
-           nhỏ hơn 10000 chars → parse luôn cũng trả về đầy đủ → bỏ qua parse.
-        2. Strip script/style, nếu cleaned <= max_len → return cleaned HTML.
-        3. Nếu vẫn > max_len → fallback sang get_text()[:max_len].
+    P2-B: early-exit nếu html đã nhỏ hơn max_len.
     """
-    # P2-B: fast path — html đã đủ nhỏ, không cần parse
     if len(html) <= max_len:
         return html
 
-    # HTML lớn hơn max_len — strip scripts rồi check lại
     soup = BeautifulSoup(html, "html.parser")
     for t in soup.find_all(["script", "style", "noscript"]):
         t.decompose()
@@ -183,11 +147,9 @@ def snippet(html: str, max_len: int = 10000) -> str:
     if len(cleaned) <= max_len:
         return cleaned
 
-    # Vẫn quá lớn — fallback sang plain text (không cắt giữa tag)
     return soup.get_text(separator="\n", strip=True)[:max_len]
 
 
-# Backward compat alias
 _snippet = snippet
 
 
@@ -702,9 +664,18 @@ async def ai_ads_deepscan(
         if isinstance(result, dict):
             result.setdefault("ads_keywords",  [])
             result.setdefault("ads_selectors", [])
+            # Fix ADS-B: validate keywords — chỉ giữ plain text có thể xuất hiện
+            # trong extracted content. Loại HTML tags, markdown headings, URLs,
+            # và strings quá ngắn/dài để filter được trong content stream.
             result["ads_keywords"] = [
                 kw.lower().strip() for kw in result["ads_keywords"]
-                if isinstance(kw, str) and kw.strip()
+                if isinstance(kw, str)
+                and kw.strip()
+                and not kw.strip().startswith("<")   # HTML/script tags
+                and not kw.strip().startswith("#")   # markdown heading hoặc CSS id
+                and "</" not in kw                   # closing HTML tags
+                and "://" not in kw                  # URLs
+                and 5 <= len(kw.strip()) <= 200      # reasonable length
             ]
             return result
     except asyncio.CancelledError:
@@ -762,7 +733,7 @@ async def ai_full_simulation(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UTILITY AGENTS — tự gọi snippet() vì caller không cắt trước
+# UTILITY AGENTS
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def ai_master_synthesis(
@@ -785,7 +756,13 @@ async def ai_master_synthesis(
             result.setdefault("ads_keywords",     [])
             result["ads_keywords"] = [
                 kw.lower().strip() for kw in result["ads_keywords"]
-                if isinstance(kw, str) and kw.strip()
+                if isinstance(kw, str)
+                and kw.strip()
+                and not kw.strip().startswith("<")
+                and not kw.strip().startswith("#")
+                and "</" not in kw
+                and "://" not in kw
+                and 5 <= len(kw.strip()) <= 200
             ]
             fr = result.get("formatting_rules")
             if not isinstance(fr, dict):
