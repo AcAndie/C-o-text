@@ -1,5 +1,3 @@
-
-
 from __future__ import annotations
 
 import re
@@ -11,6 +9,38 @@ from typing import List
 _MIN_REMAINING   = 100
 _MIN_PROSE_WORDS = 7
 _MAX_STRIP_RATIO = 0.60
+
+
+# ── Pass 0: Raw script/HTML lines (NEW) ───────────────────────────────────────
+#
+# Một số sites (VD: NovelFire) inject <script> tags dưới dạng TEXT NODE bên trong
+# content div. BeautifulSoup parse chúng thành NavigableString (không phải Tag),
+# nên _EXTRACT_SKIP_TAGS và prepare_soup() đều không bắt được.
+# Kết quả: script tag text xuất hiện verbatim trong extracted content.
+#
+# Pattern: line bắt đầu bằng "<script" (sau khi strip whitespace).
+# Không dùng broad HTML regex để tránh false positive với
+# nội dung truyện chứa ký tự < (VD: "< 5 minutes", math expressions).
+#
+_RAW_SCRIPT_LINE_RE = re.compile(r"^\s*<script\b", re.IGNORECASE)
+
+
+def _strip_raw_script_lines(text: str) -> str:
+    """
+    Strip lines that are raw <script> tag content rendered as text.
+
+    Chỉ strip lines BẮT ĐẦU bằng <script — không strip content truyện
+    có thể chứa < ở giữa câu.
+    """
+    lines = text.splitlines()
+    result = []
+    for line in lines:
+        if _RAW_SCRIPT_LINE_RE.match(line):
+            continue
+        result.append(line)
+
+    candidate = "\n".join(result)
+    return candidate if len(candidate.strip()) >= _MIN_REMAINING else text
 
 
 # ── Pass 1: Comment section ────────────────────────────────────────────────────
@@ -113,24 +143,21 @@ def _strip_settings_panel(text: str) -> str:
     return candidate if len(candidate.strip()) >= _MIN_REMAINING else text
 
 
-# ── Pass 3 (NEW): Postfix support/nav section ──────────────────────────────────
+# ── Pass 3: Postfix support/nav section ───────────────────────────────────────
 
-# Explicit section markers that indicate "content is done, post-chapter footer starts"
 _POSTFIX_SECTION_MARKERS = [
-    re.compile(r"^#{1,6}\s+support\b",           re.I),   # "##### Support 'Story'"
-    re.compile(r"^#{1,6}\s+about\s+the\s+author", re.I),  # "## About the author"
-    re.compile(r"^#{1,6}\s+author.{0,20}note",   re.I),   # "## Author's Note" (at end)
-    re.compile(r"^-{3,}\s*$"),                             # "---" divider (standalone)
+    re.compile(r"^#{1,6}\s+support\b",           re.I),
+    re.compile(r"^#{1,6}\s+about\s+the\s+author", re.I),
+    re.compile(r"^#{1,6}\s+author.{0,20}note",   re.I),
+    re.compile(r"^-{3,}\s*$"),
 ]
 
-# Words that appear as standalone nav labels in post-chapter footer
 _NAV_CLUSTER_WORDS = frozenset({
     "previous", "prev", "next", "fiction", "chapter",
     "home", "contents", "toc", "index", "donate", "patreon",
     "report", "subscribe",
 })
 
-# Minimum nav words in a 5-line window to classify as nav cluster
 _NAV_CLUSTER_THRESHOLD = 3
 
 
@@ -144,16 +171,11 @@ def _strip_postfix_section(text: str) -> str:
             continue
         stripped = line.strip()
 
-        # Check explicit section markers
-        # NOTE: standalone "---" only triggers if surrounded by non-prose context
-        # (within 3 lines of a nav cluster or explicit marker)
         if any(p.search(stripped) for p in _POSTFIX_SECTION_MARKERS[:2]):
-            # "Support" or "About the author" headings → cut immediately
             candidate = "\n".join(lines[:i])
             if len(candidate.strip()) >= _MIN_REMAINING:
                 return candidate
 
-        # Check nav cluster in upcoming window
         window = [l.strip().lower() for l in lines[i: i + 5] if l.strip()]
         nav_hits = sum(1 for w in window if w in _NAV_CLUSTER_WORDS)
         if nav_hits >= _NAV_CLUSTER_THRESHOLD:
@@ -168,7 +190,7 @@ def _strip_postfix_section(text: str) -> str:
 
 _META_RE = [
     re.compile(r"^by\s*:?\s*\S",               re.I),
-    re.compile(r"^by\s*$",                     re.I),   # Fix CLEANER-C: standalone "by"
+    re.compile(r"^by\s*$",                     re.I),
     re.compile(
         r"\b(?:words?|chapters?|reviews?|favs?|favorites?|follows?)\s*:",
         re.I,
@@ -183,11 +205,9 @@ _META_RE = [
     ),
     re.compile(r"\d{1,3},\d{3}\s+words?\b",     re.I),
     re.compile(r"^(?:genre|category|status)\s*:", re.I),
-    # Fix CLEANER-C: Royal Road nav items injected at top of wide selector
     re.compile(r"^fiction\s+page\s*$",           re.I),
     re.compile(r"^donate\s*$",                   re.I),
     re.compile(r"^report\s+chapter\s*$",         re.I),
-    # Fix CLEANER-C: empty heading artifact "####" from MarkdownFormatter
     re.compile(r"^#{1,6}\s*$"),
 ]
 
@@ -213,7 +233,7 @@ def _strip_metadata_header(text: str) -> str:
         is_artifact = (
             in_block
             and len(stripped) <= 8
-            and re.match(r"^[\d+/\-.,\*#]+$", stripped)  # Fix: include # for heading artifacts
+            and re.match(r"^[\d+/\-.,\*#]+$", stripped)
         )
 
         if is_meta or is_list_meta or is_artifact:
@@ -240,25 +260,22 @@ def _strip_metadata_header(text: str) -> str:
 
 _BIO_RE = [
     re.compile(r"^\*+\s*bio\s*\*+\s*$",           re.I),
-    # Fix CLEANER-C: "** **Bio:**" = Royal Road rendered markdown variant
     re.compile(r"^[\*\s]*\bbio\b[\*\s:]*$",        re.I),
     re.compile(r"^achievements?\s*$",              re.I),
     re.compile(r"^follow\s+(?:the\s+)?author",     re.I),
     re.compile(r"^end\s+col-md-",                  re.I),
     re.compile(r"^end\s+row\s*$",                  re.I),
-    re.compile(r"^\#\s+\w[\w\s]*$",               re.I),  # "# AuthorName"
-    # Fix CLEANER-C: date lines from Royal Road author section
-    re.compile(r"^-\s+\*\*\s+\w{3}",              re.I),  # "- ** Monday, ..."
-    re.compile(r"^\w+\s+Lakes?\s+sect\s*$",        re.I),  # Location tags like "Thousand Lakes sect"
+    re.compile(r"^\#\s+\w[\w\s]*$",               re.I),
+    re.compile(r"^-\s+\*\*\s+\w{3}",              re.I),
+    re.compile(r"^\w+\s+Lakes?\s+sect\s*$",        re.I),
 ]
 
 
 def _strip_author_bio(text: str) -> str:
     lines  = text.splitlines()
     n      = len(lines)
-    cutoff = max(5, int(n * 0.55))  # Lowered từ 0.60 → 0.55 để catch sớm hơn
+    cutoff = max(5, int(n * 0.55))
 
-    # Step 1: Tìm bio marker đầu tiên từ dưới lên
     first_marker = None
     for i in range(n - 1, cutoff - 1, -1):
         stripped = lines[i].strip()
@@ -271,21 +288,17 @@ def _strip_author_bio(text: str) -> str:
     if first_marker is None:
         return text
 
-    # Step 2: Greedy upward scan — tìm START của noise block
-    # Dừng khi gặp 2+ dòng prose thật liên tiếp (>= 5 words, không phải bio marker)
-    cut_pos          = first_marker
+    cut_pos           = first_marker
     consecutive_prose = 0
-    scan_limit        = max(cutoff - 1, first_marker - 50)  # max 50 dòng lên trên
+    scan_limit        = max(cutoff - 1, first_marker - 50)
 
     for i in range(first_marker - 1, scan_limit, -1):
         stripped = lines[i].strip()
 
         if not stripped:
-            # Empty line → không phải prose, không phải noise → giữ cut_pos hiện tại
             continue
 
-        is_bio_marker = any(p.search(stripped) for p in _BIO_RE)
-        # Short line (≤ 4 words) = likely nav/label/stat line, NOT prose
+        is_bio_marker  = any(p.search(stripped) for p in _BIO_RE)
         is_short_noise = len(stripped.split()) <= 4 and not re.search(r"[.!?]$", stripped)
 
         if is_bio_marker or is_short_noise:
@@ -294,7 +307,6 @@ def _strip_author_bio(text: str) -> str:
         else:
             consecutive_prose += 1
             if consecutive_prose >= 2:
-                # 2 dòng prose thật liên tiếp → đây là content thật, dừng
                 break
 
     candidate = "\n".join(lines[:cut_pos])
@@ -307,14 +319,15 @@ def _strip_author_bio(text: str) -> str:
 
 def clean_extracted_content(text: str) -> str:
     """
-    Apply tất cả 5 cleaning passes theo thứ tự.
+    Apply tất cả cleaning passes theo thứ tự.
 
     Pass order:
-        1. _strip_comment_section  (từ 30% trở xuống)
-        2. _strip_settings_panel   (bất kỳ vị trí)
-        3. _strip_postfix_section  (từ 35% trở xuống) [NEW]
-        4. _strip_metadata_header  (25 dòng đầu)
-        5. _strip_author_bio       (từ 55% trở xuống)
+        0. _strip_raw_script_lines  (NEW — <script> text nodes từ sites như NovelFire)
+        1. _strip_comment_section   (từ 30% trở xuống)
+        2. _strip_settings_panel    (bất kỳ vị trí)
+        3. _strip_postfix_section   (từ 35% trở xuống)
+        4. _strip_metadata_header   (25 dòng đầu)
+        5. _strip_author_bio        (từ 55% trở xuống)
 
     Conservative: không bao giờ return ít hơn 40% original content.
     """
@@ -324,9 +337,10 @@ def clean_extracted_content(text: str) -> str:
     original_len = len(text.strip())
     result       = text
 
+    result = _strip_raw_script_lines(result)   # Pass 0 (NEW)
     result = _strip_comment_section(result)    # Pass 1
     result = _strip_settings_panel(result)     # Pass 2
-    result = _strip_postfix_section(result)    # Pass 3 (NEW)
+    result = _strip_postfix_section(result)    # Pass 3
     result = _strip_metadata_header(result)    # Pass 4
     result = _strip_author_bio(result)         # Pass 5
 
@@ -336,4 +350,4 @@ def clean_extracted_content(text: str) -> str:
     if cleaned_len < original_len * (1 - _MAX_STRIP_RATIO):
         return text
 
-    return result.strip() if result.strip() else text
+    return result.strip() if result.strip() else text   

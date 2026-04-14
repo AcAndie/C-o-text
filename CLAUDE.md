@@ -262,6 +262,7 @@ total = 0.4 * quality + 0.3 * speed + 0.2 * resource + 0.1 * confidence
 `utils/content_cleaner.py` — `clean_extracted_content()`:
 
 ```
+Pass 0: _strip_raw_script_lines  (NEW — <script> text nodes, NovelFire-style injection)
 Pass 1: _strip_comment_section   (from 30% of content downward)
 Pass 2: _strip_settings_panel    (any position — RR reading settings)
 Pass 3: _strip_postfix_section   (from 35% downward — nav/support footer)
@@ -305,6 +306,9 @@ Two-tier system in `utils/ads_filter.py`:
 
 Persisted in `data/ads_keywords.json` keyed by domain. Injected into `AdsFilter` from profile at scrape start.
 
+AdsFilter.save() uses _ADS_SAVE_LOCK (threading.Lock) + atomic write to prevent concurrent corruption.
+_is_valid_ads_keyword() guards apply_verified() and inject_from_profile() — rejects HTML/script/URL strings.
+
 ---
 
 ## 11. Title Extraction
@@ -314,6 +318,8 @@ Title chain runs in **`title_vote` mode** — all blocks run, winner chosen by c
 Priority order: `selector(0.95) → h1_tag(0.80) → title_tag(0.65) → og_title(0.65) → url_slug(0.40)`
 
 **TITLE-1 Fix**: `strip_site_suffix()` matches `"FanFiction"` (without .net) AND strips FFN's `", a {fandom} fanfic"` descriptor in two passes.
+
+strip_site_suffix() is now applied in ALL title blocks (SelectorTitle, H1Title), not just TitleTagBlock.
 
 ---
 
@@ -340,7 +346,7 @@ Uses `_get_chapter_re()` with `@lru_cache` (Fix P2-11 — hot path).
 - **P0-B**: `needs_migration()` reads `profile_version` (top-level), NOT `pipeline.optimizer_version`.
 - **P0-2**: `ProfileManager.get()` returns shallow copy — never a live reference.
 - **P0-4**: HTTP 429 removed from `_JUNK_STATUSES` — rate limit is temporary, not permanent error.
-
+FIX-ADSSAVE: AdsFilter.save() concurrent write corruption (threading.Lock + atomic write + corrupt file recovery).
 ### P1 — High
 - **P1-A**: 429 with empty HTML raises `RuntimeError` (triggers retry), not silent `return None` (would terminate story).
 - **P1-B**: `JS_CONTENT_RATIO` and `JS_MIN_DIFF_CHARS` in `config.py` — single source of truth.
@@ -349,7 +355,10 @@ Uses `_get_chapter_re()` with `@lru_cache` (Fix P2-11 — hot path).
 - **FIX-STATUS**: All fetch blocks pass `status_code` in `BlockResult.metadata`.
 - **FIX-CANCEL**: `asyncio.shield()` wraps `save_progress()` in `CancelledError` handler.
 - **FIX-RATELEAK**: `AIRateLimiter.acquire()` rollbacks timestamp if cancelled during jitter sleep.
-
+TITLE-B: H1TitleBlock applies strip_site_suffix() — strips [ ... words ] artifacts from h1 elements.
+TITLE-A (extended): SelectorTitleBlock now applies strip_site_suffix() unconditionally (not just <title>).
+PASS0-SCRIPT: content_cleaner Pass 0 strips <script> text nodes injected by sites like NovelFire.
+FILENAME-E: format_chapter_filename() applies strip_site_suffix() to extracted subtitle.
 ### P2 — Medium
 - **P2-11**: `_get_chapter_re()` uses `@lru_cache` in hot path.
 - **P2-12**: Optimizer evaluates candidates in parallel via `asyncio.gather()`.

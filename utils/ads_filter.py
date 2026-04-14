@@ -1,10 +1,10 @@
-
 from __future__ import annotations
 
 import json
 import logging
 import os
 import re
+import threading
 from collections import Counter
 from pathlib import Path
 
@@ -18,6 +18,39 @@ _MAX_LINE_LEN = 300
 # Inline suspect thresholds (Q2 confirmed)
 _INLINE_AI_THRESHOLD   = 3   # >= 3 files → AI verify
 _INLINE_AUTO_THRESHOLD = 8   # >= 8 files → auto-add
+
+# FIX-ADSSAVE: module-level threading lock cho save().
+# AdsFilter.save() được gọi qua asyncio.to_thread() → chạy trong thread pool.
+# Nhiều domain tasks (royalroad, novelfire, fanfiction) có thể save() đồng thời
+# → read-modify-write race condition → corrupt JSON ("Extra data" error).
+# Threading lock (không phải asyncio lock) vì code chạy trong thread, không coroutine.
+_ADS_SAVE_LOCK = threading.Lock()
+
+
+def _is_valid_ads_keyword(kw: str) -> bool:
+    """
+    Validate ads keyword — plain text only, không HTML/CSS/script/URL.
+
+    Same rules as ADS-B guard trong ai/agents.py::ai_ads_deepscan().
+    Apply ở đây để guard thêm một lớp nữa cho auto-learned candidates
+    (auto path không qua AI validation).
+
+    Rules:
+      ✓ Plain text, lowercase-able, 5-200 chars
+      ✗ HTML tags (<script>, </div>, v.v.)
+      ✗ Markdown headings (#)
+      ✗ URLs (://)
+    """
+    if not isinstance(kw, str) or not kw.strip():
+        return False
+    s = kw.strip()
+    return (
+        not s.startswith("<")     # HTML/script tags
+        and not s.startswith("#")  # markdown heading hoặc CSS id
+        and "</" not in s          # closing HTML tags
+        and "://" not in s         # URLs
+        and 5 <= len(s) <= 200     # reasonable length
+    )
 
 
 class AdsFilter:
@@ -55,7 +88,7 @@ class AdsFilter:
         kws = profile.get("ads_keywords_learned") or []
         before = len(self._keywords)
         for kw in kws:
-            if isinstance(kw, str) and kw.strip():
+            if isinstance(kw, str) and kw.strip() and _is_valid_ads_keyword(kw):
                 self._keywords.add(kw.lower().strip())
         return len(self._keywords) - before
 
@@ -93,7 +126,7 @@ class AdsFilter:
         for line in candidates:
             lo = line.lower()
             if _MIN_LINE_LEN <= len(lo) <= _MAX_LINE_LEN:
-                if lo not in self._keywords:
+                if lo not in self._keywords and _is_valid_ads_keyword(lo):
                     self._suspects[lo] += 1
                     self._file_counter[lo] += 1
 
@@ -104,51 +137,26 @@ class AdsFilter:
         edge_skip  : int = 5,
     ) -> None:
         """
-        [NEW — Fix ADS-A] Quét phần GIỮA content để detect inline watermarks.
-
-        Logic: A line appearing in the MIDDLE of content across multiple chapters
-        cannot be story content → it's a watermark injected by the site.
-
-        Cross-chapter comparison (user Q2):
-          - >= _INLINE_AI_THRESHOLD (3) files → AI verify candidate
-          - >= _INLINE_AUTO_THRESHOLD (8) files → auto-add without AI
-
-        Tracking: _inline_file_counter counts each unique line ONCE per file,
-        regardless of how many times it appears in that file. This gives a
-        true "appears in N chapters" count for threshold comparison.
-
-        Args:
-            content:      Extracted chapter content (post-ads-filter)
-            chapter_file: Path of chapter file (for logging, not used in counting)
-            edge_skip:    Lines to skip at start/end (these are covered by
-                          scan_edges_for_suspects already)
+        [Fix ADS-A] Quét phần GIỮA content để detect inline watermarks.
         """
         lines = [l.strip() for l in content.splitlines() if l.strip()]
         n     = len(lines)
 
-        # Need enough lines to have a meaningful "middle"
         if n < edge_skip * 2 + 2:
             return
 
-        # Middle = skip first and last edge_skip lines
         middle_lines = lines[edge_skip: n - edge_skip]
-
-        # Track which lines we've already counted for THIS chapter
-        # (count each line once per chapter, not once per occurrence)
         seen_in_chapter: set[str] = set()
 
         for line in middle_lines:
             lo = line.lower()
 
-            # Basic length filter
             if not (_MIN_LINE_LEN <= len(lo) <= _MAX_LINE_LEN):
                 continue
-
-            # Skip already-confirmed ads
             if lo in self._keywords:
                 continue
-
-            # Skip lines we've already counted for this chapter
+            if not _is_valid_ads_keyword(lo):
+                continue
             if lo in seen_in_chapter:
                 continue
 
@@ -165,22 +173,16 @@ class AdsFilter:
     ) -> tuple[list[str], list[str]]:
         """
         Returns (auto_candidates, ai_candidates).
-        auto: >= auto_threshold occurrences (edge OR inline)
-        ai:   >= min_count but < auto_threshold (edge OR inline)
 
-        Fix ADS-A: inline suspects contribute with 1.5× weight since
-        inline is a stronger signal than edge occurrence (inline lines
-        in multiple chapters are almost certainly watermarks, not nav).
+        Fix ADS-A: inline suspects contribute with 1.5× weight.
         """
         auto: list[str] = []
         ai  : list[str] = []
         seen: set[str]  = set()
 
-        # Combine edge + inline suspects with inline boost
         combined: Counter = Counter()
         combined.update(self._suspects)
         for line, count in self._inline_file_counter.items():
-            # 1.5× weight for inline (stronger watermark signal)
             combined[line] = combined.get(line, 0) + int(count * 1.5)
 
         for line, count in combined.most_common(max_results * 2):
@@ -206,14 +208,11 @@ class AdsFilter:
         """
         Lines xuất hiện trong >= min_files chapters, chưa confirmed.
 
-        Fix ADS-A: Also surface inline suspects with lower threshold
-        (_INLINE_AI_THRESHOLD = 3) since inline = stronger signal.
-        Inline threshold override: max(3, min_files // 2).
+        Fix ADS-A: Also surface inline suspects with lower threshold.
         """
         result: list[str] = []
         seen  : set[str]  = set()
 
-        # Edge suspects (original behavior)
         for line, count in self._file_counter.most_common():
             if line in self._keywords or line in seen:
                 continue
@@ -224,7 +223,6 @@ class AdsFilter:
             if len(result) >= max_results:
                 break
 
-        # Fix ADS-A: Inline suspects with lower threshold
         inline_threshold = max(_INLINE_AI_THRESHOLD, min_files // 2)
         for line, count in self._inline_file_counter.most_common():
             if line in self._keywords or line in seen:
@@ -241,10 +239,17 @@ class AdsFilter:
     # ── Applying verified results ─────────────────────────────────────────────
 
     def apply_verified(self, lines: list[str]) -> int:
+        """
+        Thêm confirmed ads lines vào _keywords.
+
+        FIX-ADSSAVE: Apply _is_valid_ads_keyword() để ngăn script tags
+        và HTML được học vào keyword set. Auto-candidates không qua AI
+        validation nên cần guard này.
+        """
         added = 0
         for line in lines:
             lo = line.lower().strip()
-            if lo and lo not in self._keywords:
+            if lo and lo not in self._keywords and _is_valid_ads_keyword(lo):
                 self._keywords.add(lo)
                 added += 1
         return added
@@ -260,19 +265,45 @@ class AdsFilter:
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def save(self) -> None:
+        """
+        Ghi ads keywords xuống disk.
+
+        FIX-ADSSAVE: Dùng _ADS_SAVE_LOCK (threading.Lock) và atomic write
+        để tránh concurrent corruption khi nhiều domain tasks save() đồng thời.
+
+        Pattern:
+          1. Acquire lock
+          2. Read existing file (với error recovery cho corrupt JSON)
+          3. Merge keywords
+          4. Atomic write (temp file + os.replace)
+          5. Release lock
+        """
         try:
             os.makedirs(os.path.dirname(os.path.abspath(ADS_DB_FILE)), exist_ok=True)
-            data: dict = {}
-            if os.path.exists(ADS_DB_FILE):
-                with open(ADS_DB_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+            with _ADS_SAVE_LOCK:
+                # Read existing — với recovery nếu file bị corrupt
+                data: dict = {}
+                if os.path.exists(ADS_DB_FILE):
+                    try:
+                        with open(ADS_DB_FILE, "r", encoding="utf-8") as f:
+                            loaded = json.load(f)
+                        if isinstance(loaded, dict):
+                            data = loaded
+                    except (json.JSONDecodeError, OSError) as e:
+                        logger.warning("[Ads] ads_keywords.json corrupt, resetting: %s", e)
+                        # data = {} → save sẽ overwrite file corrupt
 
-            existing = set(data.get(self._domain, []))
-            merged   = sorted(existing | self._keywords)
-            data[self._domain] = merged
+                # Merge keywords (chỉ valid keywords)
+                existing = set(data.get(self._domain, []))
+                valid_kws = {kw for kw in self._keywords if _is_valid_ads_keyword(kw)}
+                merged   = sorted(existing | valid_kws)
+                data[self._domain] = merged
 
-            with open(ADS_DB_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                # Atomic write
+                tmp = ADS_DB_FILE + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                os.replace(tmp, ADS_DB_FILE)
 
         except Exception as e:
             logger.warning("[Ads] save failed: %s", e)

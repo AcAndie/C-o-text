@@ -1,23 +1,24 @@
 """
 pipeline/title_extractor.py — Title extraction blocks.
 
+Fix TITLE-A: SelectorTitleBlock apply strip_site_suffix() cho TẤT CẢ elements.
+  Trước: chỉ apply khi el.name == "title" (HTML <title> tag).
+  Sau:   apply unconditionally vì strip_site_suffix() cũng strip
+         _WORD_COUNT_ARTIFACT ("[ ... words ]") và _FANFIC_DESCRIPTOR
+         — các artifacts xuất hiện trong bất kỳ element nào (h1, h2, selector).
+  VD: NovelFire h1:nth-of-type(2) trả về "Chapter 25: Enjoying life[ ... words ]"
+      → sau fix: "Chapter 25: Enjoying life"
+
+Fix TITLE-B: H1TitleBlock apply strip_site_suffix() trước normalize_title().
+  Trước: normalize_title(el.get_text()) — không strip word count artifacts.
+  Sau:   normalize_title(strip_site_suffix(el.get_text())) — strip trước.
+
 Blocks (theo thứ tự ưu tiên trong default chain):
     SelectorTitleBlock  — CSS selector từ profile (chính xác nhất)
     H1TitleBlock        — <h1> tag (phổ biến nhất)
     TitleTagBlock       — <title> tag, stripped site suffix
     OgTitleBlock        — og:title meta, stripped site suffix
     UrlSlugTitleBlock   — Extract từ URL slug (fallback cuối)
-
-Tất cả blocks đều chạy qua normalize_title() để chuẩn hóa kết quả.
-Kết quả cuối được chọn qua majority vote trong TitleChainBlock (executor xử lý).
-
-Fix TITLE-A: SelectorTitleBlock apply strip_site_suffix() khi el.name == "title".
-  Trước: selector="title" → normalize(raw) → full raw title với site suffix còn nguyên.
-         AI#5 thường learn "title" làm title_selector, route sang SelectorTitleBlock
-         thay vì TitleTagBlock, mất hoàn toàn suffix stripping.
-  Sau:   Khi element là <title> HTML tag → apply strip_site_suffix() trước normalize().
-         Đây là semantic contract của <title> element: nó LUÔN LUÔN chứa site suffix.
-         Không phải special-case mà là hoàn thiện contract giống TitleTagBlock.
 """
 from __future__ import annotations
 
@@ -62,12 +63,14 @@ class SelectorTitleBlock(ScraperBlock):
 
             raw = el.get_text(strip=True)
 
-            # Fix TITLE-A: <title> HTML element luôn chứa site suffix và fanfic
-            # descriptor — apply strip_site_suffix() như TitleTagBlock làm.
-            # Condition: el.name check DOM element type, không phải selector string,
-            # vì selector "div.chapter-container h1" cũng có thể chứa "title" substring.
-            if el.name and el.name.lower() == "title":
-                raw = strip_site_suffix(raw)
+            # Fix TITLE-A: Apply strip_site_suffix() unconditionally.
+            # strip_site_suffix() handles:
+            #   - Site name suffixes ("| Royal Road", "| FanFiction")
+            #   - FFN fanfic descriptor (", a {fandom} fanfic")
+            #   - Word count artifacts ("[ ... words ]", "[1,234 words]")
+            # Tất cả đều có thể xuất hiện trong bất kỳ title element nào,
+            # không chỉ riêng HTML <title> tag.
+            raw = strip_site_suffix(raw)
 
             text = normalize_title(raw)
             if len(text) < _MIN_TITLE_LEN:
@@ -114,11 +117,13 @@ class H1TitleBlock(ScraperBlock):
             if soup is None:
                 return self._timed(BlockResult.skipped("no soup"), start)
 
-            # Thử h1, h2 theo thứ tự
             for tag in ("h1", "h2"):
                 el = soup.find(tag)
                 if el:
-                    text = normalize_title(el.get_text(strip=True))
+                    # Fix TITLE-B: Apply strip_site_suffix() để strip
+                    # "[ ... words ]" và các artifacts trước normalize.
+                    raw  = strip_site_suffix(el.get_text(strip=True))
+                    text = normalize_title(raw)
                     if len(text) >= _MIN_TITLE_LEN:
                         return self._timed(
                             BlockResult.success(

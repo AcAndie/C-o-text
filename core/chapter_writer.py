@@ -6,30 +6,24 @@ Fix P2-11: lru_cache cho _get_chapter_re() thay vì re.compile() trong hot path.
 Fix FILENAME-B: Bỏ has_chapter_subtitle gate.
 
 Fix FILENAME-C: _is_garbage_subtitle() guard.
-  Trước: subtitle "a percy jackson fanfic" (FFN descriptor) bị dùng làm filename
-         → "0001_a_percy_jackson_and_the_olympians_fanfic.md" thay vì "0001_Chapter1.md"
-  Sau:   validate subtitle trước khi dùng. Subtitle khớp fanfic descriptor, translator
-         credit, hoặc quá dài mà không có dấu câu → treat as no subtitle → fallback
-         về keyword+number.
-
-  Garbage subtitle patterns:
-    - "a {fandom} fanfic" / "a {fandom} fanfiction" (FFN format)
-    - "translated by ..." / "edited by ..."
-    - Dài > 60 chars mà không có dấu câu tự nhiên (.) (!) (?) (,)
 
 Fix FILENAME-D: Strip comma khỏi sub_raw trước khi check _is_garbage_subtitle().
-  Root cause: Sau khi bóc chapter keyword và số, FFN để lại dấu phẩy đứng đầu
-  trong phần subtitle vì format title là "Chapter N, a {fandom} fanfic".
-  regex group("sub") trả về ", a percy jackson..." — có leading comma.
-  _GARBAGE_SUBTITLE_PATTERNS dùng pattern ^a\\s+ không match khi có "," ở đầu.
-  Fix: thêm "," vào strip chars khi build sub_raw.
+
+Fix FILENAME-E: Apply strip_site_suffix() lên sub_raw.
+  Trước: subtitle "Enjoying life[ ... words ]" bị dùng nguyên làm filename
+         → "0025_Enjoying_life[_..._words_].md"
+  Sau:   strip_site_suffix(sub_raw) → "Enjoying life" → "0025_Enjoying_life.md"
+  
+  Belt-and-suspenders: title_extractor.py (Fix TITLE-A/B) đã strip ở level ctx.title_clean,
+  nhưng format_chapter_filename() nhận raw_title từ progress fallback path
+  (prefetch_map, reuse chapters) có thể bypass title_vote. Double-guard ở đây.
 """
 from __future__ import annotations
 
 import functools
 import re
 
-from utils.string_helpers import slugify_filename
+from utils.string_helpers import slugify_filename, strip_site_suffix
 from utils.types import ProgressDict
 
 # ── Constants ──────────────────────────────────────────────────────────────────
@@ -47,42 +41,21 @@ _NAV_EDGE_SCAN = 7
 # ── Garbage subtitle detection (Fix FILENAME-C) ────────────────────────────────
 
 _GARBAGE_SUBTITLE_PATTERNS = (
-    # FFN format: "a percy jackson and the olympians fanfic"
     re.compile(r"^a\s+\S.{2,70}\s+fanfic(?:tion)?\s*$", re.IGNORECASE),
-    # Translator / editor credit
     re.compile(r"^translated\s+by\b", re.IGNORECASE),
     re.compile(r"^edited\s+by\b",     re.IGNORECASE),
-    # Site artifact formats
     re.compile(r"^(?:official\s+)?(?:epub|pdf|translation)\b", re.IGNORECASE),
 )
 
 
 def _is_garbage_subtitle(sub: str) -> bool:
-    """
-    Return True nếu subtitle không phải chapter subtitle thật sự.
-
-    Fix FILENAME-C: ngăn FFN fanfic descriptor và translator credits
-    bị dùng làm filename thay vì chapter keyword+number.
-
-    Cases:
-      "a percy jackson fanfic"       → True  (FFN descriptor)
-      "translated by SomeTranslator" → True  (translator credit)
-      "The Rise of Heroes"           → False (real subtitle)
-      "Interlude 1"                  → False (real subtitle)
-      "A very long subtitle without any natural punctuation whatsoever in it" → True
-    """
     if not sub or len(sub) < 2:
         return True
-
-    # Check explicit patterns
     for pat in _GARBAGE_SUBTITLE_PATTERNS:
         if pat.match(sub.strip()):
             return True
-
-    # Long with no natural punctuation → likely site artifact
     if len(sub) > 60 and not re.search(r"[.!?,;:'\"()]", sub):
         return True
-
     return False
 
 
@@ -90,10 +63,7 @@ def _is_garbage_subtitle(sub: str) -> bool:
 
 @functools.lru_cache(maxsize=32)
 def _get_chapter_re(chapter_kw: str) -> re.Pattern:
-    """
-    Compile và cache regex cho chapter keyword.
-    Fix P2-11: hot path, lru_cache đảm bảo chỉ compile một lần.
-    """
+    """Fix P2-11: compile và cache regex cho chapter keyword."""
     kw_esc = re.escape(chapter_kw)
     return re.compile(
         rf"(?:{kw_esc})\s*(?P<n>\d+)\s*[-–—:.]?\s*(?P<sub>.*)",
@@ -111,22 +81,23 @@ def format_chapter_filename(
     """
     Tạo tên file .md cho một chapter.
 
-    Logic (Fix FILENAME-B + Fix FILENAME-C + Fix FILENAME-D):
+    Logic (Fix FILENAME-B + C + D + E):
         1. Bóc story prefix nếu có
         2. Bóc pipe suffix
         3. Parse chapter keyword + số
         4. Strip leading comma khỏi sub_raw (Fix FILENAME-D)
-        5. Validate subtitle: nếu là garbage → fallback về keyword+number
-        6. Nếu subtitle thật → dùng CHỈ subtitle làm tên file
-        7. Nếu không có subtitle → keyword+number
-        8. Fallback: slugify toàn bộ title
+        5. Strip site suffix / word count artifacts (Fix FILENAME-E)
+        6. Validate subtitle: nếu là garbage → fallback về keyword+number
+        7. Nếu subtitle thật → dùng CHỈ subtitle làm tên file
+        8. Nếu không có subtitle → keyword+number
+        9. Fallback: slugify toàn bộ title
 
     Examples:
-        "Chapter 23: Interlude 1"                   → "0023_Interlude_1.md"
-        "Chapter 1, a percy jackson fanfic"          → "0001_Chapter1.md"   (Fix C+D)
-        "Chapter 23"                                 → "0023_Chapter23.md"
-        "Prologue: The Beginning"                    → "0001_Prologue_The_Beginning.md"
-        "Prologue"                                   → "0001_Prologue.md"
+        "Chapter 23: Interlude 1"                        → "0023_Interlude_1.md"
+        "Chapter 25: Enjoying life[ ... words ]"         → "0025_Enjoying_life.md" (Fix E)
+        "Chapter 1, a percy jackson fanfic"              → "0001_Chapter1.md"      (Fix C+D)
+        "Chapter 23"                                     → "0023_Chapter23.md"
+        "Prologue: The Beginning"                        → "0001_Prologue_The_Beginning.md"
     """
     chapter_kw   = (progress.get("chapter_keyword") or "Chapter").strip()
     prefix_strip = (progress.get("story_prefix_strip") or "").strip()
@@ -143,31 +114,23 @@ def format_chapter_filename(
     # Bóc pipe suffix
     title = _RE_PIPE_SUFFIX.sub("", title).strip()
 
-    # Fix P2-11: dùng cached regex
     m = _get_chapter_re(chapter_kw).search(title)
 
     if m:
         n       = m.group("n")
-        # Fix FILENAME-D: strip comma trước khi strip các separators khác.
-        # FFN format "Chapter N, a {fandom} fanfic" → group("sub") = ", a ..."
-        # _GARBAGE_SUBTITLE_PATTERNS[0] dùng ^a\s+ → không match khi có leading comma.
-        # Strip "," ở đây để garbage check hoạt động đúng.
+        # Fix FILENAME-D: strip comma trước khi strip separators khác.
         sub_raw = m.group("sub").strip(" ,-–—:[]().")
         sub_raw = _RE_PIPE_SUFFIX.sub("", sub_raw).strip()
+        # Fix FILENAME-E: strip word count artifacts và site suffixes từ subtitle.
+        # "Enjoying life[ ... words ]" → "Enjoying life"
+        sub_raw = strip_site_suffix(sub_raw).strip()
 
-        # Fix FILENAME-C: validate subtitle trước khi dùng
         if sub_raw and len(sub_raw) >= 2 and not _is_garbage_subtitle(sub_raw):
-            # Subtitle thật → dùng CHỈ subtitle.
-            # "Chapter 23: Interlude 1" → "0023_Interlude_1.md"
             name = f"{chapter_num:04d}_{slugify_filename(sub_raw, max_len=80)}"
         else:
-            # Garbage subtitle hoặc không có → keyword+number là identifier.
-            # "Chapter 1, a percy jackson fanfic" → "0001_Chapter1.md"
-            # "Chapter 23" → "0023_Chapter23.md"
             chap_id = f"{chapter_kw}{n}"
             name    = f"{chapter_num:04d}_{chap_id}"
     else:
-        # Không match chapter keyword → dùng toàn bộ title.
         fallback = (title or raw_title).strip()
         name     = f"{chapter_num:04d}_{slugify_filename(fallback, max_len=80)}"
 
@@ -179,11 +142,6 @@ def format_chapter_filename(
 def strip_nav_edges(text: str) -> str:
     """
     Xóa navigation/boilerplate text ở đầu và cuối chapter content.
-
-    Phát hiện:
-        - Lines xuất hiện ở CẢ đầu VÀ cuối (repeated navigation)
-        - "[1,234 words]" / "[... words]" patterns
-        - Lines ngắn chỉ có chữ cái (Prev/Next/TOC labels)
     """
     lines = text.splitlines()
     n     = len(lines)
