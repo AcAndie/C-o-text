@@ -98,7 +98,6 @@ crawl_novel/
 │   ├── phase.py                # run_learning_phase() orchestrator, _fetch_chapters(),
 │   │                           #   _build_final_profile()
 │   ├── phase_ai.py             # run_10_ai_calls_internal() — 10 AI call orchestration
-│   ├── optimizer.py            # PipelineGenerator, PipelineEvaluator, run_optimizer()
 │   ├── profile_manager.py      # ProfileManager — thread-safe profile CRUD
 │   ├── migrator.py             # v1→v2 migration, needs_migration(), migrate_profile()
 │   └── naming.py               # run_naming_phase() — story name + chapter keyword
@@ -198,7 +197,7 @@ ProgressDict    → per-story state — story-specific, not domain-specific
 
 ---
 
-## 5. Learning Phase (10 AI Calls)
+## 5. Learning Phase (8 AI Calls)
 
 ```
 Phase 1 — Structure Discovery (Ch.1-4):
@@ -214,12 +213,8 @@ Phase 3 — Content Intelligence (Ch.7-8):
   AI#6 — Ch.7: Special content detection (tables/math/system boxes)
   AI#7 — Ch.8: Ads & watermark deep scan
 
-Phase 4 — Stress Test (Ch.9-10):
-  AI#8 — Ch.9: Navigation stress test
-  AI#9 — Ch.10: Full profile simulation + quality scoring
-
-Phase 5 — Synthesis:
-  AI#10 — Summary: Master profile builder (receives summary of #1-9)
+Phase 4 — Master Synthesis
+  AI#8 — Master profile synthesis
 ```
 
 **Important conventions:**
@@ -229,25 +224,7 @@ Phase 5 — Synthesis:
 
 ---
 
-## 6. Optimizer
-
-`learning/optimizer.py` generates up to 8 `PipelineConfig` candidates, evaluates them **in parallel** (`asyncio.gather`) on cached chapter HTML, picks the winner.
-
-**Scoring formula** (per chapter, then averaged):
-```
-total = 0.4 * quality + 0.3 * speed + 0.2 * resource + 0.1 * confidence
-```
-
-- `quality` = `ctx.validation_score` - `_compute_edge_noise_penalty(content)`
-- `resource` = blended: `avg("resource") * 0.3 + _score_fetch_strategy(config, is_js_heavy) * 0.7`
-- JS-heavy detection: `pw_len > curl_len * JS_CONTENT_RATIO AND diff > JS_MIN_DIFF_CHARS`
-- Both thresholds live in `config.py`: `JS_CONTENT_RATIO = 1.5`, `JS_MIN_DIFF_CHARS = 500`
-
-**`_merge_ai_selectors()`**: after optimizer picks winner, AI-learned selectors are injected into the winning pipeline config.
-
----
-
-## 7. HTML Filtering (3-Layer Defense)
+## 6. HTML Filtering (3-Layer Defense)
 
 `core/html_filter.py` — `prepare_soup()`:
 
@@ -257,7 +234,7 @@ total = 0.4 * quality + 0.3 * speed + 0.2 * resource + 0.1 * confidence
 
 ---
 
-## 8. Content Cleaning (5-Pass Post-Extraction)
+## 7. Content Cleaning (5-Pass Post-Extraction)
 
 `utils/content_cleaner.py` — `clean_extracted_content()`:
 
@@ -274,7 +251,7 @@ Pass 5: _strip_author_bio        (from 55% downward — RR author section)
 
 ---
 
-## 9. Fetch Strategy
+## 8. Fetch Strategy
 
 ```
 HybridFetchBlock (learning mode, detect_js=True):
@@ -293,7 +270,7 @@ FIX-STATUS: All fetch blocks pass status_code in metadata.
 
 ---
 
-## 10. Ads Filter System
+## 9. Ads Filter System
 
 Two-tier system in `utils/ads_filter.py`:
 
@@ -311,7 +288,7 @@ _is_valid_ads_keyword() guards apply_verified() and inject_from_profile() — re
 
 ---
 
-## 11. Title Extraction
+## 10. Title Extraction
 
 Title chain runs in **`title_vote` mode** — all blocks run, winner chosen by confidence-weighted vote with dash-normalized keys (`_make_vote_key`).
 
@@ -323,7 +300,7 @@ strip_site_suffix() is now applied in ALL title blocks (SelectorTitle, H1Title),
 
 ---
 
-## 12. Chapter Filename Generation
+## 11. Chapter Filename Generation
 
 `core/chapter_writer.py` — `format_chapter_filename()`:
 
@@ -339,7 +316,7 @@ Uses `_get_chapter_re()` with `@lru_cache` (Fix P2-11 — hot path).
 
 ---
 
-## 13. Critical Bugs Fixed (Reference)
+## 12. Critical Bugs Fixed (Reference)
 
 ### P0 — Critical
 - **M4**: `StepConfig.to_dict()` nested params — MUST use `{"type": ..., "params": {...}}`. Old flat format silently ignored all learned selectors.
@@ -368,13 +345,12 @@ FILENAME-E: format_chapter_filename() applies strip_site_suffix() to extracted s
 - **OPTIMIZER-A**: Edge noise penalty applied per-chapter before averaging in evaluator.
 
 ### P3 — Low
-- **P3-17**: `_fetch_chapters()` returns `(chapters, curl_html_ch1: str | None)` — not a list.
 - **P3-18**: `os.makedirs()` called AFTER `actual_output_dir` is confirmed in `_setup_story()`.
 - **FIX-REQUIRESPW**: Documented in `_build_final_profile()` with logger.info.
 
 ---
 
-## 14. Important Conventions
+## 13. Important Conventions
 
 ### Never Do
 ```python
@@ -429,7 +405,7 @@ ctx.profile["requires_playwright"] = True
 
 ---
 
-## 15. Configuration
+## 14. Configuration
 
 All constants in `config.py`. Key values:
 
@@ -443,7 +419,7 @@ MAX_CHAPTERS = 5000             # Safety cap per story
 MAX_CONSECUTIVE_ERRORS = 5      # Stop after N consecutive errors
 PW_MAX_CONCURRENCY = 2          # Playwright instances (CLI overridable)
 ```
-
+--fast-learning      # No-op sau Batch A (optimizer đã bỏ)
 ### CLI Options
 ```bash
 python main.py links.txt
@@ -459,7 +435,7 @@ https://royalroad.com/fiction/...    # URL to scrape
 
 ---
 
-## 16. AI Integration
+## 15. AI Integration
 
 ### Gemini Client (`ai/client.py`)
 - Token bucket rate limiter with rollback on `CancelledError` during jitter sleep
@@ -483,7 +459,7 @@ All prompts are static methods of `class Prompts`. Never inline f-strings in `ag
 
 ---
 
-## 17. On the Horizon (Planned / In Progress)
+## 16. On the Horizon (Planned / In Progress)
 
 ### Calibration Phase (partially implemented)
 Pre-scrape probe of first 10 chapters in memory with **zero-file-write mode**. AI reviews and updates site profile iteratively until zero issues across:
@@ -499,7 +475,7 @@ Deferred. Current README is a placeholder.
 
 ---
 
-## 18. File Paths (Runtime)
+## 17. File Paths (Runtime)
 
 ```
 data/site_profiles.json         # All domain profiles
@@ -511,7 +487,7 @@ issues.md                       # Session issue log
 
 ---
 
-## 19. Testing Notes
+## 18. Testing Notes
 
 - No formal test suite currently
 - `CAO_FAST_LEARNING=1` env var: skips optimizer (for testing learning flow)
@@ -521,7 +497,7 @@ issues.md                       # Session issue log
 
 ---
 
-## 20. Dependency Rules
+## 19. Dependency Rules
 
 ```
 config.py          ← no internal imports (pure constants)

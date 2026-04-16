@@ -1,10 +1,16 @@
 """
-learning/phase_ai.py — 10 AI calls orchestration.
+learning/phase_ai.py — 8 AI calls orchestration.
+
+Batch A: Bỏ AI#8 (ai_nav_stress) và AI#9 (ai_full_simulation).
+  Trước: 10 AI calls — 2 calls cuối (nav_stress + full_simulation) chỉ có ý nghĩa
+         khi optimizer dùng kết quả để eval candidates. Sau khi bỏ optimizer,
+         hai calls này không còn add value độc lập.
+  Sau:   8 AI calls. Master synthesis đổi thành AI#8 (trước là AI#10).
 
 Fix P1-10: import snippet thay vì _snippet.
 P1-C: formatting_rules được init với structure đầy đủ TRƯỚC khi AI#6 chạy.
   Trước: nếu AI#6 thất bại, formatting_rules chỉ có "tables" key từ HTML scan
-         fallback. AI#10 và _build_final_profile() nhận dict thiếu keys
+         fallback. AI#8 và _build_final_profile() nhận dict thiếu keys
          → profile có formatting_rules không đủ → MarkdownFormatter crash
          hoặc dùng sai default.
   Sau: init với toàn bộ 10 keys + nested dicts. AI#6 khi thành công sẽ
@@ -20,7 +26,7 @@ from ai.client  import AIRateLimiter
 from ai.agents  import (
     ai_dom_structure, ai_independent_check, ai_stability_check,
     ai_remove_audit, ai_title_deepdive, ai_special_content,
-    ai_ads_deepscan, ai_nav_stress, ai_full_simulation,
+    ai_ads_deepscan,
     ai_master_synthesis, resolve_phase1_conflicts,
     snippet,
 )
@@ -55,7 +61,8 @@ async def run_10_ai_calls_internal(
     ai_limiter : AIRateLimiter,
 ) -> dict | None:
     """
-    Chạy 10 AI calls. Trả về dict selector profile hoặc None nếu fail nghiêm trọng.
+    Chạy 8 AI calls (tên giữ nguyên để không break caller). Trả về dict selector
+    profile hoặc None nếu fail nghiêm trọng.
     """
     urls  = [url  for url,  _ in chapters]
     htmls = [html for _, html in chapters]
@@ -184,7 +191,6 @@ async def run_10_ai_calls_internal(
         ai6 = await ai_special_content(snippet(htmls[6], 8000), urls[6], ai_limiter)
         all_results["ai6"] = ai6
         if ai6:
-            # Update theo kết quả AI — chỉ override những key AI trả về
             formatting_rules.update({
                 "tables"        : ai6.get("has_tables", False),
                 "math_support"  : ai6.get("has_math", False),
@@ -197,21 +203,16 @@ async def run_10_ai_calls_internal(
             for key in ("system_box", "hidden_text", "author_note"):
                 val = ai6.get(key)
                 if isinstance(val, dict):
-                    # Merge với default — giữ convert_to/prefix nếu AI không trả về
                     merged = dict(formatting_rules[key])
                     merged.update(val)
                     formatting_rules[key] = merged
-            # Sanity check từ HTML
             if not formatting_rules["tables"]:
                 if any("<table" in h.lower() for h in htmls):
                     formatting_rules["tables"] = True
         else:
-            # AI#6 thất bại — fallback chỉ cần check tables từ HTML
-            # Các keys khác đã có default từ _default_formatting_rules()
             formatting_rules["tables"] = any("<table" in h.lower() for h in htmls)
     else:
         all_results["ai6"] = None
-        # Với ít chapters, vẫn check tables từ HTML
         formatting_rules["tables"] = any("<table" in h.lower() for h in htmls)
 
     ads_keywords: list[str] = []
@@ -230,91 +231,48 @@ async def run_10_ai_calls_internal(
     else:
         all_results["ai7"] = None
 
-    # ── PHASE 4: Stress Test ──────────────────────────────────────────────────
-    print(f"\n  [Learn] ━━ Phase 4: Stress Test ━━", flush=True)
-
-    if n >= 9:
-        print(f"  [Learn] 🤖 AI#8: Navigation stress test (Ch.9)...", flush=True)
-        ai8 = await ai_nav_stress(
-            snippet(htmls[8], 8000), urls[8],
-            consensus.get("next_selector"),
-            consensus.get("nav_type"),
-            ai_limiter,
-        )
-        all_results["ai8"] = ai8
-        if ai8:
-            if not ai8.get("next_selector_works") and ai8.get("best_next_selector"):
-                consensus["next_selector"] = ai8["best_next_selector"]
-            if ai8.get("nav_type_confirmed"):
-                consensus["nav_type"] = ai8["nav_type_confirmed"]
-            if ai8.get("chapter_url_pattern_fix"):
-                consensus["chapter_url_pattern"] = ai8["chapter_url_pattern_fix"]
-    else:
-        all_results["ai8"] = None
-
-    profile_so_far = {
-        "content_selector"      : consensus.get("content_selector"),
-        "chapter_title_selector": consensus.get("chapter_title_selector"),
-        "next_selector"         : consensus.get("next_selector"),
-        "remove_selectors"      : consensus.get("remove_selectors", []),
-        "nav_type"              : consensus.get("nav_type"),
-    }
-
-    if n >= 10:
-        print(f"  [Learn] 🤖 AI#9: Full profile simulation (Ch.10)...", flush=True)
-        ai9 = await ai_full_simulation(
-            snippet(htmls[9], 8000), urls[9],
-            profile_so_far, ai_limiter,
-        )
-        all_results["ai9"] = ai9
-        if ai9:
-            score = ai9.get("overall_score", 0)
-            print(f"     → overall_score={score:.2f}", flush=True)
-            if not ai9.get("removal_safe", True):
-                print(f"     ⚠ Simulation: removal NOT safe — reverting", flush=True)
-                consensus["remove_selectors"] = []
-    else:
-        all_results["ai9"] = None
-
-    # ── PHASE 5: Master Synthesis ─────────────────────────────────────────────
-    print(f"\n  [Learn] ━━ Phase 5: Master Synthesis ━━", flush=True)
-    print(f"  [Learn] 🤖 AI#10: Master profile synthesis...", flush=True)
+    # ── PHASE 4: Master Synthesis (AI#8) ──────────────────────────────────────
+    # Batch A: Phase 4 Stress Test (AI#8 nav_stress, AI#9 full_simulation) đã bị
+    # bỏ vì chúng chỉ có giá trị khi optimizer eval candidates. Master synthesis
+    # vẫn giữ và đổi thành AI#8.
+    print(f"\n  [Learn] ━━ Phase 4: Master Synthesis ━━", flush=True)
+    print(f"  [Learn] 🤖 AI#8: Master profile synthesis...", flush=True)
 
     synthesis_summary = _build_synthesis_summary(
         all_results, consensus, dangerous_selectors, ads_keywords, formatting_rules, n,
     )
-    ai10 = await ai_master_synthesis(synthesis_summary, domain, ai_limiter)
-    all_results["ai10"] = ai10
+    ai8 = await ai_master_synthesis(synthesis_summary, domain, ai_limiter)
+    all_results["ai8"] = ai8
 
-    if ai10:
+    if ai8:
         print(
-            f"     → confidence={ai10.get('confidence', 0):.2f} "
-            f"uncertain={ai10.get('uncertain_fields', [])}",
+            f"     → confidence={ai8.get('confidence', 0):.2f} "
+            f"uncertain={ai8.get('uncertain_fields', [])}",
             flush=True,
         )
-        final_remove = [s for s in (ai10.get("remove_selectors") or []) if s not in dangerous_selectors]
-        final_ads    = list({*ads_keywords, *(ai10.get("ads_keywords") or [])})
-        final_title  = ai10.get("chapter_title_selector") or consensus.get("chapter_title_selector")
-        # Merge AI#10 formatting với default — ưu tiên AI#10 nhưng không mất defaults
-        ai10_fr = ai10.get("formatting_rules") or {}
+        final_remove = [s for s in (ai8.get("remove_selectors") or []) if s not in dangerous_selectors]
+        final_ads    = list({*ads_keywords, *(ai8.get("ads_keywords") or [])})
+        final_title  = ai8.get("chapter_title_selector") or consensus.get("chapter_title_selector")
+        # Merge AI#8 formatting với default — ưu tiên AI#8 nhưng không mất defaults
+        ai8_fr = ai8.get("formatting_rules") or {}
         merged_fr = dict(formatting_rules)
-        merged_fr.update(ai10_fr)
+        merged_fr.update(ai8_fr)
         return {
-            "confidence"            : ai10.get("confidence", 0.7),
-            "content_selector"      : ai10.get("content_selector") or consensus.get("content_selector"),
-            "next_selector"         : ai10.get("next_selector")    or consensus.get("next_selector"),
+            "confidence"            : ai8.get("confidence", 0.7),
+            "content_selector"      : ai8.get("content_selector") or consensus.get("content_selector"),
+            "next_selector"         : ai8.get("next_selector")    or consensus.get("next_selector"),
             "title_selector"        : final_title,
             "chapter_title_selector": final_title,
             "remove_selectors"      : final_remove,
-            "nav_type"              : ai10.get("nav_type")         or consensus.get("nav_type"),
-            "chapter_url_pattern"   : ai10.get("chapter_url_pattern") or consensus.get("chapter_url_pattern"),
-            "requires_playwright"   : bool(ai10.get("requires_playwright", False)),
+            "nav_type"              : ai8.get("nav_type")         or consensus.get("nav_type"),
+            "chapter_url_pattern"   : ai8.get("chapter_url_pattern") or consensus.get("chapter_url_pattern"),
+            "requires_playwright"   : bool(ai8.get("requires_playwright", False)),
             "formatting_rules"      : merged_fr,
             "ads_keywords_learned"  : final_ads,
-            "uncertain_fields"      : ai10.get("uncertain_fields", []),
+            "uncertain_fields"      : ai8.get("uncertain_fields", []),
         }
     else:
-        print(f"  [Learn] ⚠ AI#10 thất bại — dùng consensus", flush=True)
+        print(f"  [Learn] ⚠ AI#8 thất bại — dùng consensus", flush=True)
         final_remove = [s for s in (consensus.get("remove_selectors") or []) if s not in dangerous_selectors]
         confidence   = _estimate_confidence(all_results, n)
         return {
@@ -346,8 +304,9 @@ def _build_synthesis_summary(results, consensus, dangerous_selectors, ads_keywor
         lines.append(f"\n--- ⚠ DANGEROUS SELECTORS ---")
         for s in sorted(dangerous_selectors):
             lines.append(f"  DANGEROUS: {s!r}")
+    # Batch A: ai8/ai9 (nav_stress/full_simulation) đã bị bỏ — không còn trong summary
     for label, key in [("AI#3", "ai3"), ("AI#4", "ai4"), ("AI#5", "ai5"),
-                       ("AI#6", "ai6"), ("AI#7", "ai7"), ("AI#8", "ai8"), ("AI#9", "ai9")]:
+                       ("AI#6", "ai6"), ("AI#7", "ai7")]:
         r = results.get(key) or {}
         if r:
             lines.append(f"\n--- {label} ---")
@@ -365,7 +324,8 @@ def _build_synthesis_summary(results, consensus, dangerous_selectors, ads_keywor
 
 def _estimate_confidence(results: dict, n_chapters: int) -> float:
     scores: list[float] = []
-    for key, score_key in (("ai3", "stability_score"), ("ai9", "overall_score"), ("ai2", "confidence")):
+    # Batch A: bỏ ai9 (overall_score) vì không còn ai_full_simulation
+    for key, score_key in (("ai3", "stability_score"), ("ai2", "confidence")):
         r = results.get(key) or {}
         if r.get(score_key):
             scores.append(float(r[score_key]))
