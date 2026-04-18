@@ -45,7 +45,7 @@ FetchChain     → ExtractChain → TitleChain → NavChain → ValidateChain
 | Class | File | Role |
 |---|---|---|
 | `PipelineRunner` | `pipeline/executor.py` | Executes config against a URL |
-| `ChainExecutor` | `pipeline/executor.py` | Runs one chain; handles title_vote mode |
+| `ChainExecutor` | `pipeline/executor.py` | Runs one chain (first-wins) |
 | `RuntimeContext` | `pipeline/base.py` | Non-serializable live objects (pools, limiter) |
 | `BlockResult` | `pipeline/base.py` | Output of each block execution |
 
@@ -81,7 +81,6 @@ crawl_novel/
 ├── pipeline/
 │   ├── base.py                 # Core types: BlockResult, PipelineContext, RuntimeContext,
 │   │                           #   StepConfig, ChainConfig, PipelineConfig, ScraperBlock ABC
-│   ├── context.py              # make_context() factory, context_summary()
 │   ├── executor.py             # ChainExecutor, PipelineRunner, run_chapter()
 │   ├── fetcher.py              # CurlFetchBlock, PlaywrightFetchBlock, HybridFetchBlock
 │   ├── extractor.py            # SelectorExtract, JsonLd, DensityHeuristic, XPath,
@@ -233,7 +232,7 @@ Pass 1: _strip_comment_section   (from 30% of content downward)
 Pass 2: _strip_settings_panel    (any position — RR reading settings)
 Pass 3: _strip_postfix_section   (from 35% downward — nav/support footer)
 Pass 4: _strip_metadata_header   (first 25 lines — FFN story stats)
-Pass 5: _strip_author_bio        (from 55% downward — RR author section)
+Pass 5: _strip_ui_navigation_text (static UI patterns)
 ```
 
 **Safety**: Never strips > 60% of original (`_MAX_STRIP_RATIO = 0.60`). Always returns original if cleaned < 40%.
@@ -268,8 +267,6 @@ Two-tier system in `utils/ads_filter.py`:
 | Auto-add | frequency >= `_ADS_AUTO_THRESHOLD` (10) | Added without AI review |
 | AI verify | `_ADS_AI_MIN_COUNT` (3) <= frequency < 10 | Sent to `ai_verify_ads()` |
 
-**ADS-A Fix**: `scan_inline_for_watermarks()` scans the MIDDLE of content (skipping first/last 5 lines) across chapters. Inline suspects get **1.5× weight** vs edge suspects (stronger watermark signal). Tracking is per-file (each unique line counted once per chapter).
-
 Persisted in `data/ads_keywords.json` keyed by domain. Injected into `AdsFilter` from profile at scrape start.
 
 AdsFilter.save() uses _ADS_SAVE_LOCK (threading.Lock) + atomic write to prevent concurrent corruption.
@@ -279,14 +276,8 @@ _is_valid_ads_keyword() guards apply_verified() and inject_from_profile() — re
 
 ## 10. Title Extraction
 
-Title chain runs in **`title_vote` mode** — all blocks run, winner chosen by confidence-weighted vote with dash-normalized keys (`_make_vote_key`).
-
-Priority order: `selector(0.95) → h1_tag(0.80) → title_tag(0.65) → og_title(0.65) → url_slug(0.40)`
-
-**TITLE-1 Fix**: `strip_site_suffix()` matches `"FanFiction"` (without .net) AND strips FFN's `", a {fandom} fanfic"` descriptor in two passes.
-
-strip_site_suffix() is now applied in ALL title blocks (SelectorTitle, H1Title), not just TitleTagBlock.
-
+Title chain runs in **first-wins** mode. Priority order:
+`selector(0.95) → h1_tag(0.80) → title_tag(0.65) → og_title(0.65) → url_slug(0.40)`
 ---
 
 ## 11. Chapter Filename Generation

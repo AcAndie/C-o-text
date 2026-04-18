@@ -10,12 +10,21 @@ Batch B: PipelineRunner đọc trực tiếp từ SiteProfile flat fields.
 
 Batch B: ChainExecutor nhận list[ScraperBlock] thay vì ChainConfig.
   Chains được build bởi PipelineRunner._*_blocks() methods.
+
+Batch C: Bỏ title_vote mode — dùng first-wins với priority order.
+  Trước: tất cả title blocks chạy, confidence-weighted vote chọn winner.
+  Sau:   first-wins theo thứ tự ưu tiên đã encode trong _title_blocks().
+         SelectorTitle(0.95) > H1(0.80) > TitleTag(0.65) > OgTitle(0.65) > UrlSlug(0.40)
+         Bỏ: _run_title_vote(), _make_vote_key(), _DASH_NORM, _WS_NORM.
+
+Batch C: Merge pipeline/context.py vào đây.
+  make_context() là 5-line factory — không cần file riêng.
+  context_summary() ít dùng, drop luôn.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from typing import Any
 
 from bs4 import BeautifulSoup
@@ -27,16 +36,24 @@ from pipeline.base import (
 
 logger = logging.getLogger(__name__)
 
-_DASH_NORM = re.compile(r"[–—‐]")
-_WS_NORM   = re.compile(r"\s+")
 
+# ── make_context (merged from pipeline/context.py) ───────────────────────────
 
-def _make_vote_key(title: str) -> str:
-    """Normalize title để làm dict key trong vote — dash variants + whitespace."""
-    key = title.lower()
-    key = _DASH_NORM.sub("-", key)
-    key = _WS_NORM.sub(" ", key).strip()
-    return key
+def make_context(
+    url     : str,
+    profile : dict | None = None,
+    progress: dict | None = None,
+) -> PipelineContext:
+    """
+    Factory function tạo PipelineContext mới cho một chapter.
+
+    Batch C: Merged từ pipeline/context.py — file đó đã bị xóa.
+    """
+    return PipelineContext(
+        url      = url,
+        profile  = profile  or {},
+        progress = progress or {},
+    )
 
 
 # ── HTML filter + soup builder ────────────────────────────────────────────────
@@ -68,27 +85,21 @@ async def build_soup(ctx: PipelineContext) -> None:
 class ChainExecutor:
     """
     Thực thi một chain (ordered list of blocks).
-    Mặc định: first-wins. Chế độ title_vote: chạy hết, chọn bằng weighted vote.
+    First-wins: block đầu tiên thành công (SUCCESS hoặc FALLBACK) → dừng.
 
     Batch B: nhận list[ScraperBlock] trực tiếp thay vì ChainConfig.
+    Batch C: Bỏ title_vote mode — tất cả chains dùng first-wins.
     """
 
     def __init__(
         self,
-        blocks      : list[ScraperBlock],
-        chain_type  : str = "",
-        special_mode: str = "",
+        blocks    : list[ScraperBlock],
+        chain_type: str = "",
     ) -> None:
-        self.blocks       = blocks
-        self.chain_type   = chain_type
-        self.special_mode = special_mode
+        self.blocks     = blocks
+        self.chain_type = chain_type
 
     async def run(self, ctx: PipelineContext) -> BlockResult:
-        if self.special_mode == "title_vote":
-            return await self._run_title_vote(ctx)
-        return await self._run_first_wins(ctx)
-
-    async def _run_first_wins(self, ctx: PipelineContext) -> BlockResult:
         last_result = BlockResult.failed("chain is empty")
 
         for block in self.blocks:
@@ -117,71 +128,6 @@ class ChainExecutor:
         logger.debug("[Chain:%s] all %d blocks failed", self.chain_type, len(self.blocks))
         return last_result
 
-    async def _run_title_vote(self, ctx: PipelineContext) -> BlockResult:
-        """
-        Confidence-weighted vote với dash-normalized keys.
-        Đếm riêng skipped_count và failed_count để error message rõ ràng.
-        """
-        candidates  : list[str]   = []
-        confidences : list[float] = []
-        skipped_count: int = 0
-        failed_count : int = 0
-        total_blocks : int = len(self.blocks)
-
-        for block in self.blocks:
-            block_key = f"title:{block.name}"
-            try:
-                result = await block.execute(ctx)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                result = BlockResult.failed(str(e) or repr(e))
-
-            ctx.record(block_key, result)
-
-            if result.status == BlockStatus.SKIPPED:
-                skipped_count += 1
-            elif result.status == BlockStatus.FAILED:
-                failed_count += 1
-            elif result.ok and isinstance(result.data, str):
-                title = result.data.strip()
-                if len(title) >= 3:
-                    candidates.append(title)
-                    confidences.append(result.confidence)
-
-        if not candidates:
-            if skipped_count == total_blocks:
-                msg = f"all {total_blocks} title blocks skipped (no soup or no html?)"
-            elif failed_count == total_blocks:
-                msg = f"all {total_blocks} title blocks failed"
-            else:
-                msg = f"{skipped_count} skipped, {failed_count} failed — no title found"
-            return BlockResult.failed(msg)
-
-        vote_weights  : dict[str, float] = {}
-        original_case : dict[str, str]   = {}
-
-        for title, conf in zip(candidates, confidences):
-            key = _make_vote_key(title)
-            vote_weights[key] = vote_weights.get(key, 0.0) + conf
-            if key not in original_case or len(title) > len(original_case[key]):
-                original_case[key] = title
-
-        top_weight_val = max(vote_weights.values())
-        tied_keys      = [k for k, w in vote_weights.items() if w == top_weight_val]
-        winner_key     = max(tied_keys, key=len) if len(tied_keys) > 1 else tied_keys[0]
-        winner         = original_case[winner_key]
-        total_weight   = sum(vote_weights.values())
-        confidence     = vote_weights[winner_key] / total_weight if total_weight > 0 else 0.0
-
-        return BlockResult.success(
-            data         = winner,
-            method_used  = "title_vote",
-            confidence   = round(confidence, 3),
-            vote_weights = {original_case[k]: round(w, 3) for k, w in vote_weights.items()},
-            candidates   = candidates,
-        )
-
 
 # ── PipelineRunner ─────────────────────────────────────────────────────────────
 
@@ -208,7 +154,6 @@ class PipelineRunner:
     def _fetch_blocks(self) -> list[ScraperBlock]:
         from pipeline.fetcher import HybridFetchBlock, PlaywrightFetchBlock
         if self._profile.get("requires_playwright", False):
-            # JS-heavy site: Playwright first, Hybrid as fallback
             return [PlaywrightFetchBlock(), HybridFetchBlock()]
         return [HybridFetchBlock(), PlaywrightFetchBlock()]
 
@@ -230,6 +175,15 @@ class PipelineRunner:
         return blocks
 
     def _title_blocks(self) -> list[ScraperBlock]:
+        """
+        Title chain — first-wins theo thứ tự ưu tiên (Batch C).
+
+        Priority: SelectorTitle(0.95) → H1(0.80) → TitleTag(0.65)
+                  → OgTitle(0.65) → UrlSlug(0.40)
+
+        SelectorTitle đứng đầu nếu profile có title_selector.
+        Nếu không, H1 là lựa chọn đầu tiên — thường chính xác nhất cho web novel.
+        """
         from pipeline.title_extractor import (
             SelectorTitleBlock, H1TitleBlock, TitleTagBlock,
             OgTitleBlock, UrlSlugTitleBlock,
@@ -259,7 +213,6 @@ class PipelineRunner:
         elif nav_type == "select_dropdown":
             blocks.append(SelectDropdownNavBlock())
 
-        # Ensure full fallback chain, no duplicates
         existing_types = {type(b) for b in blocks}
         for cls in (AnchorTextNavBlock, SlugIncrementNavBlock, FanficNavBlock, AINavBlock):
             if cls not in existing_types:
@@ -292,8 +245,6 @@ class PipelineRunner:
         ai_limiter     : Any = None,
         prefetched_html: str | None = None,
     ) -> PipelineContext:
-        from pipeline.context import make_context
-
         ctx         = make_context(url=url, profile=dict(profile), progress=progress)
         ctx.runtime = RuntimeContext.create(pool=pool, pw_pool=pw_pool, ai_limiter=ai_limiter)
 
@@ -334,10 +285,8 @@ class PipelineRunner:
                 )
             ctx.content = cleaned
 
-        # 4. Extract title (weighted vote — all blocks run)
-        title_result = await ChainExecutor(
-            self._title_blocks(), "title", special_mode="title_vote"
-        ).run(ctx)
+        # 4. Extract title — first-wins (Batch C: bỏ title_vote)
+        title_result = await ChainExecutor(self._title_blocks(), "title").run(ctx)
         if title_result.ok:
             ctx.title_clean = title_result.data
             ctx.title_raw   = title_result.data

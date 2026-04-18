@@ -11,7 +11,7 @@ _MIN_PROSE_WORDS = 7
 _MAX_STRIP_RATIO = 0.60
 
 
-# ── Pass 0: Raw script/HTML lines (NEW) ───────────────────────────────────────
+# ── Pass 0: Raw script/HTML lines ─────────────────────────────────────────────
 #
 # Một số sites (VD: NovelFire) inject <script> tags dưới dạng TEXT NODE bên trong
 # content div. BeautifulSoup parse chúng thành NavigableString (không phải Tag),
@@ -256,69 +256,14 @@ def _strip_metadata_header(text: str) -> str:
     return text
 
 
-# ── Pass 5: Author bio ─────────────────────────────────────────────────────────
-
-_BIO_RE = [
-    re.compile(r"^\*+\s*bio\s*\*+\s*$",           re.I),
-    re.compile(r"^[\*\s]*\bbio\b[\*\s:]*$",        re.I),
-    re.compile(r"^achievements?\s*$",              re.I),
-    re.compile(r"^follow\s+(?:the\s+)?author",     re.I),
-    re.compile(r"^end\s+col-md-",                  re.I),
-    re.compile(r"^end\s+row\s*$",                  re.I),
-    re.compile(r"^\#\s+\w[\w\s]*$",               re.I),
-    re.compile(r"^-\s+\*\*\s+\w{3}",              re.I),
-    re.compile(r"^\w+\s+Lakes?\s+sect\s*$",        re.I),
-]
-
-
-def _strip_author_bio(text: str) -> str:
-    lines  = text.splitlines()
-    n      = len(lines)
-    cutoff = max(5, int(n * 0.55))
-
-    first_marker = None
-    for i in range(n - 1, cutoff - 1, -1):
-        stripped = lines[i].strip()
-        if not stripped:
-            continue
-        if any(p.search(stripped) for p in _BIO_RE):
-            first_marker = i
-            break
-
-    if first_marker is None:
-        return text
-
-    cut_pos           = first_marker
-    consecutive_prose = 0
-    scan_limit        = max(cutoff - 1, first_marker - 50)
-
-    for i in range(first_marker - 1, scan_limit, -1):
-        stripped = lines[i].strip()
-
-        if not stripped:
-            continue
-
-        is_bio_marker  = any(p.search(stripped) for p in _BIO_RE)
-        is_short_noise = len(stripped.split()) <= 4 and not re.search(r"[.!?]$", stripped)
-
-        if is_bio_marker or is_short_noise:
-            cut_pos           = i
-            consecutive_prose = 0
-        else:
-            consecutive_prose += 1
-            if consecutive_prose >= 2:
-                break
-
-    candidate = "\n".join(lines[:cut_pos])
-    if len(candidate.strip()) >= _MIN_REMAINING:
-        return candidate
-    return text
-
-
-# ── Pass 6: Static UI navigation text patterns ────────────────────────────────
+# ── Pass 5: Static UI navigation text patterns ────────────────────────────────
 #
 # Bổ sung cho ads_filter (dynamic). Pass này là static — hardcoded patterns phổ biến.
 # Belt-and-suspenders: ads_filter học từ dữ liệu, pass này là safety net.
+#
+# Batch C: đây là Pass 5 mới (trước là Pass 6).
+# Pass 5 cũ (_strip_author_bio) đã bị xóa — quá speculative, high false positive risk
+# (cutoff 55% quá aggressive với chapters có epilogue/author note ở cuối).
 
 _UI_NAV_PATTERNS: list[re.Pattern] = [
     re.compile(r"^restore scroll position\s*$",                     re.I),
@@ -347,7 +292,7 @@ def _strip_ui_navigation_text(text: str) -> str:
     """
     Strip các dòng là UI navigation text phổ biến (static patterns).
 
-    Không có cutoff threshold — các pattern này rất đặc tưng, ít false positive.
+    Không có cutoff threshold — các pattern này rất đặc trưng, ít false positive.
     """
     if not text:
         return text
@@ -365,13 +310,15 @@ def clean_extracted_content(text: str) -> str:
     Apply tất cả cleaning passes theo thứ tự.
 
     Pass order:
-        0. _strip_raw_script_lines  (NEW — <script> text nodes từ sites như NovelFire)
+        0. _strip_raw_script_lines  (<script> text nodes từ sites như NovelFire)
         1. _strip_comment_section   (từ 30% trở xuống)
         2. _strip_settings_panel    (bất kỳ vị trí)
         3. _strip_postfix_section   (từ 35% trở xuống)
         4. _strip_metadata_header   (25 dòng đầu)
-        5. _strip_author_bio        (từ 55% trở xuống)
-        6. _strip_ui_navigation_text (static UI patterns — bất kỳ vị trí)
+        5. _strip_ui_navigation_text (static UI patterns — bất kỳ vị trí)
+
+    Batch C: Bỏ Pass 5 cũ (_strip_author_bio, cutoff 55%) — quá speculative,
+    false positive với chapters có epilogue/author note hợp lệ ở cuối.
 
     Conservative: không bao giờ return ít hơn 40% original content.
     """
@@ -381,13 +328,12 @@ def clean_extracted_content(text: str) -> str:
     original_len = len(text.strip())
     result       = text
 
-    result = _strip_raw_script_lines(result)    # Pass 0 (NEW)
+    result = _strip_raw_script_lines(result)    # Pass 0
     result = _strip_comment_section(result)     # Pass 1
     result = _strip_settings_panel(result)      # Pass 2
     result = _strip_postfix_section(result)     # Pass 3
     result = _strip_metadata_header(result)     # Pass 4
-    result = _strip_author_bio(result)          # Pass 5
-    result = _strip_ui_navigation_text(result)  # Pass 6 (NEW)
+    result = _strip_ui_navigation_text(result)  # Pass 5
 
     cleaned_len = len(result.strip())
 
