@@ -387,9 +387,14 @@ FORMAT BẮT BUỘC cho ads_keywords (⚠ QUAN TRỌNG):
   ✗ KHÔNG được là markdown heading (không bắt đầu bằng #)
   ✗ KHÔNG được là URL hoặc domain (không có ://)
   ✗ KHÔNG được là raw script tag content
+  ✗ KHÔNG được là tên truyện, tên tác giả, tiêu đề chương cụ thể
+  ✗ KHÔNG được là navigation phrase chung ("next chapter", "previous chapter", "fiction index")
+  ✗ Keywords PHẢI xuất hiện trên mọi truyện của domain, không chỉ truyện đang phân tích
+  ✗ Tối đa 10 từ (chuỗi dài hơn không bao giờ match trong content)
 
   Ví dụ ĐÚNG  : "read at novelfire.net", "tap the middle of the screen to reveal reading options"
-  Ví dụ SAI   : "<script>window.pubfuture...</script>", "# the primal hunter -", "https://..."
+  Ví dụ SAI   : "<script>window.pubfuture...</script>", "# the primal hunter -", "https://...",
+                "the primal hunter - chapter 5", "a note from [author name]", "next chapter"
 
 Trả về JSON (CHỈ JSON thuần):
 {{
@@ -520,6 +525,9 @@ QUY TẮC BẤT BIẾN:
 FORMAT ads_keywords (⚠):
   ✓ Chỉ plain text, lowercase, 5-200 ký tự
   ✗ Không HTML tags, không markdown heading (#), không URLs
+  ✗ Không tên truyện, tên tác giả, tiêu đề chương cụ thể
+  ✗ Không navigation phrases chung ("next chapter", "previous chapter")
+  ✗ Chỉ text xuất hiện trên MỌI truyện của domain, tối đa 10 từ
 
 Trả về JSON (CHỈ JSON thuần):
 {{

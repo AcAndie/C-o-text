@@ -273,7 +273,7 @@ Persisted in `data/ads_keywords.json` keyed by domain. Injected into `AdsFilter`
 
 AdsFilter.save() uses _ADS_SAVE_LOCK (threading.Lock) + atomic write to prevent concurrent corruption.
 _is_valid_ads_keyword() guards apply_verified() and inject_from_profile() — rejects HTML/script/URL strings.
-
+Note: `:contains()` selectors in `remove_selectors` are now supported via `_iter_selector()` in `html_filter.py`. Text-based content filtering still belongs in post-extraction phase (AdsFilter), but structural `:contains()` for known noise elements (e.g. watermark divs) is now functional.
 ---
 
 ## 10. Title Extraction
@@ -322,6 +322,12 @@ FILENAME-E: format_chapter_filename() applies strip_site_suffix() to extracted s
   remove → navigation break. Sau: next_selector cũng protected.
 - **ADS-MIN-LEN**: _is_valid_ads_keyword() tăng min length từ 5 → 8 chars + thêm
   _GENERIC_SINGLE_WORDS blocklist để ngăn "login", "title", "novel" v.v.
+  - **SCAN-INLINE-REMOVED**: Removed stale call to `ads_filter.scan_inline_for_watermarks()` in `scraper.py` — method was deleted in Batch C but call was not cleaned up → caused AttributeError blocking all chapter scraping.
+- **CONTAINS-SELECTOR**: `html_filter.py` now handles `:contains()` pseudo-selectors via `_iter_selector()` helper. Previously silently ignored (cssselect doesn't support jQuery extension) → watermark divs not removed from content.
+- **ADS-KW-VALIDATION-UNIFIED**: `_is_valid_ads_keyword()` moved to `utils/string_helpers.py` as `is_valid_ads_keyword()`. Used by both `ai/agents.py` (inline validation) and `utils/ads_filter.py`. Added word count limit (>10 words rejected) and nav phrase blocklist (`next chapter`, `previous chapter`, etc.).
+- **ADS-KW-STORY-SPECIFIC**: AI prompts (#7, #10) now explicitly forbid story name, author name, and chapter-specific titles as ads keywords. Keywords must appear across ALL stories on a domain.
+- **FINGERPRINT-COMMIT-ORDER**: `fingerprints.add(fp)` moved to commit block (after `write_markdown`) in `scraper.py`. Previously added before write → on exception, fingerprint marked "done" but chapter_count not incremented → retry saw loop detection → story stopped with 0 chapters.
+- **REDUNDANT-REMOVE-SANITIZE**: `_sanitize_remove_selectors()` now filters out `script/style/noscript/iframe` — already removed in Layer 1 of html_filter, having them in profile remove_selectors is noise from AI confusion.
 ### P2 — Medium
 - **P2-11**: `_get_chapter_re()` uses `@lru_cache` in hot path.
 - **P2-12**: Optimizer evaluates candidates in parallel via `asyncio.gather()`.

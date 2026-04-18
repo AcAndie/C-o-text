@@ -307,7 +307,6 @@ async def scrape_one_chapter(
     if fp in fingerprints:
         print(f"  [{tag}] ♻  Loop nội dung — dừng", flush=True)
         return None
-    fingerprints.add(fp)
 
     if not progress.get("story_title") and not progress.get("story_name_clean"):
         if progress.get("chapter_count", 0) == 0 and ctx.soup:
@@ -324,8 +323,8 @@ async def scrape_one_chapter(
     await write_markdown(filepath, f"# {title}\n\n{content}\n")
 
     ads_filter.scan_edges_for_suspects(content, chapter_url=url, chapter_file=filepath)
-    ads_filter.scan_inline_for_watermarks(content, chapter_file=filepath)
 
+    fingerprints.add(fp)          # commit: chỉ add sau khi write thành công
     progress["chapter_count"]    = chapter_num
     progress["last_title"]       = title
     progress["last_scraped_url"] = url

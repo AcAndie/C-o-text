@@ -9,6 +9,7 @@ from collections import Counter
 from pathlib import Path
 
 from config import ADS_DB_FILE
+from utils.string_helpers import is_valid_ads_keyword as _is_valid_ads_keyword
 
 logger = logging.getLogger(__name__)
 
@@ -16,55 +17,7 @@ _MIN_LINE_LEN = 10
 _MAX_LINE_LEN = 300
 
 # FIX-ADSSAVE: module-level threading lock cho save().
-# AdsFilter.save() được gọi qua asyncio.to_thread() → chạy trong thread pool.
-# Nhiều domain tasks (royalroad, novelfire, fanfiction) có thể save() đồng thời
-# → read-modify-write race condition → corrupt JSON ("Extra data" error).
-# Threading lock (không phải asyncio lock) vì code chạy trong thread, không coroutine.
 _ADS_SAVE_LOCK = threading.Lock()
-
-_GENERIC_SINGLE_WORDS = frozenset({
-    "title", "novel", "login", "browse", "filter", "random", "ranking",
-    "author", "useful", "member", "update", "follow", "share", "report",
-    "search", "logout", "signup", "rating", "review", "submit", "cancel",
-    "saving", "reader", "latest", "recent", "posted", "edited", "status",
-})
-
-def _is_valid_ads_keyword(kw: str) -> bool:
-    """
-    Validate ads keyword — plain text only, không HTML/CSS/script/URL.
- 
-    Rules:
-      ✓ Plain text, lowercase-able, 8-200 chars (tăng từ 5 lên 8)
-      ✗ HTML tags (<script>, </div>, v.v.)
-      ✗ Markdown headings (#)
-      ✗ URLs (://)
-      ✗ Single generic UI words (login, browse, title, v.v.)
- 
-    Fix ADS-MIN-LEN: tăng min length từ 5 → 8.
-      "title" (5), "novel" (5), "login" (5) pass ở 5 chars → lọc nhầm prose.
-      8 chars loại được hầu hết single-word UI labels.
- 
-    Fix ADS-GENERIC: block known generic single words.
-      Dù có 8 chars (VD: "requests" = 8), một số từ vẫn quá generic.
-    """
-    if not isinstance(kw, str) or not kw.strip():
-        return False
-    s = kw.strip()
-    if (
-        s.startswith("<")    # HTML/script tags
-        or s.startswith("#")  # markdown heading hoặc CSS id
-        or "</" in s          # closing HTML tags
-        or "://" in s         # URLs
-    ):
-        return False
-    if not (8 <= len(s) <= 200):  # tăng min từ 5 → 8
-        return False
-    # Block generic single words
-    if s.lower() in _GENERIC_SINGLE_WORDS:
-        return False
-    return True
-
-
 
 class AdsFilter:
 

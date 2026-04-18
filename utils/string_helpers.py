@@ -225,3 +225,51 @@ def is_cloudflare_challenge(html: str) -> bool:
 
 # ── Backward compatibility alias ──────────────────────────────────────────────
 _dtag = domain_tag
+
+# ── _is_valid_ads_keyword ──────────────────────────────────────────────────────
+
+_ADS_GENERIC_WORDS = frozenset({
+    "title", "novel", "login", "browse", "filter", "random", "ranking",
+    "author", "useful", "member", "update", "follow", "share", "report",
+    "search", "logout", "signup", "rating", "review", "submit", "cancel",
+    "saving", "reader", "latest", "recent", "posted", "edited", "status",
+    "advertisement",
+})
+
+_ADS_NAV_PHRASE_RE = re.compile(
+    r'^(next|prev(?:ious)?)\s+(chapter|page)\s*$'
+    r'|^(fiction|chapter)\s+index\s*$',
+    re.IGNORECASE,
+)
+
+
+def is_valid_ads_keyword(kw: str) -> bool:
+    """
+    Validate ads keyword — plain text only, không HTML/CSS/script/URL.
+
+    Rules:
+      ✓ Plain text, 8-200 chars
+      ✓ Tối đa 10 words
+      ✗ HTML tags, markdown headings, URLs
+      ✗ Generic single UI words
+      ✗ Navigation phrases (next chapter, prev page, ...)
+    """
+    if not isinstance(kw, str) or not kw.strip():
+        return False
+    s = kw.strip()
+    if (
+        s.startswith("<")
+        or s.startswith("#")
+        or "</" in s
+        or "://" in s
+    ):
+        return False
+    if not (8 <= len(s) <= 200):
+        return False
+    if s.lower() in _ADS_GENERIC_WORDS:
+        return False
+    if len(s.split()) > 10:
+        return False
+    if _ADS_NAV_PHRASE_RE.match(s):
+        return False
+    return True

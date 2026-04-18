@@ -688,15 +688,10 @@ async def ai_ads_deepscan(
             # Fix ADS-B: validate keywords — chỉ giữ plain text có thể xuất hiện
             # trong extracted content. Loại HTML tags, markdown headings, URLs,
             # và strings quá ngắn/dài để filter được trong content stream.
+            from utils.string_helpers import is_valid_ads_keyword as _kw_ok
             result["ads_keywords"] = [
                 kw.lower().strip() for kw in result["ads_keywords"]
-                if isinstance(kw, str)
-                and kw.strip()
-                and not kw.strip().startswith("<")   # HTML/script tags
-                and not kw.strip().startswith("#")   # markdown heading hoặc CSS id
-                and "</" not in kw                   # closing HTML tags
-                and "://" not in kw                  # URLs
-                and 5 <= len(kw.strip()) <= 200      # reasonable length
+                if isinstance(kw, str) and _kw_ok(kw.strip())
             ]
             return result
     except asyncio.CancelledError:
@@ -775,15 +770,10 @@ async def ai_master_synthesis(
             _validate_regex_field(result, "chapter_url_pattern")
             result.setdefault("uncertain_fields", [])
             result.setdefault("ads_keywords",     [])
+            from utils.string_helpers import is_valid_ads_keyword as _kw_ok
             result["ads_keywords"] = [
                 kw.lower().strip() for kw in result["ads_keywords"]
-                if isinstance(kw, str)
-                and kw.strip()
-                and not kw.strip().startswith("<")
-                and not kw.strip().startswith("#")
-                and "</" not in kw
-                and "://" not in kw
-                and 5 <= len(kw.strip()) <= 200
+                if isinstance(kw, str) and _kw_ok(kw.strip())
             ]
             fr = result.get("formatting_rules")
             if not isinstance(fr, dict):
@@ -922,12 +912,20 @@ async def ai_extract_content(
 
 # ── Sanitization helpers ──────────────────────────────────────────────────────
 
+_REDUNDANT_REMOVE_TAGS = frozenset({"script", "style", "noscript", "iframe"})
+
+
 def _sanitize_remove_selectors(result: dict) -> None:
     rm = result.get("remove_selectors")
     if not isinstance(rm, list):
         result["remove_selectors"] = []
     else:
-        result["remove_selectors"] = [s for s in rm if isinstance(s, str) and s.strip()]
+        result["remove_selectors"] = [
+            s for s in rm
+            if isinstance(s, str)
+            and s.strip()
+            and s.strip().lower() not in _REDUNDANT_REMOVE_TAGS
+        ]
 
 
 def _validate_regex_field(result: dict, field: str) -> None:

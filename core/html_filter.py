@@ -13,23 +13,15 @@ Logic:
        KHÔNG xóa nếu element là ancestor của content, title, HOẶC next selector
     5. Trả về soup đã filtered
 
-KNOWN_NOISE_SELECTORS vs remove_selectors:
-    KNOWN_NOISE_SELECTORS : site-agnostic, hardcoded, luôn áp dụng
-    remove_selectors      : learned per-domain, từ AI/profile
-    Hai lớp bổ sung cho nhau — profile có thể miss noise,
-    global list catch những trường hợp phổ biến.
-
-Fix NAV-PROTECT: thêm next_selector vào protected elements.
-    Trước: chỉ content_selector + title_selector được bảo vệ.
-           AI có thể thêm nav-container (VD: div.chapter-nav trên RoyalRoad)
-           vào remove_selectors → soup bị filter → nav button biến mất →
-           navigation fail hoàn toàn.
-    Sau:   next_selector (hoặc element nó tìm được) cũng được protect.
-           Element bị remove không được là ancestor của nav button.
+Fix CONTAINS-SELECTOR: hỗ trợ `:contains()` pseudo-selector qua _iter_selector().
+  BeautifulSoup/cssselect không support `:contains()` (jQuery extension).
+  Trước: exception bị catch và silently ignored → selector không hoạt động.
+  Sau: _iter_selector() detect pattern, tự implement text matching.
 """
 from __future__ import annotations
 
 import logging
+import re
 
 from bs4 import BeautifulSoup, Tag
 
@@ -37,8 +29,38 @@ from config import KNOWN_NOISE_SELECTORS
 
 logger = logging.getLogger(__name__)
 
-# Tags luôn xóa — không cần selector
 _ALWAYS_REMOVE = frozenset({"script", "style", "noscript", "iframe"})
+
+# Fix CONTAINS-SELECTOR: pattern nhận diện `:contains()` pseudo-selector
+# Ví dụ: "div.chapter-content > p:contains('Unauthorized usage')"
+_CONTAINS_RE = re.compile(
+    r'^(.*?):contains\(\s*["\'](.+?)["\']\s*\)\s*$',
+    re.DOTALL,
+)
+
+
+def _iter_selector(soup: BeautifulSoup, sel: str) -> list[Tag]:
+    """
+    Wrapper quanh soup.select() có hỗ trợ `:contains()` pseudo-selector.
+
+    Nếu selector có dạng `base:contains('text')`:
+        1. Chạy soup.select(base) để lấy candidates
+        2. Filter lấy những element có text chứa chuỗi cần tìm (case-insensitive)
+
+    Nếu không có `:contains()` → dùng soup.select() bình thường.
+    """
+    m = _CONTAINS_RE.match(sel.strip())
+    if m:
+        base_sel = m.group(1).strip() or "*"
+        search_text = m.group(2).lower()
+        try:
+            candidates = soup.select(base_sel) if base_sel != "*" else soup.find_all(True)
+            return [el for el in candidates if search_text in el.get_text().lower()]
+        except Exception as e:
+            logger.debug("[HtmlFilter] :contains() fallback error for %r: %s", sel, e)
+            return []
+    # Normal CSS selector
+    return soup.select(sel)
 
 
 def prepare_soup(
@@ -46,15 +68,10 @@ def prepare_soup(
     remove_selectors : list[str],
     content_selector : str | None = None,
     title_selector   : str | None = None,
-    next_selector    : str | None = None,   # Fix NAV-PROTECT
+    next_selector    : str | None = None,
 ) -> BeautifulSoup:
     """
     Parse HTML và apply 3-layer filtering.
-
-    Safety: không xóa element nào là ancestor của content, title,
-    hoặc next_selector (Fix NAV-PROTECT).
-    Layer này chỉ apply cho remove_selectors (learned), không cho KNOWN_NOISE
-    (global list không bao giờ overlap với content/nav selectors đúng).
     """
     soup = BeautifulSoup(html, "html.parser")
 
@@ -63,10 +80,9 @@ def prepare_soup(
         tag.decompose()
 
     # Layer 2: Known noise selectors — global safety net
-    # Áp dụng TRƯỚC profile selectors để tránh pollution ảnh hưởng content detect
     for sel in KNOWN_NOISE_SELECTORS:
         try:
-            for el in soup.select(sel):
+            for el in _iter_selector(soup, sel):
                 el.decompose()
         except Exception as e:
             logger.debug("[HtmlFilter] KNOWN_NOISE selector error %r: %s", sel, e)
@@ -75,8 +91,6 @@ def prepare_soup(
     if not remove_selectors:
         return soup
 
-    # Xác định các "protected" elements (content, title, và nav button containers)
-    # Fix NAV-PROTECT: next_selector cũng được protect
     protected: list[Tag] = []
     for sel in (content_selector, title_selector, next_selector):
         if sel:
@@ -91,7 +105,7 @@ def prepare_soup(
         if not sel or not sel.strip():
             continue
         try:
-            for el in soup.select(sel):
+            for el in _iter_selector(soup, sel):
                 if _is_protected(el, protected):
                     logger.debug("[HtmlFilter] Skipped protected element: %s", sel)
                     continue
