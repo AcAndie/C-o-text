@@ -66,6 +66,7 @@ async def build_soup(ctx: PipelineContext) -> None:
     remove_selectors = profile.get("remove_selectors") or []
     content_selector = profile.get("content_selector")
     title_selector   = profile.get("title_selector")
+    next_selector    = profile.get("next_selector")    # Fix NAV-PROTECT
     try:
         from core.html_filter import prepare_soup
         ctx.soup = await asyncio.to_thread(
@@ -74,6 +75,7 @@ async def build_soup(ctx: PipelineContext) -> None:
             remove_selectors,
             content_selector,
             title_selector,
+            next_selector,    # Fix NAV-PROTECT: protect nav button ancestors
         )
     except Exception as e:
         logger.warning("[Executor] html_filter thất bại, dùng raw parse: %s", e)

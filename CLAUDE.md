@@ -94,6 +94,7 @@ crawl_novel/
 │   ├── phase.py                # run_learning_phase() orchestrator, _fetch_chapters(),
 │   │                           #   _build_final_profile()
 │   ├── phase_ai.py             # run_10_ai_calls_internal() — 10 AI call orchestration
+│   ├── migrator.py             # needs_migration(), migrate_profile() — v1→v2 profile migration
 │   ├── profile_manager.py      # ProfileManager — thread-safe profile CRUD
 │   └── naming.py               # run_naming_phase() — story name + chapter keyword
 │
@@ -219,7 +220,8 @@ Phase 4 — Master Synthesis
 1. **Layer 1**: Always remove `script, style, noscript, iframe`
 2. **Layer 2**: `KNOWN_NOISE_SELECTORS` (hardcoded in `config.py`) — site-agnostic safety net
 3. **Layer 3**: Profile `remove_selectors` — learned per-domain, with protection: won't remove ancestors of `content_selector` or `title_selector`
-
+Fix NAV-PROTECT: next_selector cũng được protect. prepare_soup() nhận thêm
+param next_selector — element bị remove không được là ancestor của nav button.
 ---
 
 ## 7. Content Cleaning (5-Pass Post-Extraction)
@@ -315,6 +317,11 @@ TITLE-B: H1TitleBlock applies strip_site_suffix() — strips [ ... words ] artif
 TITLE-A (extended): SelectorTitleBlock now applies strip_site_suffix() unconditionally (not just <title>).
 PASS0-SCRIPT: content_cleaner Pass 0 strips <script> text nodes injected by sites like NovelFire.
 FILENAME-E: format_chapter_filename() applies strip_site_suffix() to extracted subtitle.
+- **NAV-PROTECT**: html_filter.py::prepare_soup() thêm next_selector vào protected list.
+  Trước: chỉ content_selector + title_selector được protect → div.chapter-nav có thể bị
+  remove → navigation break. Sau: next_selector cũng protected.
+- **ADS-MIN-LEN**: _is_valid_ads_keyword() tăng min length từ 5 → 8 chars + thêm
+  _GENERIC_SINGLE_WORDS blocklist để ngăn "login", "title", "novel" v.v.
 ### P2 — Medium
 - **P2-11**: `_get_chapter_re()` uses `@lru_cache` in hot path.
 - **P2-12**: Optimizer evaluates candidates in parallel via `asyncio.gather()`.
