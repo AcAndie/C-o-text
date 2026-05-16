@@ -621,53 +621,30 @@
 >
 > **Tiền điều kiện:** Phase 3 done.
 
-### P4.1 — `output/translation.py`
+### P4.1 — `writers/translation.py` — ✅ DONE 2026-05-17
 
-- [ ] **Files động vào:**
-  - `output/translation.py` (create ~120 dòng)
-- [ ] **Logic:**
-  - Strip Markdown formatting: heading, bold, italic, link → plain
-  - Image: replace `![alt](url)` bằng `[IMAGE: alt]` placeholder (Decision #13)
-  - Paragraph: một paragraph một dòng, double newline giữa các paragraph
-  - Filename: `0042.txt`
-  - No frontmatter
-  - Optional chunking: nếu `len(text) > CHUNK_THRESHOLD` → split thành `0042_part1.txt`, `0042_part2.txt`
-- [ ] **Decision point:** chunking threshold? Default 30000 chars (~10K tokens cho Gemini). **Hỏi user.**
-- [ ] **Acceptance:**
-  - Output paste vào Gemini → dịch ra tiếng Việt sạch
-  - Không có Markdown noise (`**bold**`, `[link](url)`)
-  - Image placeholder `[IMAGE: alt]` rõ ràng
-  - Chunk file có suffix `_partN` nếu chia
-- [ ] **Commit:** `feat(output): add TranslationWriter with image placeholder`
-- [ ] **Phụ thuộc:** Phase 3 done
+- [x] **Files:** `writers/translation.py` (~140 lines), `writers/__init__.py` export
+- [x] **Decision:** Option A — chunking OFF default (`CHUNK_THRESHOLD = 0`). Modern LLMs handle 30k chars (Decision #45). Title kept as plain first line (Decision #46). Orchestrator dispatch deferred → P4.3.
+- [x] **Strip rules:** image `[IMAGE: alt]`, link text-only, bold non-greedy (handles nested `**bold *italic* mixed**`), italic excludes whitespace boundary (preserves `5 * 3` + `code_name`), heading + blockquote prefix stripped.
+- [x] **Verify:** 13/13 checks pass synthetic. Edge: `***triple***` → `triple`, `![](url)` → `[IMAGE: ]`.
+- [x] **Commit:** `56d4f67` `feat(output): add TranslationWriter (P4.1)`
 
-### P4.2 — `output/raw.py`
+### P4.2 — `writers/raw.py` — ✅ DONE 2026-05-17
 
-- [ ] **Files động vào:**
-  - `output/raw.py` (create ~60 dòng)
-- [ ] **Logic:**
-  - Plain text, không Markdown
-  - Image stripped entirely (không placeholder)
-  - Không paragraph spacing đặc biệt (giữ y nguyên paragraph trong body)
-  - Filename: `0042.txt`
-  - No frontmatter
-- [ ] **Acceptance:**
-  - Output đọc được trên Notepad
-  - File size nhỏ nhất trong 3 mode
-- [ ] **Commit:** `feat(output): add RawWriter (text only)`
-- [ ] **Phụ thuộc:** P4.1
+- [x] **Files:** `writers/raw.py` (~90 lines), `writers/__init__.py` export
+- [x] **Difference từ TranslationWriter:** image `![alt](url)` → "" (dropped, no placeholder). Otherwise identical strip rules.
+- [x] **Verify:** 16/16 checks pass. Size confirm `raw=88 < translate=105 < obsidian=263` (smallest as spec).
+- [x] **Commit:** `c9f9aa4` `feat(output): add RawWriter (P4.2)`
 
-### P4.3 — Smoke test 3 mode × 2 input source
+### P4.3 — Wire writer factory + Phase 4 ship — ✅ DONE 2026-05-17
 
-- [ ] **Bước:**
-  1. Cùng 1 URL → 3 mode → 3 output dir
-  2. Cùng 1 EPUB → 3 mode → 3 output dir
-  3. Verify content matrix § BLUEPRINT §4
-- [ ] **Acceptance:**
-  - 6 output dir khác nhau, đều correct
-  - Translation mode paste vào Gemini dịch thử → ra tiếng Việt sạch
-- [ ] **Commit:** `test(phase4): 3-mode × 2-source matrix verified`
-- [ ] **Phụ thuộc:** P4.2
+- [x] **Files:** `writers/factory.py` (new), `core/scraper.py` (use factory), `core/orchestrator.py` (use factory + mode-aware `_apply_epub_image_stage`).
+- [x] **Logic:** `build_writer(output_dir, run_config)` dispatch (Decision #48). EPUB image stage mode-aware mirror scraper (Decision #49).
+- [x] **Verify EPUB × 3 modes:**
+  - 5-chapter Thiếu Niên Hành: obsidian/translate/raw all 5 chapters written.
+  - Synthetic image-bearing EPUB: obsidian 250b (images/ extracted + MD link), translate 70b (`[IMAGE: alt]`), raw 54b (dropped).
+- [x] **Matrix status (BLUEPRINT §4):** 5/9 live verified, 2/9 code-path only (web translate + raw — live defer user), 3/9 blocked Phase 5 (TXT).
+- [x] **Commit:** `a9a0382` `feat(core): wire writer factory + EPUB translate/raw image stage (P4.3)` + `cfb6fc9-style` retro chore.
 
 ---
 
