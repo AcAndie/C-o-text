@@ -1,15 +1,20 @@
 # utils/types.py
 """
-utils/types.py — TypedDict definitions cho toàn bộ project.
+utils/types.py — TypedDict + dataclass definitions cho toàn bộ project.
 
 Batch B: Xóa pipeline/optimizer_score/requires_relearn/migration_notes khỏi SiteProfile.
   Các fields này chỉ được dùng bởi PipelineConfig serialization — đã xóa.
   Profile v1 cũ có 'pipeline' field sẽ bị reject bởi ProfileManager.get() —
   user phải re-learn (!relearn hoặc --bulk-relearn).
   profile_version giữ lại như metadata vô hại.
+
+P1.1: Thêm RunConfig dataclass (per-run, transient — không persist).
+  Drive output mode + image policy + metadata fetch theo CLI args.
+  BLUEPRINT §8 + Decision #13 (image policy per-mode).
 """
 from __future__ import annotations
-from typing import Any, Optional, TypedDict
+from dataclasses import dataclass
+from typing import Any, Literal, Optional, TypedDict
 
 
 # ── Formatting rules ──────────────────────────────────────────────────────────
@@ -149,3 +154,47 @@ class AiFinalCrosscheck(TypedDict, total=False):
     remove_selectors_final : list[str]
     ads_keywords           : list[str]
     notes                  : Optional[str]
+
+
+# ── Run config (P1.1, BLUEPRINT §8) ───────────────────────────────────────────
+
+@dataclass
+class RunConfig:
+    """
+    Per-run, transient config. Drive output mode + image policy + metadata fetch.
+
+    KHÔNG persist. Tạo 1 lần từ CLI args đầu mỗi run, pass xuống PipelineContext
+    sau (Phase 1.5).
+
+    Default derivation per mode (BLUEPRINT §4 + Decision #13):
+      obsidian  → download_images=True,  image_placeholder=False, fetch_metadata=True
+      translate → download_images=False, image_placeholder=True,  fetch_metadata=False
+      raw       → download_images=False, image_placeholder=False, fetch_metadata=False
+    """
+    output_mode      : Literal["obsidian", "translate", "raw"]
+    download_images  : bool
+    image_placeholder: bool
+    fetch_metadata   : bool
+    output_dir       : str
+    max_pw_instances : int  = 2
+    fast_learning    : bool = False
+    no_validation    : bool = False
+
+    @classmethod
+    def from_cli(cls, args) -> "RunConfig":
+        mode = args.output_mode
+        defaults = {
+            "obsidian" : {"dl": True,  "ph": False, "meta": True},
+            "translate": {"dl": False, "ph": True,  "meta": False},
+            "raw"      : {"dl": False, "ph": False, "meta": False},
+        }[mode]
+        return cls(
+            output_mode       = mode,
+            download_images   = defaults["dl"],
+            image_placeholder = defaults["ph"],
+            fetch_metadata    = defaults["meta"],
+            output_dir        = args.output_dir,
+            max_pw_instances  = args.max_pw_instances or 2,
+            fast_learning     = args.fast_learning,
+            no_validation     = args.no_validation,
+        )

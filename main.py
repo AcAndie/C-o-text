@@ -32,6 +32,7 @@ from core.scraper             import run_novel_task
 from learning.profile_manager import ProfileManager
 from utils.file_io            import load_profiles, save_profiles, ensure_dirs
 from utils.issue_reporter     import write_session_header
+from utils.types              import RunConfig
 
 
 # ── AppState ──────────────────────────────────────────────────────────────────
@@ -201,6 +202,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action  = "store_true",
         help    = "Confirm thực thi --bulk-relearn (mặc định dry-run, an toàn)",
     )
+    # ── P1.1: Output mode (chưa wire vào pipeline yet) ────────────────────────
+    parser.add_argument(
+        "--output-mode",
+        type    = str,
+        choices = ["obsidian", "translate", "raw"],
+        default = "obsidian",
+        help    = "Output format mode (default: obsidian — Markdown ready cho Obsidian vault)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type    = str,
+        default = "output",
+        help    = "Base directory cho output chapters (default: output/)",
+    )
     return parser
 
 
@@ -303,6 +318,15 @@ async def main() -> None:
     if args.bulk_relearn:
         await _run_bulk_relearn(args.pattern, args.apply)
         return
+
+    # P1.1: Build RunConfig từ CLI (chưa wire vào pipeline — Phase 1.5)
+    run_config = RunConfig.from_cli(args)
+    print(
+        f"  [Config] output_mode={run_config.output_mode} "
+        f"download_images={run_config.download_images} "
+        f"output_dir={run_config.output_dir!r}",
+        flush=True,
+    )
 
     links_file = args.links_file
     if not os.path.exists(links_file):
