@@ -9,6 +9,10 @@ Batch B: Xóa StepConfig/ChainConfig/PipelineConfig.
 
 Batch B: Xóa abstract to_config() và from_config() khỏi ScraperBlock.
   Không còn cần serialization per-block. execute() vẫn là abstract duy nhất.
+
+P1.2: Thêm ImageRef + CleanedChapter DTO — contract giữa pipeline và writer
+  (BLUEPRINT §8 + Decision #14). Chưa wire vào pipeline yet — P1.5 sẽ
+  refactor PipelineRunner để return CleanedChapter thay vì ghi file trực tiếp.
 """
 from __future__ import annotations
 
@@ -16,7 +20,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 
 # ── Enums ─────────────────────────────────────────────────────────────────────
@@ -175,6 +179,39 @@ class PipelineContext:
             "confidence": round(confidence, 3),
             "total":      round(total,      3),
         }
+
+
+# ── DTOs: pipeline → writer contract (P1.2, BLUEPRINT §8) ────────────────────
+
+@dataclass
+class ImageRef:
+    """
+    Reference tới 1 ảnh inline trong chapter content.
+    Fetch strategy (web HTTP vs EPUB binary) chọn theo source_type.
+    """
+    original_url    : str
+    local_path      : str | None
+    alt_text        : str
+    position_marker : str
+    source_type     : Literal["web", "epub"]
+
+
+@dataclass
+class CleanedChapter:
+    """
+    Output contract của pipeline. Writer consume DTO này, KHÔNG ghi file
+    trực tiếp trong pipeline.
+
+    source_url và source_path mutually exclusive — one is None tuỳ input type
+    (web: source_url; epub/txt: source_path).
+    """
+    index           : int
+    title           : str
+    body_markdown   : str
+    images          : list[ImageRef] = field(default_factory=list)
+    source_url      : str | None     = None
+    source_path     : str | None     = None
+    metadata        : dict           = field(default_factory=dict)
 
 
 # ── Abstract base class ───────────────────────────────────────────────────────

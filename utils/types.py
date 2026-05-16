@@ -27,16 +27,34 @@ class SpecialElementRule(TypedDict, total=False):
 
 
 class FormattingRules(TypedDict, total=False):
-    tables            : bool
-    bold_italic       : bool
-    hr_dividers       : bool
-    image_alt_text    : bool
-    math_support      : bool
-    math_format       : Optional[str]
-    system_box        : Optional[SpecialElementRule]
-    hidden_text       : Optional[SpecialElementRule]
-    author_note       : Optional[SpecialElementRule]
-    special_symbols   : list[str]
+    """
+    P1.2: Writer-facing formatting rules (BLUEPRINT §8 + Decision #23).
+
+    Schema mới — replace 100% schema cũ (tables/math_support/system_box ...).
+    Runtime dict vẫn carry legacy keys tới khi consumers migrate sang fields
+    mới (P1.5+). TypedDict total=False nên runtime không enforce — IDE hints
+    follow schema mới, dict storage vẫn tolerate legacy.
+
+    image_alt_strategy thay cho boolean image_alt_text cũ — explicit về
+    behavior. Default "preserve" (BLUEPRINT line 591).
+    """
+    # Tag → Markdown mapping decisions
+    headings_as_h2       : bool
+    preserve_bold        : bool
+    preserve_italic      : bool
+    preserve_blockquote  : bool
+    paragraph_separator  : str
+    list_style           : Literal["dash", "asterisk"]
+
+    # Image handling (single source of truth)
+    image_alt_strategy   : Literal["preserve", "skip", "fallback_to_filename"]
+
+    # Stripping
+    strip_inline_links   : bool
+    strip_html_comments  : bool
+
+    # Language/encoding
+    text_encoding        : str
 
 
 # ── Site profile ──────────────────────────────────────────────────────────────

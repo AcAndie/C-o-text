@@ -39,16 +39,16 @@ def _default_formatting_rules() -> dict:
     đều phải có mặt ở đây. Thêm key mới vào đây TRƯỚC KHI dùng trong code.
     """
     return {
-        "tables"        : False,
-        "math_support"  : False,
-        "math_format"   : None,
-        "special_symbols": [],
-        "bold_italic"   : True,
-        "hr_dividers"   : True,
-        "image_alt_text": False,
-        "system_box"    : {"found": False, "selectors": [], "convert_to": "blockquote", "prefix": "**System:**"},
-        "hidden_text"   : {"found": False, "selectors": [], "convert_to": "spoiler_tag"},
-        "author_note"   : {"found": False, "selectors": [], "convert_to": "blockquote_note"},
+        "tables"            : False,
+        "math_support"      : False,
+        "math_format"       : None,
+        "special_symbols"   : [],
+        "bold_italic"       : True,
+        "hr_dividers"       : True,
+        "image_alt_strategy": "preserve",   # P1.2 Decision #23: thay cho image_alt_text boolean
+        "system_box"        : {"found": False, "selectors": [], "convert_to": "blockquote", "prefix": "**System:**"},
+        "hidden_text"       : {"found": False, "selectors": [], "convert_to": "spoiler_tag"},
+        "author_note"       : {"found": False, "selectors": [], "convert_to": "blockquote_note"},
     }
 
 
@@ -188,14 +188,17 @@ async def run_10_ai_calls_internal(
         ai6 = await ai_special_content(snippet(htmls[6], 8000), urls[6], ai_limiter)
         all_results["ai6"] = ai6
         if ai6:
+            # P1.2: AI#6 vẫn trả image_alt_text boolean (legacy AI schema) —
+            # convert sang image_alt_strategy ngay tại boundary.
+            _legacy_iat = ai6.get("image_alt_text", False)
             formatting_rules.update({
-                "tables"        : ai6.get("has_tables", False),
-                "math_support"  : ai6.get("has_math", False),
-                "math_format"   : ai6.get("math_format"),
-                "special_symbols": ai6.get("special_symbols", []),
-                "bold_italic"   : ai6.get("bold_italic", True),
-                "hr_dividers"   : ai6.get("hr_dividers", True),
-                "image_alt_text": ai6.get("image_alt_text", False),
+                "tables"            : ai6.get("has_tables", False),
+                "math_support"      : ai6.get("has_math", False),
+                "math_format"       : ai6.get("math_format"),
+                "special_symbols"   : ai6.get("special_symbols", []),
+                "bold_italic"       : ai6.get("bold_italic", True),
+                "hr_dividers"       : ai6.get("hr_dividers", True),
+                "image_alt_strategy": "preserve" if _legacy_iat else "skip",
             })
             for key in ("system_box", "hidden_text", "author_note"):
                 val = ai6.get(key)

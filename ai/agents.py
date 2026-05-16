@@ -944,7 +944,11 @@ def _sanitize_formatting_rules(fr: dict) -> None:
     fr.setdefault("special_symbols", [])
     fr.setdefault("bold_italic",     True)
     fr.setdefault("hr_dividers",     True)
-    fr.setdefault("image_alt_text",  False)
+    # P1.2 Decision #23: convert legacy image_alt_text boolean → image_alt_strategy.
+    # AI#6 vẫn trả image_alt_text (legacy schema) — chuẩn hoá tại boundary.
+    if "image_alt_strategy" not in fr:
+        legacy = fr.pop("image_alt_text", False)
+        fr["image_alt_strategy"] = "preserve" if legacy else "skip"
     for key in ("system_box", "hidden_text", "author_note"):
         rule = fr.get(key)
         if not isinstance(rule, dict):
