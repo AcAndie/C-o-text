@@ -7,8 +7,7 @@ Batch B: Xóa to_config(), from_config(), make_fetch_block(), registry dict.
 Batch B: Xóa detect_js từ HybridFetchBlock.
   JS-heavy detection xảy ra trong learning/phase.py._detect_js_heavy()
   (so sánh curl vs playwright text length), kết quả lưu vào
-  profile.requires_playwright. detect_js mode trong block là dead code
-  sau khi optimizer bị xóa ở Batch A.
+  profile.requires_playwright. detect_js mode trong block là dead code sau Batch A.
 
 Blocks:
     CurlFetchBlock       — curl_cffi Chrome TLS fingerprint (nhanh, ít RAM)

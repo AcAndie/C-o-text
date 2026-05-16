@@ -2,9 +2,6 @@
 learning/phase_ai.py — 8 AI calls orchestration.
 
 Batch A: Bỏ AI#8 (ai_nav_stress) và AI#9 (ai_full_simulation).
-  Trước: 10 AI calls — 2 calls cuối (nav_stress + full_simulation) chỉ có ý nghĩa
-         khi optimizer dùng kết quả để eval candidates. Sau khi bỏ optimizer,
-         hai calls này không còn add value độc lập.
   Sau:   8 AI calls. Master synthesis đổi thành AI#8 (trước là AI#10).
 
 Fix P1-10: import snippet thay vì _snippet.
@@ -232,9 +229,6 @@ async def run_10_ai_calls_internal(
         all_results["ai7"] = None
 
     # ── PHASE 4: Master Synthesis (AI#8) ──────────────────────────────────────
-    # Batch A: Phase 4 Stress Test (AI#8 nav_stress, AI#9 full_simulation) đã bị
-    # bỏ vì chúng chỉ có giá trị khi optimizer eval candidates. Master synthesis
-    # vẫn giữ và đổi thành AI#8.
     print(f"\n  [Learn] ━━ Phase 4: Master Synthesis ━━", flush=True)
     print(f"  [Learn] 🤖 AI#8: Master profile synthesis...", flush=True)
 

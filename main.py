@@ -3,7 +3,7 @@ main.py — Entry point duy nhất của Cào Text.
 
 v3: Pipeline Architecture.
   CLI-1: Thêm --max-pw-instances N (default=2, override PW_MAX_CONCURRENCY)
-  CLI-2: Thêm --fast-learning (bỏ qua optimizer, chỉ dùng AI selectors)
+  CLI-2: Thêm --fast-learning (skip ProseRichness trong learning phase — nhanh hơn ~20%)
   CLI-3: Thêm --no-validation (bỏ qua ProseRichnessBlock — nhanh hơn nhưng ít filter)
   RELEARN-1: Giữ nguyên `!relearn <domain>` trong links.txt.
   ISSUE-1:   Gọi write_session_header() khi bắt đầu.
@@ -177,7 +177,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--fast-learning",
         action  = "store_true",
-        help    = "Bỏ qua optimizer, chỉ dùng AI selectors (nhanh hơn ~30%%)",
+        help    = "Skip ProseRichness validation trong learning phase (nhanh hơn ~20%)",
     )
     parser.add_argument(
         "--no-validation",
@@ -196,7 +196,7 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
     if args.fast_learning:
         # Flag được đọc bởi learning/phase.py
         os.environ["CAO_FAST_LEARNING"] = "1"
-        print(f"  [Config] Fast learning mode: optimizer disabled", flush=True)
+        print(f"  [Config] Fast learning mode: ProseRichness validation skipped", flush=True)
 
     if args.no_validation:
         os.environ["CAO_NO_VALIDATION"] = "1"
