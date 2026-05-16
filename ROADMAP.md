@@ -552,149 +552,64 @@
 >
 > **Tiền điều kiện:** Phase 2 done.
 
-### P3.1 — Add `ebooklib` dependency
+### P3.1 — Add `ebooklib` dependency — ✅ DONE 2026-05-16
 
-- [ ] **Files động vào:**
-  - `pyproject.toml` (hoặc `requirements.txt`)
-- [ ] **Bước:**
-  1. `pip install ebooklib` (hoặc `uv add ebooklib`)
-  2. Update dependency file
-- [ ] **Acceptance:**
-  - `python -c "import ebooklib"` không error
-- [ ] **Commit:** `chore(deps): add ebooklib for EPUB parsing`
-- [ ] **Phụ thuộc:** Phase 2 done
+- [x] **Files:** `requirements.txt`
+- [x] **Commit:** `8c92095` `chore(deps): add ebooklib for EPUB parsing (P3.1)`
 
-### P3.2 — `ingest/router.py`: input type detection
+### P3.2 — `ingest/router.py`: input type detection — ✅ DONE 2026-05-16
 
-- [ ] **Files động vào:**
-  - `ingest/__init__.py` (create)
-  - `ingest/router.py` (create ~80 dòng)
-- [ ] **Logic:**
-  - Function `detect_input_type(path_or_file) -> Literal["web", "epub", "txt"]`
-  - File extension `.epub` → epub
-  - File `.txt` chứa URL ở line đầu → web (legacy `links.txt`)
-  - File `.txt` chứa text content → txt
-  - Distinguish: line đầu match URL pattern → web; else → txt
-- [ ] **Acceptance:**
-  - 3 case test pass: `links.txt` → web, `novel.epub` → epub, `novel.txt` (toàn text) → txt
-- [ ] **Rủi ro:** edge case `.txt` mix URL + text → ambiguous. **Quyết định:** ưu tiên web nếu có >=1 URL hợp lệ.
-- [ ] **Commit:** `feat(ingest): add router for input type detection`
-- [ ] **Phụ thuộc:** P3.1
+- [x] **Files:** `ingest/__init__.py`, `ingest/router.py`
+- [x] **Logic:** scan first 5 non-comment lines của `.txt`. First non-comment match URL → web, else txt.
+- [x] **Test:** 10 cases pass (.epub, links.txt, novel.txt, mixed comment+URL, empty, all comments, http://, missing, .json fallback, .EPUB uppercase)
+- [x] **Commit:** `bbf8f1a` `feat(ingest): add router for input type detection (P3.2)`
 
-### P3.3 — `ingest/web.py`: wrap existing scraper
+### P3.3 — `ingest/web.py`: wrap existing scraper — ✅ DONE 2026-05-16
 
-- [ ] **Mục tiêu:** existing scraper logic giờ là một adapter trong nhiều
-- [ ] **Files động vào:**
-  - `ingest/web.py` (create ~80 dòng)
-- [ ] **Decision point:** wrap thật sự (refactor caller) hay symbolic re-export? **Hỏi user.** Recommend: symbolic re-export Phase 3, refactor caller Phase 6.
-- [ ] **Logic:**
-  - Thin wrapper gọi `core/scraper.py` logic hiện tại
-  - Trả về iterator/generator yield `RawDocument`
-  - HOẶC pass-through, re-export `scrape_web` function
-- [ ] **Acceptance:**
-  - Web scraping vẫn work y như cũ
-  - Import path mới: `from ingest.web import scrape_web`
-- [ ] **Commit:** `feat(ingest): add web adapter wrapper`
-- [ ] **Phụ thuộc:** P3.2
+- [x] **Files:** `ingest/web.py`
+- [x] **Decision:** Option A — symbolic re-export. Refactor caller defer Phase 6. (Decision #38)
+- [x] **Logic:** re-export `run_novel_task`, `run_learning_only` + thin `scrape_web()` wrapper. Caller chain unchanged.
+- [x] **Commit:** `7fa2715` `feat(ingest): add web adapter wrapper (P3.3)`
 
-### P3.4 — `ingest/epub.py`: EPUB parser
+### P3.4 — `ingest/epub.py`: EPUB parser — ✅ DONE 2026-05-16
 
-- [ ] **Files động vào:**
-  - `ingest/epub.py` (create ~200 dòng)
-- [ ] **Logic:**
-  - Function `async def ingest_epub(path: str) -> AsyncIterator[RawDocument]`
-  - Open EPUB qua `ebooklib.epub.read_epub(path)`
-  - Naming: `book.get_metadata('DC', 'title')` first → AI fallback nếu trống (Decision #22)
-  - Iterate `book.spine`, get each `EpubHtml` item
-  - Each item → `RawDocument(chapter_index=N, html=content, source_path=path)`
-  - Skip TOC, cover, copyright pages (filter by guide type hoặc filename pattern)
-  - **Image:** chỉ collect `<img>` references → `ImageRef.original_url = href`, `source_type = "epub"`. Extract binary để ở P3.5.
-- [ ] **Acceptance:**
-  - 1 EPUB test → output 50 chapter Markdown (Obsidian mode)
-  - Cover/TOC/copyright không xuất hiện trong output chapters
-  - Naming dùng metadata khi có
-- [ ] **Rủi ro:**
-  - EPUB structure đa dạng — một số dùng OEBPS, một số khác. ebooklib handle, nhưng có thể có edge case.
-  - Embedded font/CSS không cần — verify skip
-  - EPUB 3 navigation document (nav.xhtml) — có thể bị nhầm chapter. Filter.
-- [ ] **Commit:** `feat(ingest): add EPUB adapter with ebooklib`
-- [ ] **Phụ thuộc:** P3.3
+- [x] **Files:** `ingest/epub.py`
+- [x] **Logic:** `async def ingest_epub(path)` yield `RawDocument`. DC title naming. SKIP_PATTERNS filter (toc/cover/copyright/title/nav/front). Spine entry tuple/string handle.
+- [x] **Verify:** Thiếu Niên Hành 967ch from 969 raw spine (2 filtered: titlepage + toc). e2e-test 1ch. DC title extracted both.
+- [x] **Commit:** `71784f0` `feat(ingest): add EPUB adapter with ebooklib (P3.4)`
 
-### P3.5 — `EpubImageExtractor` (strategy implementation)
+### P3.5 — `EpubImageExtractor` (strategy implementation) — ✅ DONE 2026-05-16
 
-- [ ] **Mục tiêu:** extract embedded image từ EPUB zip, cùng interface với `WebImageFetcher`
-- [ ] **Files động vào:**
-  - `core/image_pipeline/epub_extractor.py` (create ~80 dòng)
-- [ ] **Logic:**
-  - Class `EpubImageExtractor(ImageFetchStrategy)`
-  - `__init__(self, book: epub.EpubBook, output_dir: str)` — store ref tới book
-  - `async def fetch(self, ref: ImageRef) -> bytes | None`:
-    - `item = book.get_item_with_href(ref.original_url)`
-    - return `item.get_content()` nếu found, None nếu không
-  - `fetch_batch`: same interface với WebImageFetcher
-  - Save binary to `output/{story}/images/ch_NNNN_idx.{ext}` — ext detect từ `item.media_type`
-- [ ] **Bước:**
-  1. Pipeline image stage P2.5 cần update: chọn strategy theo `ImageRef.source_type`
-- [ ] **Acceptance:**
-  - EPUB có embedded image → extract đúng, save local, Markdown link đúng
-  - Image not found trong zip (ref dangling) → log warning, local_path=None
-- [ ] **Rủi ro:**
-  - href relative vs absolute trong EPUB — `get_item_with_href` handle cả 2 nhưng có thể edge case
-- [ ] **Commit:** `feat(image): add EpubImageExtractor strategy`
-- [ ] **Phụ thuộc:** P3.4
+- [x] **Files:** `core/image_pipeline/epub_extractor.py`
+- [x] **Logic:** `EpubImageExtractor(ImageFetchStrategy)`. Sequential fetch_batch (local zip read). Href resolution: try original, strip leading `/`, OEBPS/ prefix. Magic byte ext detection (EPUB has no Content-Type).
+- [x] **Verify:** synthetic EPUB with embedded PNG → 69b extracted, `images/ch_0001_0.png` saved, size matches. Missing href → local_path=None + warning.
+- [x] **Commit:** `57a7d54` `feat(image): add EpubImageExtractor strategy (P3.5)`
 
-### P3.6 — `core/orchestrator.py`: route theo input type
+### P3.6 — `core/orchestrator.py`: route theo input type — ✅ DONE 2026-05-16
 
-- [ ] **Mục tiêu:** main.py giờ route theo input type
-- [ ] **Files động vào:**
-  - `core/orchestrator.py` (create ~150 dòng)
-  - `main.py` (use `detect_input_type` + orchestrator)
-  - `core/scraper.py` (vẫn còn, giờ là web-specific orchestrator)
-- [ ] **Decision point:** create file mới `orchestrator.py` hay edit `scraper.py`? **Hỏi user.** Recommend: tạo mới, `scraper.py` giữ vai trò "web-specific orchestrator".
-- [ ] **Logic:**
-  - `Orchestrator.run(input_path, run_config)`:
-    - input_type = detect_input_type(input_path)
-    - adapter = web | epub | txt
-    - foreach `RawDocument` từ adapter:
-      - context = build context (RunConfig + RawDocument)
-      - chapter = await PipelineRunner.run(context)
-      - await writer.write(chapter)
-  - EPUB không có Navigation chain — skip NavChain
-  - EPUB không cần Learning phase — bypass
-  - Image strategy chọn theo source: `WebImageFetcher` cho web, `EpubImageExtractor` cho EPUB
-- [ ] **Acceptance:**
-  - EPUB → Obsidian output: 1 file Markdown per chapter
-  - No AI call cho EPUB (trừ Naming fallback nếu metadata trống)
-  - Web flow không break
-- [ ] **Rủi ro:**
-  - Pipeline blocks assume `ctx.html` is web HTML — EPUB HTML có thể có inline CSS, namespace XML. Verify `prepare_soup` handle được.
-- [ ] **Commit:** `feat(core): add orchestrator for input-type routing`
-- [ ] **Phụ thuộc:** P3.5 + user confirm
+- [x] **Files:** `core/orchestrator.py` (new ~275 lines), `main.py` (+13 lines additive)
+- [x] **Decision:** function-based not class (Decision #39). main.py additive EPUB branch — web untouched (Decision #42). Bypass PipelineRunner — manual chain compose (Decision #41).
+- [x] **EPUB body fallback** added — DensityHeuristic fails on flat EPUB `<body><h1><p>` structure → fallback `MarkdownFormatter(body_tag)` (Decision #40). Title dedup mirrors `scraper.py:303-307`.
+- [x] **Verify:** Thiếu Niên Hành 5-chapter test (extract chain 100% fallback path), e2e-test 1ch. Router: web→RuntimeError, txt→NotImplementedError, epub→run_epub_flow.
+- [x] **Commit:** `a84b22a` `feat(core): add orchestrator for input-type routing (P3.6)`
 
-### P3.7 — AdsFilter cho EPUB
+### P3.7 — AdsFilter cho EPUB — ✅ DONE 2026-05-16
 
-- [ ] **Mục tiêu:** EPUB pirate có watermark — cross-chapter frequency analysis vẫn apply
-- [ ] **Files động vào:**
-  - `utils/ads_filter.py` (verify domain key handling — string key OK cho filename slug)
-  - `core/orchestrator.py` (set domain = filename slug cho EPUB)
-- [ ] **Acceptance:**
-  - EPUB pirate test → watermark detect + strip
-  - `data/ads_keywords.json` có entry với key là filename slug (vd `epub:my_novel_slug`)
-- [ ] **Commit:** `feat(ads): support EPUB watermark filtering`
-- [ ] **Phụ thuộc:** P3.6
+- [x] **Files:** `core/orchestrator.py` (+50 lines)
+- [x] **Logic:** domain key `f"epub:{story_slug}"` (Decision #43). Pass 1 filter per chapter. scan_edges after write. End-of-run auto-apply (threshold ≥10) + post_process_directory strip retroactively. No AI verify branch (Decision #44).
+- [x] **Verify:** synthetic 12ch + 5-word watermark → 12 occurrences ≥10 → +1 kw → 12 lines stripped → 0/12 contain watermark. Clean EPUB Thiếu Niên Hành → 0 false positives.
+- [x] **Commit:** `31a7274` `feat(ads): support EPUB watermark filtering (P3.7)`
 
-### P3.8 — Smoke test Phase 3
+### P3.8 — Smoke test Phase 3 + Retrospective — ✅ DONE 2026-05-16
 
-- [ ] **Bước:**
-  1. Pick 1 EPUB pirate có watermark rõ ràng
-  2. `python main.py --output-mode obsidian novel.epub`
-  3. Verify 50 chapter clean, ảnh embed đúng, watermark stripped
-  4. Pick 1 EPUB clean (Project Gutenberg) → verify không over-strip
-- [ ] **Acceptance:**
-  - EPUB pirate: output clean, image embedded preserved
-  - EPUB clean: output không bị strip nhầm
-- [ ] **Commit:** `feat(ingest): EPUB adapter complete (Phase 3 done)`
-- [ ] **Phụ thuộc:** P3.7
+- [x] **Files:** `docs/PHASE_3_RETRO.md` (new), `CLAUDE.md` §17 (Decisions #38-44), `ROADMAP.md` (this section)
+- [x] **E2E test:** Thiếu Niên Hành 967ch obsidian — 27.4s, 0 skipped, ads_learned=8 author notes, post_process stripped 231 lines retroactively. e2e-test.epub 1ch verified.
+- [x] **Spec gaps documented** (in retro):
+  - 6 outputs (2 EPUB × 3 mode) → only 2 deliverable: TranslationWriter/RawWriter defer Phase 4
+  - No pirate EPUB locally → synthetic covers watermark detection (P3.7)
+  - No Project Gutenberg → Thiếu Niên Hành (clean Vietnamese translated) proxy
+- [x] **Tag:** `v0.x-phase3`
+- [x] **Commit:** `chore: phase 3 retro + epub adapter complete (P3.8)`
 
 ---
 
