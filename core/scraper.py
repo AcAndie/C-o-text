@@ -321,12 +321,26 @@ async def scrape_one_chapter(
                     progress["story_title"] = normalize_title(story_candidate)
 
     chapter_num = progress.get("chapter_count", 0) + 1
+
+    # P2.5: image stage — mode-aware fetch + placeholder rewrite. Mutate
+    # content + ctx.image_refs.local_path. No-op nếu image_refs rỗng.
+    if ctx.image_refs and writer.run_config:
+        content = await _apply_image_stage(
+            content       = content,
+            image_refs    = ctx.image_refs,
+            run_config    = writer.run_config,
+            pool          = pool,
+            output_dir    = writer.output_dir,
+            chapter_num   = chapter_num,
+        )
+
     # P1.5: refactor — pipeline → CleanedChapter DTO → writer.write.
     # Body section between frontmatter markers giữ shape cũ
     # (`# {title}\n\n{content}\n`) → baseline body identical.
     body     = f"# {title}\n\n{content}\n"
     chapter  = build_cleaned_chapter(ctx, chapter_num, progress, body)
-    chapter.title = title   # đảm bảo dùng title đã chuẩn hóa ở scraper (không phải ctx.title_clean raw)
+    chapter.title  = title   # title đã chuẩn hoá ở scraper
+    chapter.images = list(ctx.image_refs)   # P2.5: writer dùng cho failed_images frontmatter
     filepath_obj = await writer.write(chapter)
     filepath     = str(filepath_obj)
 
@@ -413,6 +427,71 @@ async def _find_next_fallback(
         progress["current_url"] = next_url
         await save_progress(progress_path, progress)
     return next_url
+
+
+# ── _apply_image_stage (P2.5) ─────────────────────────────────────────────────
+
+_IMG_PLACEHOLDER_RE = re.compile(r"!\[[^\]]*\]\(IMG_PLACEHOLDER_\d+\)")
+
+
+async def _apply_image_stage(
+    content     : str,
+    image_refs  : list,
+    run_config,
+    pool        : DomainSessionPool,
+    output_dir  : str,
+    chapter_num : int,
+) -> str:
+    """
+    Mode-aware image handling. Mutate content (return new string) + populate
+    image_refs[i].local_path khi obsidian fetch successful.
+
+    Modes (per RunConfig defaults):
+      obsidian  (download_images=True)  → fetch → rewrite local path,
+                                          fallback original_url nếu fetch fail
+      translate (image_placeholder=True) → ![alt](IMG_PLACEHOLDER_N)
+                                          → [IMAGE: alt] (sync, no fetch)
+      raw       (else)                   → strip placeholder entirely (regex)
+
+    Failure UX (obsidian):
+      - local_path = None (404/oversize/network) → fallback external link
+        `![alt](original_url)`. User click vẫn được, không broken.
+      - ObsidianWriter.failed_images frontmatter list URL fail (đã có P1.4)
+    """
+    from core.image_pipeline.web_fetcher import WebImageFetcher
+
+    if not image_refs:
+        return content
+
+    if run_config.download_images:
+        # Obsidian mode — fetch + rewrite local path
+        fetcher = WebImageFetcher(pool, chapter_num)
+        try:
+            await fetcher.fetch_batch(image_refs, output_dir)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("[ImageStage] fetch_batch failed: %s", e)
+            # Continue — refs có local_path=None → fallback external URL
+
+        for ref in image_refs:
+            old = f"![{ref.alt_text}]({ref.position_marker})"
+            target = ref.local_path or ref.original_url   # fallback external link
+            new = f"![{ref.alt_text}]({target})"
+            content = content.replace(old, new, 1)
+
+    elif run_config.image_placeholder:
+        # Translate mode — replace placeholder với `[IMAGE: alt]` (no fetch)
+        for ref in image_refs:
+            old = f"![{ref.alt_text}]({ref.position_marker})"
+            new = f"[IMAGE: {ref.alt_text}]"
+            content = content.replace(old, new, 1)
+
+    else:
+        # Raw mode — strip image entirely
+        content = _IMG_PLACEHOLDER_RE.sub("", content)
+
+    return content
 
 
 # ── _finalize_ads ─────────────────────────────────────────────────────────────
