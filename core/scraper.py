@@ -491,25 +491,15 @@ async def _ensure_profile(
         None nếu learning phase thất bại (caller nên abort).
 
     Responsibilities:
-        1. Migrate v1 → v2 nếu cần
-        2. Chạy learning phase nếu chưa có hoặc profile cũ
-        3. Inject ads từ profile vào ads_filter
+        1. Chạy learning phase nếu chưa có hoặc profile cũ
+        2. Inject ads từ profile vào ads_filter
+
+    Batch B: Profile v1 (có 'pipeline' field) không còn auto-migrate.
+    ProfileManager.get() raise ValueError nếu gặp profile v1 — user phải
+    !relearn hoặc dùng --bulk-relearn.
     """
     pre_fetched_titles: list[str] = []
     fetched_chapters  : list[tuple[str, str]] = []
-
-    # Migrate nếu cần
-    if pm.has(domain):
-        existing = pm.get(domain)
-        from learning.migrator import needs_migration, migrate_profile
-        if needs_migration(existing):
-            print(f"  [{tag}] 🔄 Migrating profile v1 → v2...", flush=True)
-            migrated, requires_relearn = migrate_profile(existing)
-            await pm.save_profile(domain, migrated)  # type: ignore[arg-type]
-            if requires_relearn:
-                print(f"  [{tag}] ⚠ Migration incomplete → force relearn", flush=True)
-                del migrated["pipeline"]  # type: ignore[misc]
-                await pm.save_profile(domain, migrated)  # type: ignore[arg-type]
 
     # Learning phase nếu chưa có hoặc profile cũ
     if not pm.has(domain) or not pm.is_profile_fresh(domain):
