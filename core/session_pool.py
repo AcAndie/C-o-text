@@ -62,6 +62,38 @@ class DomainSessionPool:
             logger.warning("[Pool] curl fetch failed for %s: %s", url, e)
             raise
 
+    async def fetch_bytes(
+        self, url: str, timeout: int = REQUEST_TIMEOUT,
+    ) -> tuple[int, bytes, str | None]:
+        """
+        Fetch URL as binary (image download).
+        Returns (status_code, content_bytes, content_type).
+
+        P2.2: dùng cho WebImageFetcher. Reuse per-domain session để giữ
+        TLS fingerprint + cookie jar consistent với chapter fetch.
+        """
+        try:
+            from curl_cffi.requests import AsyncSession
+
+            domain  = urlparse(url).netloc.lower()
+            version = pick_chrome_version()
+            headers = make_headers(version)
+
+            async with self._lock:
+                if domain not in self._sessions:
+                    self._sessions[domain] = AsyncSession(impersonate=version)
+                session = self._sessions[domain]
+
+            resp = await session.get(url, headers=headers, timeout=timeout)
+            content_type = resp.headers.get("Content-Type") if hasattr(resp, "headers") else None
+            return resp.status_code, resp.content or b"", content_type
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("[Pool] curl fetch_bytes failed for %s: %s", url, e)
+            raise
+
     async def close_all(self) -> None:
         async with self._lock:
             for session in self._sessions.values():

@@ -79,6 +79,12 @@ class SiteProfile(TypedDict, total=False):
     learned_chapters     : list[int]
     sample_urls          : list[str]
 
+    # ── Image policy (P2.6) ───────────────────────────────────────────────────
+    # AI#image (learning_image_policy) detect site có ảnh minh hoạ không.
+    # download_images drive ObsidianWriter behavior (run_config override được).
+    download_images      : bool
+    image_selector       : Optional[str]
+
     # ── Debug / meta ──────────────────────────────────────────────────────────
     uncertain_fields     : list[str]
     learning_version     : int          # 1=5-call, 2=8-call (Batch A), 3=future

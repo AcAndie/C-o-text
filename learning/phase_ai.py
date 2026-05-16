@@ -23,7 +23,7 @@ from ai.client  import AIRateLimiter
 from ai.agents  import (
     ai_dom_structure, ai_independent_check, ai_stability_check,
     ai_remove_audit, ai_title_deepdive, ai_special_content,
-    ai_ads_deepscan,
+    ai_ads_deepscan, ai_image_policy,
     ai_master_synthesis, resolve_phase1_conflicts,
     snippet,
 )
@@ -231,6 +231,28 @@ async def run_10_ai_calls_internal(
     else:
         all_results["ai7"] = None
 
+    # P2.6: AI#image — detect inline image policy (dedicated call, single
+    # responsibility). Trả về has_inline_images + image_selector. Fail
+    # → defaults False/None (safe — không download spurious images).
+    download_images : bool       = False
+    image_selector  : str | None = None
+    if n >= 1:
+        print(f"  [Learn] 🤖 AI#image: Inline image policy (Ch.1)...", flush=True)
+        ai_img = await ai_image_policy(
+            snippet(htmls[0], 8000), urls[0],
+            consensus.get("content_selector"),
+            ai_limiter,
+        )
+        all_results["ai_image"] = ai_img
+        if ai_img:
+            download_images = bool(ai_img.get("has_inline_images", False))
+            image_selector  = ai_img.get("image_selector")
+            print(
+                f"     → has_inline_images={download_images} "
+                f"image_selector={image_selector!r}",
+                flush=True,
+            )
+
     # ── PHASE 4: Master Synthesis (AI#8) ──────────────────────────────────────
     print(f"\n  [Learn] ━━ Phase 4: Master Synthesis ━━", flush=True)
     print(f"  [Learn] 🤖 AI#8: Master profile synthesis...", flush=True)
@@ -267,6 +289,9 @@ async def run_10_ai_calls_internal(
             "formatting_rules"      : merged_fr,
             "ads_keywords_learned"  : final_ads,
             "uncertain_fields"      : ai8.get("uncertain_fields", []),
+            # P2.6: image policy fields (set bởi AI#image, default False/None)
+            "download_images"       : download_images,
+            "image_selector"        : image_selector,
         }
     else:
         print(f"  [Learn] ⚠ AI#8 thất bại — dùng consensus", flush=True)
@@ -285,6 +310,9 @@ async def run_10_ai_calls_internal(
             "formatting_rules"      : formatting_rules,   # P1-C: đầy đủ keys dù AI#6 fail
             "ads_keywords_learned"  : ads_keywords,
             "uncertain_fields"      : [],
+            # P2.6: image policy fields (set bởi AI#image)
+            "download_images"       : download_images,
+            "image_selector"        : image_selector,
         }
 
 

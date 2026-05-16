@@ -418,6 +418,28 @@ _S_ADS_DEEPSCAN = {
     "required": ["ads_keywords"],
 }
 
+_S_IMAGE_POLICY = {
+    "type": "object",
+    "properties": {
+        "has_inline_images": {"type": "boolean"},
+        "image_count"      : {"type": "integer"},
+        "image_examples"   : {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "src"           : {"type": "string"},
+                    "alt"           : {"type": "string"},
+                    "classification": {"type": "string"},
+                },
+            },
+        },
+        "image_selector"   : {"type": "string", "nullable": True},
+        "notes"            : {"type": "string", "nullable": True},
+    },
+    "required": ["has_inline_images"],
+}
+
 _S_NAV_STRESS = {
     "type": "object",
     "properties": {
@@ -698,6 +720,34 @@ async def ai_ads_deepscan(
         raise
     except Exception as e:
         print(f"  [AI#7] ⚠ Thất bại: {_fmt(e)}", flush=True)
+    return None
+
+
+async def ai_image_policy(
+    html: str, url: str,
+    content_selector: str | None,
+    limiter: AIRateLimiter,
+) -> dict | None:
+    """
+    P2.6 — Detect inline image policy. Dedicated call (NOT extend AI#7).
+    Trả về dict {has_inline_images, image_count, image_examples,
+    image_selector, notes} hoặc None nếu fail.
+    """
+    snippet_html = snippet(html, 8000)
+    prompt = Prompts.learning_image_policy(snippet_html, url, content_selector)
+    try:
+        text   = await _call(prompt, limiter, _S_IMAGE_POLICY)
+        result = _parse(text)
+        if isinstance(result, dict):
+            result.setdefault("has_inline_images", False)
+            result.setdefault("image_count",       0)
+            result.setdefault("image_examples",    [])
+            result.setdefault("image_selector",    None)
+            return result
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        print(f"  [AI#image] ⚠ Thất bại: {_fmt(e)}", flush=True)
     return None
 
 

@@ -285,6 +285,9 @@ def _build_final_profile(
         "ads_keywords_learned" : list(ai_profile.get("ads_keywords_learned") or []),
         "learned_chapters"     : list(range(1, n_chapters + 1)),
         "sample_urls"          : urls,
+        # P2.6: image policy fields từ AI#image (default False/None nếu fail)
+        "download_images"      : bool(ai_profile.get("download_images", False)),
+        "image_selector"       : ai_profile.get("image_selector"),
     }
 
     if ai_profile.get("uncertain_fields"):

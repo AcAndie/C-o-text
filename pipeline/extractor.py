@@ -62,7 +62,7 @@ class SelectorExtractBlock(ScraperBlock):
                     start,
                 )
 
-            text = _format_element(el, ctx.profile.get("formatting_rules"))
+            text, images = _format_element(el, ctx.profile.get("formatting_rules"), ctx.url)
             if len(text.strip()) < self.min_chars:
                 return self._timed(
                     BlockResult.failed(
@@ -70,6 +70,7 @@ class SelectorExtractBlock(ScraperBlock):
                     ),
                     start,
                 )
+            ctx.image_refs.extend(images)   # P2.4
 
             return self._timed(
                 BlockResult.success(
@@ -77,6 +78,7 @@ class SelectorExtractBlock(ScraperBlock):
                     method_used = f"selector:{sel}",
                     confidence  = 0.95,
                     char_count  = len(text),
+                    images      = images,   # P2.3: emit cho image stage harvest
                     selector    = sel,
                 ),
                 start,
@@ -194,12 +196,13 @@ class DensityHeuristicBlock(ScraperBlock):
                     start,
                 )
 
-            text = _format_element(best_el, ctx.profile.get("formatting_rules"))
+            text, images = _format_element(best_el, ctx.profile.get("formatting_rules"), ctx.url)
             if len(text.strip()) < self.min_chars:
                 return self._timed(
                     BlockResult.failed(f"density winner too short: {len(text.strip())}c"),
                     start,
                 )
+            ctx.image_refs.extend(images)   # P2.4
 
             confidence = min(0.85, 0.4 + best_score * 0.1)
 
@@ -207,6 +210,7 @@ class DensityHeuristicBlock(ScraperBlock):
                 BlockResult.success(
                     data          = text,
                     method_used   = "density_heuristic",
+                    images        = images,   # P2.3
                     confidence    = confidence,
                     char_count    = len(text),
                     density_score = round(best_score, 3),
@@ -334,13 +338,15 @@ class FallbackListExtractBlock(ScraperBlock):
                     el = soup.select_one(sel)
                     if el is None:
                         continue
-                    text = _format_element(el, ctx.profile.get("formatting_rules"))
+                    text, images = _format_element(el, ctx.profile.get("formatting_rules"), ctx.url)
                     if len(text.strip()) >= self.min_chars:
+                        ctx.image_refs.extend(images)   # P2.4
                         return self._timed(
                             BlockResult.fallback(
                                 data        = text,
                                 method_used = f"fallback_list:{sel}",
                                 confidence  = 0.7,
+                                images      = images,   # P2.3
                             ),
                             start,
                         )
@@ -413,9 +419,21 @@ class AIExtractBlock(ScraperBlock):
 
 # ── Utility ────────────────────────────────────────────────────────────────────
 
-def _format_element(el: Tag, formatting_rules: dict | None) -> str:
-    """Format element → Markdown dùng MarkdownFormatter hoặc plain text."""
+def _format_element(
+    el              : Tag,
+    formatting_rules: dict | None,
+    base_url        : str = "",
+):
+    """
+    Format element → (Markdown text, list[ImageRef]).
+
+    P2.3: return tuple. Image handling chỉ trong MarkdownFormatter path.
+    Fallback path (extract_plain_text) trả empty images list.
+
+    P2.4 fix: check `is not None` thay vì truthy — empty dict {} valid
+    "use defaults", không nên fall sang plain text (mất img + formatting).
+    """
     from core.formatter import MarkdownFormatter, extract_plain_text
-    if formatting_rules:
-        return MarkdownFormatter(formatting_rules).format(el)
-    return extract_plain_text(el)
+    if formatting_rules is not None:
+        return MarkdownFormatter(formatting_rules).format(el, base_url)
+    return extract_plain_text(el), []

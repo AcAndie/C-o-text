@@ -376,7 +376,9 @@
 >
 > **Tiền điều kiện:** Phase 1 done. RunConfig + CleanedChapter + ObsidianWriter đã hoạt động.
 
-### P2.1 — `utils/image_url.py` resolver
+### P2.1 — `utils/image_url.py` resolver — ✅ DONE 2026-05-16
+
+> Commit `28d3915`. resolve_image_url (6 cases + 3 extras) + detect_image_extension (Content-Type + magic bytes). Pure utility.
 
 - [ ] **Mục tiêu:** chuẩn hóa `<img>` URL về absolute, handle các case lazy-load
 - [ ] **Files động vào:**
@@ -398,7 +400,9 @@
 - [ ] **Commit:** `feat(utils): add image_url resolver`
 - [ ] **Phụ thuộc:** Phase 1 done
 
-### P2.2 — `core/image_pipeline/` strategy infrastructure
+### P2.2 — `core/image_pipeline/` strategy infrastructure — ✅ DONE 2026-05-16
+
+> Commit `0e2a166`. ImageFetchStrategy ABC + WebImageFetcher (concurrent gather + semaphore + atomic .tmp+replace). Deviation: `pool.fetch_bytes` method mới thay vì refactor `pool.fetch` (Decision #33). 4 cases via MockPool pass.
 
 - [ ] **Mục tiêu:** Strategy pattern cho image fetch — web HTTP vs EPUB binary cùng interface
 - [ ] **Files động vào:**
@@ -429,7 +433,9 @@
 - [ ] **Commit:** `feat(image): add WebImageFetcher with Strategy pattern`
 - [ ] **Phụ thuộc:** P2.1
 
-### P2.3 — `MarkdownFormatter` handle `<img>` (STOP — shared logic)
+### P2.3 — `MarkdownFormatter` handle `<img>` (STOP — shared logic) — ✅ DONE 2026-05-16
+
+> Commit `a07eee9`. STOP rule respected. format() return tuple (text, images). 3 caller sites unpack. _handle_img inline + block branches. extract_plain_text fallback wrap (text, []). 5 cases pass (text-only, 2 img, nested inline, data: URI skip, _format_element tuple shape).
 
 - [ ] **🛑 STOP:** Đổi return type của `_format_element` từ `str` → `tuple[str, list[ImageRef]]`. Break mọi caller. Hỏi user.
 - [ ] **Mục tiêu:** `<img>` trong content → `![alt](placeholder)` đúng vị trí, return list image refs
@@ -458,7 +464,9 @@
 - [ ] **Commit:** `refactor(formatter): handle inline img tag, return (text, images) tuple`
 - [ ] **Phụ thuộc:** P2.2 + user confirm
 
-### P2.4 — `PipelineContext` extension cho images
+### P2.4 — `PipelineContext` extension cho images — ✅ DONE 2026-05-16
+
+> Commit `88829da`. ctx.image_refs + ctx.run_config fields. TYPE_CHECKING import RunConfig (no circular). 3 extractor sites extend ctx.image_refs. Tangential fix: _format_element `is not None` check (Decision #34) — empty dict {} valid defaults.
 
 - [ ] **Files động vào:**
   - `pipeline/base.py` (add `image_refs: list[ImageRef]` vào `PipelineContext`)
@@ -468,7 +476,9 @@
 - [ ] **Commit:** `feat(pipeline): add image_refs to PipelineContext`
 - [ ] **Phụ thuộc:** P2.3
 
-### P2.5 — Pipeline image stage (mode-aware)
+### P2.5 — Pipeline image stage (mode-aware) — ✅ DONE 2026-05-16
+
+> Commit `e4da6b7`. Placement decision: `core/scraper.py` (Decision #35). `_apply_image_stage(content, refs, run_config, pool, output_dir, chapter_num)` helper. 3 modes (obsidian fetch + fallback URL / translate placeholder / raw strip). Failure UX = external URL fallback (Decision #37). 4 cases via MockPool pass.
 
 - [ ] **Mục tiêu:** sau khi extract xong, download images theo run_config, rewrite placeholder
 - [ ] **Files động vào:**
@@ -489,7 +499,9 @@
 - [ ] **Commit:** `feat(pipeline): add mode-aware image stage`
 - [ ] **Phụ thuộc:** P2.4 + user confirm về placement
 
-### P2.6 — AI#7 prompt update: detect image policy
+### P2.6 — AI#image dedicated call: detect image policy — ✅ DONE 2026-05-16
+
+> Commit `7224741`. Picked Option B (Decision #36) — new `ai_image_policy` + `learning_image_policy` prompt, KHÔNG extend AI#7. Single responsibility. SiteProfile thêm download_images + image_selector fields.
 
 - [ ] **Mục tiêu:** AI#7 (ads & watermark) thêm task: detect site có ảnh đáng tải không
 - [ ] **Files động vào:**
@@ -510,7 +522,9 @@
 - [ ] **Commit:** `feat(learning): AI#7 detect image policy`
 - [ ] **Phụ thuộc:** P2.5 + user confirm
 
-### P2.7 — Smoke test toàn diện Phase 2
+### P2.7 — Smoke test toàn diện Phase 2 — ⚠️ DEFERRED 2026-05-16
+
+> Live verify (RR illustration × 3 modes + Obsidian render + network block fallback) defer cho user — cần API key + network + URL có ảnh thật. Code path verified via MockPool unit tests trong P2.1-P2.5.
 
 - [ ] **Bước:**
   1. Pick 1 Royal Road novel có art (vd Beware of Chicken có illustration)
@@ -946,7 +960,7 @@ Không làm trong v1.0. Ghi nhận để track:
 |---|---|---|---|
 | P0 — Cleanup + Foundation | ✅ DONE 2026-05-16 | Low | ~780 dòng đi. P0.0 baseline capture + P0.7 live smoke test defer cho user (cần API key + network). P0.4 README deferred (placeholder) |
 | P1 — Output Abstraction | ✅ DONE 2026-05-16 | Medium | RunConfig + CleanedChapter DTO + ChapterWriter ABC + ObsidianWriter + pipeline refactor (P1.5 STOP rule respected). `writers/` package (renamed). Live verify (smoke 3 modes + baseline + resume/cancel) defer cho user. Tech debt: FormattingRules schema mismatch, core/chapter_writer.py còn, P0.4 README placeholder. Xem docs/PHASE_1_RETRO.md |
-| P2 — Image Support | ⬜ Not started | Medium | Phase 1 dependency |
+| P2 — Image Support | ✅ DONE 2026-05-16 | Medium | image_url resolver + ImageFetchStrategy ABC + WebImageFetcher + MarkdownFormatter img handle (P2.3 STOP) + ctx.image_refs + mode-aware image stage scraper (P2.5 placement decision) + AI#image dedicated (P2.6 Option B). Live verify (RR illustration + 3 modes + Obsidian render) defer cho user. Xem docs/PHASE_2_RETRO.md |
 | P3 — EPUB Adapter | ⬜ Not started | Low | Lib mature, structure standard |
 | P4 — Translation+Raw writers | ⬜ Not started | Low | Pure writer logic |
 | P5 — TXT adapter | ⬜ Not started | **HIGH** | **Has exit ramp at P5.5** |
