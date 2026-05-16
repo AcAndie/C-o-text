@@ -20,7 +20,10 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from utils.types import RunConfig
 
 
 # ── Enums ─────────────────────────────────────────────────────────────────────
@@ -156,6 +159,14 @@ class PipelineContext:
     block_results:     dict  = field(default_factory=dict)
     total_duration_ms: float = 0.0
     errors:            list  = field(default_factory=list)
+
+    # P2.4: image refs collected từ extractor blocks. Image stage (P2.5)
+    # sẽ fetch + rewrite placeholder trong content.
+    image_refs: list["ImageRef"] = field(default_factory=list)
+
+    # P2.4: run_config drive mode-aware behavior (image download policy,
+    # metadata fetch, etc.). None nếu caller cũ chưa pass — default safe.
+    run_config: "RunConfig | None" = None
 
     def record(self, block_name: str, result: BlockResult) -> None:
         self.block_results[block_name] = result

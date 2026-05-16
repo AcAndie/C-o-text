@@ -70,6 +70,7 @@ class SelectorExtractBlock(ScraperBlock):
                     ),
                     start,
                 )
+            ctx.image_refs.extend(images)   # P2.4
 
             return self._timed(
                 BlockResult.success(
@@ -201,6 +202,7 @@ class DensityHeuristicBlock(ScraperBlock):
                     BlockResult.failed(f"density winner too short: {len(text.strip())}c"),
                     start,
                 )
+            ctx.image_refs.extend(images)   # P2.4
 
             confidence = min(0.85, 0.4 + best_score * 0.1)
 
@@ -338,6 +340,7 @@ class FallbackListExtractBlock(ScraperBlock):
                         continue
                     text, images = _format_element(el, ctx.profile.get("formatting_rules"), ctx.url)
                     if len(text.strip()) >= self.min_chars:
+                        ctx.image_refs.extend(images)   # P2.4
                         return self._timed(
                             BlockResult.fallback(
                                 data        = text,
@@ -426,8 +429,11 @@ def _format_element(
 
     P2.3: return tuple. Image handling chỉ trong MarkdownFormatter path.
     Fallback path (extract_plain_text) trả empty images list.
+
+    P2.4 fix: check `is not None` thay vì truthy — empty dict {} valid
+    "use defaults", không nên fall sang plain text (mất img + formatting).
     """
     from core.formatter import MarkdownFormatter, extract_plain_text
-    if formatting_rules:
+    if formatting_rules is not None:
         return MarkdownFormatter(formatting_rules).format(el, base_url)
     return extract_plain_text(el), []
