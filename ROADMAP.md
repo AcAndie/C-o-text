@@ -33,9 +33,11 @@
 >
 > **Tiền điều kiện:** codebase ở trạng thái "Batch A/B plan đã chốt" (xem CLAUDE.md §17 Decision #9).
 
-### P0.0 — Baseline Snapshot Tool + Capture
+### P0.0 — Baseline Snapshot Tool + Capture — ⚠️ PARTIAL (2026-05-16)
 
-- [ ] **Mục tiêu:** regression guard cứng cho mọi refactor lớn từ Phase 0 trở đi
+> Tool + structure created. Live capture (FFN + RR baselines) deferred — chưa có profile thật trong repo. User phải `python main.py links.txt` learn FFN+RR trước, sau đó chạy snapshot script. Refactor Phase 1.5 sẽ buộc tạo baseline trước.
+
+- [x] **Mục tiêu:** regression guard cứng cho mọi refactor lớn từ Phase 0 trở đi
 - [ ] **Files động vào:**
   - `tools/__init__.py` (create)
   - `tools/snapshot_baseline.py` (create ~80 dòng)
@@ -62,9 +64,11 @@
 - [ ] **Commit:** `chore(tools): add baseline snapshot script for regression diff`
 - [ ] **Phụ thuộc:** none
 
-### P0.1 — Branch + Tag
+### P0.1 — Branch + Tag — ✅ DONE 2026-05-16
 
-- [ ] **Mục tiêu:** safety net trước khi cắt code lớn
+> Branch `cleanup-batch-ab` + tag `pre-cleanup-v0.x` tồn tại.
+
+- [x] **Mục tiêu:** safety net trước khi cắt code lớn
 - [ ] **Bước:**
   1. `git status` — verify clean working tree
   2. `git checkout -b cleanup-batch-ab`
@@ -73,9 +77,11 @@
 - [ ] **Acceptance:** branch mới tạo, tag hiện trong `git tag -l`
 - [ ] **Rủi ro:** none
 
-### P0.2 — Batch A: Xóa `learning/optimizer.py`
+### P0.2 — Batch A: Xóa `learning/optimizer.py` — ✅ DONE 2026-05-16
 
-- [ ] **Mục tiêu:** xóa ~450 dòng — optimizer "AI scoring AI" không add signal
+> Commit `07ecec4`. Optimizer + stale refs đi. `--fast-learning` đổi semantic sang "skip ProseRichness validation" (CLAUDE §17 Decision #26). Baseline diff deferred cùng với P0.0 capture.
+
+- [x] **Mục tiêu:** xóa ~450 dòng — optimizer "AI scoring AI" không add signal
 - [ ] **Files động vào:**
   - `learning/optimizer.py` (delete)
   - `learning/phase.py` (remove import + call site)
@@ -101,9 +107,11 @@
 - [ ] **Commit:** `refactor(learning): xóa optimizer.py (Batch A) — xoá 450 dòng dead code`
 - [ ] **Phụ thuộc:** P0.0 (baseline), P0.1 (branch)
 
-### P0.3 — Batch B: Xóa `StepConfig/ChainConfig/PipelineConfig` serialization
+### P0.3 — Batch B: Xóa `StepConfig/ChainConfig/PipelineConfig` serialization — ✅ DONE 2026-05-16
 
-- [ ] **Mục tiêu:** xóa ~330 dòng — root cause bug M4 (nested params lost roundtrip)
+> Commit `ce72f3a`. `learning/migrator.py` xóa (81 dòng). `core/scraper.py` migration block xóa. `ProfileManager.get()` raise `ValueError` cho profile v1 (có `pipeline` field) — fail-loud thay vì auto-migrate silent. CLAUDE §17 Decision #27.
+
+- [x] **Mục tiêu:** xóa ~330 dòng — root cause bug M4 (nested params lost roundtrip)
 - [ ] **Files động vào:**
   - `pipeline/base.py` (remove `StepConfig`, `ChainConfig`, `PipelineConfig` classes nếu còn — verify clean)
   - `pipeline/executor.py` (remove `_make_block`, ensure `from_profile` đọc thẳng SiteProfile)
@@ -129,7 +137,9 @@
 - [ ] **Commit:** `refactor(pipeline): xóa StepConfig serialization (Batch B) — xoá 330 dòng`
 - [ ] **Phụ thuộc:** P0.2 done + baseline diff pass
 
-### P0.4 — README.md skeleton
+### P0.4 — README.md skeleton — ⏸ DEFERRED
+
+> README.md hiện là placeholder ("Sẽ cập nhật lại sau!!!"). Skeleton chưa viết. CLI flag stable sau P0.5, có thể làm bất kỳ lúc nào trước Phase 1 ship. Defer không block phase tiếp.
 
 - [ ] **Mục tiêu:** user-facing quick start, maintain throughout
 - [ ] **Files động vào:**
@@ -149,9 +159,11 @@
 - [ ] **Commit:** `docs: add README.md with quick start guide`
 - [ ] **Phụ thuộc:** P0.2 + P0.3 (CLI flag state stable)
 
-### P0.5 — Bulk Relearn Script + MIGRATION_NOTES
+### P0.5 — Bulk Relearn Script + MIGRATION_NOTES — ✅ DONE 2026-05-16
 
-- [ ] **Mục tiêu:** UX cho user có profile cũ sau breaking schema
+> Commit `d483a1e`. `main.py --bulk-relearn [--pattern <regex>] [--apply]`. UX an toàn: dry-run default, typed confirm `"delete N profiles"` khi apply. `docs/MIGRATION_NOTES.md` hướng dẫn 3 option. Tangential fix: escape `%%` trong `--fast-learning` help (Python 3.14 strict).
+
+- [x] **Mục tiêu:** UX cho user có profile cũ sau breaking schema
 - [ ] **Files động vào:**
   - `tools/bulk_relearn.py` (create ~50 dòng) HOẶC inline trong `main.py` với flag `--bulk-relearn`
   - `main.py` (parse `--bulk-relearn [--pattern <regex>]`)
@@ -176,9 +188,11 @@
 - [ ] **Commit:** `feat(cli): add --bulk-relearn flag + migration docs`
 - [ ] **Phụ thuộc:** P0.3 done
 
-### P0.6 — Sync docs sau cleanup
+### P0.6 — Sync docs sau cleanup — ✅ DONE 2026-05-16
 
-- [ ] **Mục tiêu:** CLAUDE.md / BLUEPRINT.md / ROADMAP.md đồng bộ với code reality
+> CLAUDE.md §17 thêm Decision #26 (Batch A) + #27 (Batch B). BLUEPRINT.md §10 Phase 0 checkboxes marked. ROADMAP.md (file này) — status header mỗi P0.x.
+
+- [x] **Mục tiêu:** CLAUDE.md / BLUEPRINT.md / ROADMAP.md đồng bộ với code reality
 - [ ] **Files động vào:**
   - `CLAUDE.md` (verify §17 Decision Log có entry Batch A/B)
   - `BLUEPRINT.md` (verify §10 Phase 0 marked done)
@@ -189,7 +203,9 @@
 - [ ] **Commit:** `docs: sync governance after Batch A/B cleanup`
 - [ ] **Phụ thuộc:** P0.2, P0.3 done
 
-### P0.7 — Merge + full smoke test
+### P0.7 — Merge + full smoke test — ⚠️ PARTIAL 2026-05-16
+
+> Merge `cleanup-batch-ab` → `main` + tag `v0.x-post-cleanup`. Baseline regression diff + live learn smoke test SKIP (lý do: chưa có FFN/RR profile + baseline trong repo, cần API key + network — user phải làm tay sau).
 
 - [ ] **Bước:**
   1. `git status` — verify clean
@@ -916,7 +932,7 @@ Không làm trong v1.0. Ghi nhận để track:
 
 | Phase | Status | Risk | Note |
 |---|---|---|---|
-| P0 — Cleanup + Foundation | ⬜ Not started | Low | Baseline snapshot critical |
+| P0 — Cleanup + Foundation | ✅ DONE 2026-05-16 | Low | ~780 dòng đi. P0.0 baseline capture + P0.7 live smoke test defer cho user (cần API key + network). P0.4 README deferred (placeholder) |
 | P1 — Output Abstraction | ⬜ Not started | Medium | Refactor shared logic — STOP rules |
 | P2 — Image Support | ⬜ Not started | Medium | Phase 1 dependency |
 | P3 — EPUB Adapter | ⬜ Not started | Low | Lib mature, structure standard |
