@@ -2,8 +2,14 @@
 core/formatter.py — HTML → Markdown/plain-text conversion.
 
 Public API:
-    MarkdownFormatter(formatting_rules).format(element) → str
+    MarkdownFormatter(formatting_rules).format(element, base_url="")
+        → tuple[str, list[ImageRef]]
     extract_plain_text(element) → str
+
+P2.3: format() return tuple (text, images). Image emit
+`![alt](IMG_PLACEHOLDER_N)` placeholder + ImageRef registered trong list.
+Position marker tăng dần theo HTML traversal order. Caller (pipeline image
+stage) sẽ resolve placeholder → relative path sau khi fetch.
 
 MarkdownFormatter xử lý:
   - Paragraph separation
@@ -12,9 +18,10 @@ MarkdownFormatter xử lý:
   - HR dividers → ---
   - System boxes → > **System:** ...
   - Author notes → > 📝 ...
-  - Image alt text
+  - Inline image → ![alt](IMG_PLACEHOLDER_N) (P2.3, new)
 
-extract_plain_text: strip mọi tag, giữ paragraph breaks.
+extract_plain_text: strip mọi tag, giữ paragraph breaks. Không handle img
+(fallback path khi profile thiếu formatting_rules — caller wrap (text, [])).
 """
 from __future__ import annotations
 
@@ -22,6 +29,9 @@ import re
 from typing import Any
 
 from bs4 import BeautifulSoup, NavigableString, Tag
+
+from pipeline.base    import ImageRef
+from utils.image_url  import resolve_image_url
 
 # Tags cần skip hoàn toàn khi extract
 _EXTRACT_SKIP_TAGS = frozenset({
@@ -108,15 +118,28 @@ def extract_plain_text(el: Tag) -> str:
 class MarkdownFormatter:
     """
     Convert HTML element → Markdown với formatting rules từ SiteProfile.
+
+    P2.3: format() return tuple (text, images). self._images reset mỗi
+    format() call. self._base_url dùng để resolve relative img src.
     """
 
     def __init__(self, formatting_rules: dict) -> None:
-        self.rules = formatting_rules or {}
+        self.rules    = formatting_rules or {}
+        self._images  : list[ImageRef] = []
+        self._base_url: str            = ""
 
-    def format(self, el: Tag) -> str:
-        """Main entry point."""
+    def format(self, el: Tag, base_url: str = "") -> tuple[str, list[ImageRef]]:
+        """
+        Main entry point. Return (markdown_text, list_of_image_refs).
+
+        Image trong element → emit `![alt](IMG_PLACEHOLDER_N)` placeholder
+        + ImageRef registered. Caller pipeline stage sẽ fetch + rewrite
+        placeholder → relative path.
+        """
+        self._images   = []
+        self._base_url = base_url
+
         lines: list[str] = []
-
         for child in el.children:
             chunk = self._process_node(child)
             if chunk is not None:
@@ -124,7 +147,27 @@ class MarkdownFormatter:
 
         result = "\n".join(lines)
         result = _BLANK_LINES.sub("\n\n", result)
-        return result.strip()
+        return result.strip(), list(self._images)
+
+    def _handle_img(self, node: Tag) -> str | None:
+        """
+        Resolve <img> tag → register ImageRef → return placeholder string.
+        Return None nếu URL không hợp lệ (data: URI, missing src).
+        """
+        src_url = resolve_image_url(node, self._base_url)
+        if not src_url:
+            return None
+        idx    = len(self._images)
+        marker = f"IMG_PLACEHOLDER_{idx}"
+        alt    = (node.get("alt") or "").strip()
+        self._images.append(ImageRef(
+            original_url    = src_url,
+            local_path      = None,
+            alt_text        = alt,
+            position_marker = marker,
+            source_type     = "web",
+        ))
+        return f"![{alt}]({marker})"
 
     def _process_node(self, node: Any) -> str | None:
         if isinstance(node, NavigableString):
@@ -145,6 +188,9 @@ class MarkdownFormatter:
 
         if tag == "br":
             return ""
+
+        if tag == "img":
+            return self._handle_img(node)
 
         if tag == "hr" and self.rules.get("hr_dividers", True):
             return "\n---\n"
@@ -223,6 +269,11 @@ class MarkdownFormatter:
             elif isinstance(child, Tag):
                 ctag = child.name.lower() if child.name else ""
                 if ctag in _EXTRACT_SKIP_TAGS:
+                    continue
+                if ctag == "img":
+                    img_md = self._handle_img(child)
+                    if img_md:
+                        parts.append(img_md)
                     continue
                 inner = self._inline(child)
                 if ctag in ("b", "strong") and self.rules.get("bold_italic", True):
