@@ -342,7 +342,9 @@ async def main() -> None:
         await run_epub_flow(links_file, run_config, ai_limiter=ai_limiter)
         return
     if input_type == "txt":
-        print("[ERR] TXT adapter chưa implement — Phase 5")
+        from core.orchestrator import run_txt_flow
+        ai_limiter = AIRateLimiter(AI_MAX_RPM)
+        await run_txt_flow(links_file, run_config, ai_limiter=ai_limiter)
         return
     # input_type == "web" — fall through tới existing flow
 

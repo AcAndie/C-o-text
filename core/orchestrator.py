@@ -38,6 +38,7 @@ from ebooklib import epub
 from core.image_pipeline.epub_extractor import EpubImageExtractor
 from ingest.epub                       import ingest_epub
 from ingest.router                     import detect_input_type
+from ingest.txt                        import ingest_txt
 from pipeline.base                     import CleanedChapter
 from pipeline.executor                 import (
     ChainExecutor, PipelineRunner, build_cleaned_chapter, build_soup, make_context,
@@ -46,10 +47,11 @@ from utils.ads_filter                  import AdsFilter
 from utils.string_helpers              import slugify_filename
 from writers.factory                   import build_writer
 
-# AdsFilter thresholds — single-run auto-apply only (no AI verify cho EPUB).
-# Watermark "Read more at xyz.com" trong pirate EPUB sẽ appear N+ chapter edges
-# → auto-add → post_process strip khỏi files đã ghi.
-_EPUB_ADS_AUTO_THRESHOLD = 10
+# AdsFilter thresholds — single-run auto-apply only (no AI verify cho file input).
+# Watermark "Read more at xyz.com" trong pirate EPUB/TXT sẽ appear N+ chapter edges
+# → auto-add → post_process strip khỏi files đã ghi. Reused cho cả EPUB + TXT
+# (cả 2 đều offline file source, không có ai_limiter bắt buộc).
+_FILE_ADS_AUTO_THRESHOLD = 10
 
 if TYPE_CHECKING:
     from ai.client       import AIRateLimiter
@@ -73,9 +75,7 @@ async def run(
     if t == "epub":
         await run_epub_flow(input_path, run_config, ai_limiter=ai_limiter)
     elif t == "txt":
-        raise NotImplementedError(
-            "TXT adapter chưa implement — Phase 5. Hiện tại chỉ hỗ trợ web + epub."
-        )
+        await run_txt_flow(input_path, run_config, ai_limiter=ai_limiter)
     elif t == "web":
         raise RuntimeError(
             "Web flow phải gọi qua main.py existing path, không qua orchestrator.run() "
@@ -184,8 +184,8 @@ async def run_epub_flow(
 
     # P3.7: end-of-run auto-apply suspects vượt threshold + post-process
     auto, _ai_pending = ads_filter.get_candidates_by_frequency(
-        auto_threshold = _EPUB_ADS_AUTO_THRESHOLD,
-        min_count      = _EPUB_ADS_AUTO_THRESHOLD,   # bỏ AI branch — no AI verify cho EPUB
+        auto_threshold = _FILE_ADS_AUTO_THRESHOLD,
+        min_count      = _FILE_ADS_AUTO_THRESHOLD,   # bỏ AI branch — no AI verify cho EPUB
         max_results    = 50,
     )
     if auto:
@@ -193,7 +193,7 @@ async def run_epub_flow(
         ads_filter.save()
         removed = AdsFilter.post_process_directory(auto, str(out_dir))
         print(
-            f"   🧹 AdsFilter: +{added} kws (threshold ≥{_EPUB_ADS_AUTO_THRESHOLD}), "
+            f"   🧹 AdsFilter: +{added} kws (threshold ≥{_FILE_ADS_AUTO_THRESHOLD}), "
             f"stripped {removed} lines từ files đã ghi",
             flush=True,
         )
@@ -201,6 +201,117 @@ async def run_epub_flow(
         ads_filter.save()   # persist scan state cho run sau
 
     print(f"\n✔ EPUB done: {n_ok} chapters written, {n_skipped} skipped → {out_dir}", flush=True)
+
+
+# ── TXT flow ──────────────────────────────────────────────────────────────────
+
+async def run_txt_flow(
+    input_path : str,
+    run_config : "RunConfig",
+    ai_limiter : "AIRateLimiter | None" = None,
+) -> None:
+    """
+    Read TXT → detect chapter pattern (regex/AI) → split → run pipeline
+    (extract + title) → writer.write.
+
+    Skip:
+      - Fetch chain (have prefetched html từ ingest_txt wrap)
+      - Nav chain (no next URL trong TXT file)
+      - Validate chain
+      - Learning Phase
+      - Image stage — TXT không có inline image (`<img>` tags absent
+        từ ingest_txt HTML wrap). image_refs luôn empty → no-op.
+      - Progress/resume (defer P6+)
+      - Naming Phase (story_name = file stem)
+
+    AdsFilter (P5.4):
+      domain_key = f"txt:{story_slug}" — namespace tránh collision với
+      epub: và web domain. Same single-pass auto-only threshold logic
+      như EPUB (P3.7).
+
+    Raises:
+      UnicodeDecodeError — file không phải UTF-8 (ingest_txt fail-loud)
+      ValueError — pattern detection fail hoàn toàn (regex + AI fallback)
+    """
+    text_path  = Path(input_path)
+    story_name = text_path.stem
+    story_slug = slugify_filename(story_name)
+
+    out_dir = Path(run_config.output_dir) / story_slug
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    writer = build_writer(str(out_dir), run_config)
+    runner = PipelineRunner.default()
+
+    # P5.4: AdsFilter per-TXT. Namespace "txt:" tránh collision với
+    # web domain ("epub:foo" và "txt:foo" cũng tách biệt).
+    domain_key = f"txt:{story_slug}"
+    ads_filter = AdsFilter.load(domain=domain_key)
+
+    print(
+        f"📄 TXT: {story_name!r} → {out_dir}\n"
+        f"   mode={run_config.output_mode} download_images={run_config.download_images}\n"
+        f"   ads_domain={domain_key!r} known_kws={ads_filter.stats}",
+        flush=True,
+    )
+
+    n_ok      = 0
+    n_skipped = 0
+
+    async for doc in ingest_txt(input_path, ai_limiter=ai_limiter):
+        try:
+            chapter = await _build_chapter_from_epub_doc(
+                doc        = doc,
+                runner     = runner,
+                run_config = run_config,
+                ai_limiter = ai_limiter,
+                story_name = story_name,
+                ads_filter = ads_filter,
+            )
+        except Exception as e:
+            logger.warning("[TXT] chapter %d build failed: %s", doc.chapter_index, e)
+            n_skipped += 1
+            continue
+
+        if chapter is None:
+            n_skipped += 1
+            continue
+
+        # TXT không có inline image — image_refs luôn empty. Skip image stage.
+        # Carry language metadata từ txt_case (ingest_txt populate).
+        if doc.metadata.get("language"):
+            chapter.metadata["language"] = doc.metadata["language"]
+
+        path = await writer.write(chapter)
+        n_ok += 1
+
+        # P5.4: scan edges sau khi write — track watermark frequency cross-chapter
+        ads_filter.scan_edges_for_suspects(
+            chapter.body_markdown, chapter_url="", chapter_file=str(path),
+        )
+
+        if n_ok % 25 == 0:
+            print(f"   ... {n_ok} chapters written", flush=True)
+
+    # End-of-run auto-apply (mirror EPUB P3.7)
+    auto, _ai_pending = ads_filter.get_candidates_by_frequency(
+        auto_threshold = _FILE_ADS_AUTO_THRESHOLD,
+        min_count      = _FILE_ADS_AUTO_THRESHOLD,
+        max_results    = 50,
+    )
+    if auto:
+        added = ads_filter.apply_verified(auto)
+        ads_filter.save()
+        removed = AdsFilter.post_process_directory(auto, str(out_dir))
+        print(
+            f"   🧹 AdsFilter: +{added} kws (threshold ≥{_FILE_ADS_AUTO_THRESHOLD}), "
+            f"stripped {removed} lines từ files đã ghi",
+            flush=True,
+        )
+    else:
+        ads_filter.save()
+
+    print(f"\n✔ TXT done: {n_ok} chapters written, {n_skipped} skipped → {out_dir}", flush=True)
 
 
 # ── Per-chapter pipeline ──────────────────────────────────────────────────────
@@ -236,8 +347,9 @@ async def _build_chapter_from_epub_doc(
         ctx.content       = extract_result.data
         ctx.selector_used = extract_result.metadata.get("selector")
     else:
-        # EPUB body fallback — DensityHeuristic fails on flat <body><h1><p>... structure
-        # phổ biến trong EPUB. Format trực tiếp body element qua MarkdownFormatter.
+        # Body fallback — DensityHeuristic fails on flat <body><h1><p>... structure
+        # (EPUB always, TXT short chapters). Format trực tiếp body element qua
+        # MarkdownFormatter.
         from core.formatter import MarkdownFormatter
         body_tag = ctx.soup.find("body") or ctx.soup
         formatter = MarkdownFormatter({})
@@ -246,7 +358,7 @@ async def _build_chapter_from_epub_doc(
             return None
         ctx.content = content
         ctx.image_refs.extend(images)
-        ctx.selector_used = "epub_body_fallback"
+        ctx.selector_used = "body_fallback"
 
     ctx.content = clean_extracted_content(ctx.content)
 
@@ -340,4 +452,4 @@ async def _apply_epub_image_stage(
     return content
 
 
-__all__ = ["run", "run_epub_flow"]
+__all__ = ["run", "run_epub_flow", "run_txt_flow"]
