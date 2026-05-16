@@ -11,6 +11,7 @@ data/*
 !data/baselines/
 data/baselines/*
 !data/baselines/.gitkeep
+!data/txt_cases.json
 links.txt
 progress/
 issues.md

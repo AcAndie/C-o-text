@@ -180,6 +180,28 @@ class AiFinalCrosscheck(TypedDict, total=False):
     notes                  : Optional[str]
 
 
+# ── TXT chapter case (P5.1, Phase 5 TXT adapter) ─────────────────────────────
+
+class TxtCase(TypedDict, total=False):
+    """
+    Chapter boundary pattern entry trong data/txt_cases.json.
+
+    Scope v1.0 (Decision #21): VN + EN only.
+      - language: "vi" hoặc "en"
+      - pattern: regex string, line-anchored (^...$), capture group 1 =
+        chapter number, group 2 (optional) = title text
+      - samples: example lines pattern phải match (cho regression test)
+      - confidence: 0.0-1.0, trust score cho pattern matcher
+
+    AI-learned pattern thêm vào db sau khi AI verify pass (P5.3+).
+    """
+    id         : str
+    language   : Literal["vi", "en"]
+    pattern    : str
+    samples    : list[str]
+    confidence : float
+
+
 # ── Run config (P1.1, BLUEPRINT §8) ───────────────────────────────────────────
 
 @dataclass
