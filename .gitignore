@@ -7,9 +7,9 @@ env/
 # Output & progress
 output/
 progress_*.json
-data/
+data/*
 !data/baselines/
-data/baselines/**
+data/baselines/*
 !data/baselines/.gitkeep
 links.txt
 progress/
