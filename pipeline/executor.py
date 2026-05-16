@@ -30,7 +30,7 @@ from typing import Any
 from bs4 import BeautifulSoup
 
 from pipeline.base import (
-    BlockResult, BlockStatus,
+    BlockResult, BlockStatus, CleanedChapter,
     PipelineContext, RuntimeContext, ScraperBlock,
 )
 
@@ -303,6 +303,42 @@ class PipelineRunner:
         await ChainExecutor(self._validate_blocks(), "validate").run(ctx)
 
         return ctx
+
+
+# ── CleanedChapter builder (P1.5) ─────────────────────────────────────────────
+
+def build_cleaned_chapter(
+    ctx         : PipelineContext,
+    chapter_num : int,
+    progress    : dict,
+    body        : str,
+) -> CleanedChapter:
+    """
+    Build CleanedChapter DTO từ PipelineContext + body đã clean (post ads
+    filter + strip_nav_edges + title dedup).
+
+    Caller (scrape_one_chapter) chịu trách nhiệm:
+      - Run ads_filter pass 1/2
+      - strip_nav_edges
+      - Title dedup
+      - Tính chapter_num từ progress.chapter_count + 1
+
+    metadata fields lấy từ progress (naming context) — ObsidianWriter dùng
+    cho filename + frontmatter.
+    """
+    return CleanedChapter(
+        index          = chapter_num,
+        title          = ctx.title_clean or "Unknown Title",
+        body_markdown  = body,
+        images         = [],   # P2: image stage sẽ populate
+        source_url     = ctx.url,
+        source_path    = None,
+        metadata       = {
+            "chapter_keyword"   : progress.get("chapter_keyword"),
+            "story_prefix_strip": progress.get("story_prefix_strip"),
+            "story_name"        : progress.get("story_name_clean") or progress.get("story_title"),
+        },
+    )
 
 
 # ── Convenience shortcut ───────────────────────────────────────────────────────

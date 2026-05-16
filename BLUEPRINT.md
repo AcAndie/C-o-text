@@ -492,9 +492,9 @@ Cào text/
 │   ├── txt.py                    # 🆕 chapter boundary detection (VN+EN)
 │   └── router.py                 # 🆕 detect input type, dispatch
 │
-├── output/                       # 🆕 v1.0 — output writers
-│   ├── __init__.py
-│   ├── base.py                   # 🆕 ChapterWriter ABC
+├── writers/                      # 🆕 v1.0 — output writer implementations
+│   ├── __init__.py               # (renamed từ output/ ở P1.3 — tránh
+│   ├── base.py                   #  conflict với runtime output/ dir gitignored)
 │   ├── obsidian.py               # 🆕 ObsidianWriter
 │   ├── translation.py            # 🆕 TranslationWriter
 │   └── raw.py                    # 🆕 RawWriter

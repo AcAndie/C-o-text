@@ -259,7 +259,15 @@ def _build_final_profile(
     Không tạo profile["pipeline"] — PipelineRunner đọc flat fields trực tiếp.
     """
     urls = [url for url, _ in chapters]
-    fr   = ai_profile.get("formatting_rules") or {}
+    fr   = dict(ai_profile.get("formatting_rules") or {})
+
+    # P1.2 Decision #23: legacy migration — nếu AI leak image_alt_text boolean,
+    # convert sang image_alt_strategy. _sanitize_formatting_rules + AI#6
+    # consumption đã handle ở thượng nguồn — đây là defensive guard cho path
+    # khác (vd profile cũ load lại + re-process).
+    if "image_alt_text" in fr and "image_alt_strategy" not in fr:
+        legacy = fr.pop("image_alt_text")
+        fr["image_alt_strategy"] = "preserve" if legacy else "skip"
 
     profile: SiteProfile = {
         "domain"               : domain,

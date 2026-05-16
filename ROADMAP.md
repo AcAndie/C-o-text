@@ -233,9 +233,11 @@
 >
 > **Tại sao Phase 1 (không phải Phase 2 cũ):** Image policy là per-mode → cần RunConfig trước. Đảo thứ tự = technical debt cố ý (Decision #17).
 
-### P1.1 — Define `RunConfig` + CLI flag
+### P1.1 — Define `RunConfig` + CLI flag — ✅ DONE 2026-05-16
 
-- [ ] **Files động vào:**
+> Commit `4b0e852`. `--output-mode {obsidian,translate,raw}` + `--output-dir`. RunConfig.from_cli derive image_policy + metadata defaults per mode.
+
+- [x] **Files động vào:**
   - `config.py` HOẶC `utils/types.py` (add `RunConfig` dataclass ~30 dòng)
   - `main.py` (add `--output-mode`, `--download-images / --no-download-images`, etc. flag)
 - [ ] **Logic:**
@@ -253,9 +255,11 @@
 - [ ] **Commit:** `feat(config): add RunConfig dataclass + CLI flag for output mode`
 - [ ] **Phụ thuộc:** Phase 0 done
 
-### P1.2 — Define `CleanedChapter` + `ImageRef` + `FormattingRules` DTOs
+### P1.2 — Define `CleanedChapter` + `ImageRef` + `FormattingRules` DTOs — ✅ DONE 2026-05-16
 
-- [ ] **Files động vào:**
+> Commit `1ebf992`. DTOs trong `pipeline/base.py`. FormattingRules schema REPLACE 100% (10 fields writer-facing). Legacy `image_alt_text` → `image_alt_strategy` convert tại 3 boundary. Runtime dict carry legacy keys (consumer migration P2+).
+
+- [x] **Files động vào:**
   - `pipeline/base.py` (add `ImageRef` dataclass + `CleanedChapter` dataclass, ~50 dòng)
   - `utils/types.py` (add `FormattingRules` TypedDict — explicit schema, xem BLUEPRINT §8)
 - [ ] **Decision point:** đặt `CleanedChapter` ở `pipeline/base.py` (gần `PipelineContext`) hay `utils/types.py` (gần `SiteProfile`)?
@@ -273,9 +277,11 @@
 - [ ] **Commit:** `feat(types): add CleanedChapter, ImageRef, FormattingRules DTOs`
 - [ ] **Phụ thuộc:** P1.1
 
-### P1.3 — `output/base.py`: ChapterWriter ABC
+### P1.3 — `writers/base.py`: ChapterWriter ABC — ✅ DONE 2026-05-16
 
-- [ ] **Files động vào:**
+> Commit `3d68065`. STOP — name conflict với runtime `output/` dir → rename `writers/` package (Decision #28). ChapterWriter ABC + `_ensure_dir` + `_atomic_write_text` (async + cancel handler added trong P1.5).
+
+- [x] **Files động vào:**
   - `output/__init__.py` (create)
   - `output/base.py` (create ~60 dòng)
 - [ ] **Logic:**
@@ -291,9 +297,11 @@
 - [ ] **Commit:** `feat(output): add ChapterWriter ABC`
 - [ ] **Phụ thuộc:** P1.2
 
-### P1.4 — `ObsidianWriter` (port from `chapter_writer.py`)
+### P1.4 — `ObsidianWriter` (port from `chapter_writer.py`) — ✅ DONE 2026-05-16
 
-- [ ] **Files động vào:**
+> Commit `e8ea012`. `writers/obsidian.py`. Reuse `format_chapter_filename` (no re-implement). YAML frontmatter + body + `> Source` footer cho web. Pre-existing FILENAME-E bug preserve (out of scope).
+
+- [x] **Files động vào:**
   - `output/obsidian.py` (create ~180 dòng)
   - `core/chapter_writer.py` (KEEP cho đến P1.5 — sẽ delete sau khi pipeline refactor)
 - [ ] **Logic:**
@@ -312,9 +320,11 @@
 - [ ] **Commit:** `feat(output): add ObsidianWriter with YAML frontmatter`
 - [ ] **Phụ thuộc:** P1.3
 
-### P1.5 — Pipeline produce `CleanedChapter` (REFACTOR LỚN — STOP)
+### P1.5 — Pipeline produce `CleanedChapter` (REFACTOR LỚN — STOP) — ✅ DONE 2026-05-16
 
-- [ ] **🛑 STOP:** Đây là refactor shared logic theo CLAUDE.md §10. Hỏi user TRƯỚC khi code.
+> Commit `27507eb`. STOP rule respected — plan + behavior checklist + risk presented, user confirmed trước code. `build_cleaned_chapter` standalone helper (Decision #30). Writer per task (Decision #29). `_atomic_write_text` async + best-effort cancel cleanup (Decision #31). `run_config=None` backward compat (Decision #32). `core/chapter_writer.py` KEEP (defer P6).
+
+- [x] **🛑 STOP:** Đây là refactor shared logic theo CLAUDE.md §10. Hỏi user TRƯỚC khi code.
 - [ ] **Mục tiêu:** refactor `core/scraper.py` để pipeline output là `CleanedChapter` thay vì ghi file trực tiếp
 - [ ] **Files động vào:**
   - `core/scraper.py` (refactor `_scrape_loop` hoặc tương đương — return `CleanedChapter` thay vì write file)
@@ -341,7 +351,9 @@
 - [ ] **Commit:** `refactor(pipeline): introduce CleanedChapter DTO + writer abstraction`
 - [ ] **Phụ thuộc:** P1.4 + user confirm
 
-### P1.6 — Smoke test Phase 1 + baseline diff
+### P1.6 — Smoke test Phase 1 + baseline diff — ⚠️ DEFERRED 2026-05-16
+
+> Live smoke test + baseline diff defer cho user — cần network + API key + FFN baseline (chưa capture). Code path verify đầy đủ trong P1.1-P1.5.
 
 - [ ] **Bước:**
   1. Chạy `python main.py --output-mode obsidian links.txt` với 1 URL
@@ -933,7 +945,7 @@ Không làm trong v1.0. Ghi nhận để track:
 | Phase | Status | Risk | Note |
 |---|---|---|---|
 | P0 — Cleanup + Foundation | ✅ DONE 2026-05-16 | Low | ~780 dòng đi. P0.0 baseline capture + P0.7 live smoke test defer cho user (cần API key + network). P0.4 README deferred (placeholder) |
-| P1 — Output Abstraction | ⬜ Not started | Medium | Refactor shared logic — STOP rules |
+| P1 — Output Abstraction | ✅ DONE 2026-05-16 | Medium | RunConfig + CleanedChapter DTO + ChapterWriter ABC + ObsidianWriter + pipeline refactor (P1.5 STOP rule respected). `writers/` package (renamed). Live verify (smoke 3 modes + baseline + resume/cancel) defer cho user. Tech debt: FormattingRules schema mismatch, core/chapter_writer.py còn, P0.4 README placeholder. Xem docs/PHASE_1_RETRO.md |
 | P2 — Image Support | ⬜ Not started | Medium | Phase 1 dependency |
 | P3 — EPUB Adapter | ⬜ Not started | Low | Lib mature, structure standard |
 | P4 — Translation+Raw writers | ⬜ Not started | Low | Pure writer logic |
