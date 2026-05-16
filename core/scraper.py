@@ -51,16 +51,16 @@ from config import (
     MAX_CHAPTERS, MAX_CONSECUTIVE_ERRORS, MAX_CONSECUTIVE_TIMEOUTS,
     TIMEOUT_BACKOFF_BASE, RE_CHAP_URL, get_delay,
 )
-from utils.file_io        import load_progress, save_progress, write_markdown
+from utils.file_io        import load_progress, save_progress
 from utils.string_helpers import (
     domain_tag as _dtag,
     is_junk_page, make_fingerprint, normalize_title, truncate,
 )
 from utils.ads_filter     import AdsFilter
-from utils.types          import ProgressDict, SiteProfile
+from utils.types          import ProgressDict, RunConfig, SiteProfile
 from utils.issue_reporter import IssueReporter
 
-from core.chapter_writer  import format_chapter_filename, strip_nav_edges
+from core.chapter_writer  import strip_nav_edges
 from core.story_meta      import (
     extract_story_title, build_story_id_regex,
     is_chapter_url, story_id_ok,
@@ -72,6 +72,9 @@ from ai.client            import AIRateLimiter
 from ai.agents            import ai_classify_and_find, ai_find_first_chapter
 
 from pipeline.executor    import run_chapter as pipeline_run_chapter
+from pipeline.executor    import build_cleaned_chapter
+from writers.base         import ChapterWriter
+from writers.obsidian     import ObsidianWriter
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +199,6 @@ async def scrape_one_chapter(
     url             : str,
     progress        : ProgressDict,
     progress_path   : str,
-    output_dir      : str,
     pool            : DomainSessionPool,
     pw_pool         : PlaywrightPool,
     profile         : SiteProfile,
@@ -205,6 +207,7 @@ async def scrape_one_chapter(
     issue_reporter  : IssueReporter,
     all_visited     : set,
     fingerprints    : set,
+    writer          : ChapterWriter,
     prefetched_html : str | None = None,
 ) -> str | None:
     """
@@ -318,9 +321,14 @@ async def scrape_one_chapter(
                     progress["story_title"] = normalize_title(story_candidate)
 
     chapter_num = progress.get("chapter_count", 0) + 1
-    filename    = format_chapter_filename(chapter_num, title, progress)
-    filepath    = os.path.join(output_dir, filename)
-    await write_markdown(filepath, f"# {title}\n\n{content}\n")
+    # P1.5: refactor — pipeline → CleanedChapter DTO → writer.write.
+    # Body section between frontmatter markers giữ shape cũ
+    # (`# {title}\n\n{content}\n`) → baseline body identical.
+    body     = f"# {title}\n\n{content}\n"
+    chapter  = build_cleaned_chapter(ctx, chapter_num, progress, body)
+    chapter.title = title   # đảm bảo dùng title đã chuẩn hóa ở scraper (không phải ctx.title_clean raw)
+    filepath_obj = await writer.write(chapter)
+    filepath     = str(filepath_obj)
 
     ads_filter.scan_edges_for_suspects(content, chapter_url=url, chapter_file=filepath)
 
@@ -621,6 +629,7 @@ async def _run_scrape_loop(
     ads_filter     : AdsFilter,
     issue_reporter : IssueReporter,
     prefetch_map   : dict[str, str],
+    writer         : ChapterWriter,
     on_chapter_done,
 ) -> bool:
     """
@@ -656,7 +665,6 @@ async def _run_scrape_loop(
                     url             = current_url,
                     progress        = progress,
                     progress_path   = progress_path,
-                    output_dir      = actual_output_dir,
                     pool            = pool,
                     pw_pool         = pw_pool,
                     profile         = profile,
@@ -665,6 +673,7 @@ async def _run_scrape_loop(
                     issue_reporter  = issue_reporter,
                     all_visited     = all_visited,
                     fingerprints    = fingerprints,
+                    writer          = writer,
                     prefetched_html = prefetched,
                 )
                 consecutive_errors   = 0
@@ -747,6 +756,7 @@ async def run_novel_task(
     pw_pool       : PlaywrightPool,
     pm            : ProfileManager,
     ai_limiter    : AIRateLimiter,
+    run_config    : RunConfig | None = None,
     on_chapter_done = None,
 ) -> None:
     """
@@ -811,6 +821,19 @@ async def run_novel_task(
 
     prefetch_map: dict[str, str] = {url: html for url, html in fetched_chapters}
 
+    # P1.5: build writer 1 lần per task. Default ObsidianWriter nếu run_config
+    # không pass — backward compat cho callers cũ (translate/raw mode dùng
+    # tạm ObsidianWriter cho đến P4 hoàn thiện TranslationWriter/RawWriter).
+    if run_config is None:
+        run_config = RunConfig(
+            output_mode       = "obsidian",
+            download_images   = True,
+            image_placeholder = False,
+            fetch_metadata    = True,
+            output_dir        = actual_output_dir,
+        )
+    writer: ChapterWriter = ObsidianWriter(actual_output_dir, run_config)
+
     # ── 3. Scrape loop ─────────────────────────────────────────────────────
     _cancelled = False
     try:
@@ -830,6 +853,7 @@ async def run_novel_task(
             ads_filter        = ads_filter,
             issue_reporter    = issue_reporter,
             prefetch_map      = prefetch_map,
+            writer            = writer,
             on_chapter_done   = on_chapter_done,
         )
     except asyncio.CancelledError:

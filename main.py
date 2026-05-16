@@ -412,6 +412,7 @@ async def main() -> None:
             pw_pool         = app.pw_pool,
             pm              = pm,
             ai_limiter      = app.ai_limiter,
+            run_config      = run_config,    # P1.5: pass output mode + writer config
             on_chapter_done = app.inc_total,
         )
 

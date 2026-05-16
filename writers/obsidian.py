@@ -39,7 +39,7 @@ class ObsidianWriter(ChapterWriter):
         filename = self.filename_for(chapter)
         path     = Path(self.output_dir) / filename
         content  = self._build_content(chapter)
-        self._atomic_write_text(path, content)
+        await self._atomic_write_text(path, content)
         return path
 
     def filename_for(self, chapter: CleanedChapter) -> str:
