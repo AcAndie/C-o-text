@@ -406,6 +406,56 @@ Trả về JSON (CHỈ JSON thuần):
 }}
 """
 
+    @staticmethod
+    def learning_image_policy(html: str, url: str, content_selector: str | None) -> str:
+        """
+        P2.6 — AI image policy detect (new dedicated call, không extend AI#7).
+
+        Goal: phát hiện site có ảnh minh hoạ trong chapter không. Decision
+        drive ObsidianWriter download_images behavior.
+
+        Single responsibility — KHÔNG mix với ads concerns (AI#7).
+        """
+        sel_hint = f"\nContent selector đã học: {content_selector!r}" if content_selector else ""
+        return f"""Phân tích chapter để xác định site có ảnh minh hoạ inline không.
+
+URL: {url}{sel_hint}
+HTML (tối đa 8000 ký tự):
+{html}
+
+NHIỆM VỤ:
+1. Tìm tất cả <img> tags trong chapter content area
+2. Phân loại từng ảnh:
+   - illustration: ảnh minh hoạ truyện (chapter art, scene, character portrait)
+   - decorative : divider, banner, icon, ornament — KHÔNG quan trọng
+   - ads        : ad image, sponsor banner, affiliate
+   - avatar     : ảnh avatar user/author (comment, sidebar) — KHÔNG content
+3. Quyết định site có dùng ảnh thật trong chapter không:
+   - has_inline_images = true nếu có ≥1 illustration
+   - Decorative-only hoặc ads-only → false
+4. Nếu có illustration, tìm selector wrapper ổn định:
+   - Ví dụ: "figure.illustration", "div.chapter-image", ".inline-image img"
+   - null nếu mỗi chapter dùng tag pattern khác nhau
+
+TIÊU CHÍ STRICT:
+  ✓ Site như Royal Road với inline art        → has_inline_images=true
+  ✓ Light novel epub-style chapter art         → has_inline_images=true
+  ✗ FFN/AO3 text-only                          → has_inline_images=false
+  ✗ Chỉ có author avatar + site logo           → has_inline_images=false
+  ✗ Chỉ có HR divider images (---.png)         → has_inline_images=false
+
+Trả về JSON (CHỈ JSON thuần):
+{{
+  "has_inline_images": false,
+  "image_count"      : 0,
+  "image_examples"   : [
+    {{"src": "https://...", "alt": "scene 1", "classification": "illustration"}}
+  ],
+  "image_selector"   : null,
+  "notes"            : null
+}}
+"""
+
     # ══════════════════════════════════════════════════════════════════════════
     # PHASE 4: STRESS TEST
     # ══════════════════════════════════════════════════════════════════════════
