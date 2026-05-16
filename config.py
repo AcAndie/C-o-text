@@ -4,7 +4,7 @@ Không import từ module nội bộ nào.
 
 v2: Thêm PW_MAX_CONCURRENCY, EMPTY_BACKOFF_SCHEDULE cho pipeline architecture.
 v3: P1-B — thêm JS_CONTENT_RATIO, JS_MIN_DIFF_CHARS để tránh DRY violation.
-    Ba nơi dùng cùng threshold: fetcher.py, optimizer.py, phase.py.
+    Hai nơi dùng cùng threshold: fetcher.py, phase.py.
     Đặt ở đây để thay đổi threshold chỉ cần sửa 1 file.
 """
 import os
@@ -72,8 +72,7 @@ PW_MAX_CONCURRENCY: int = int(os.getenv("PW_MAX_CONCURRENCY", "2"))
 # Nếu pw_text_len > curl_text_len * JS_CONTENT_RATIO AND diff > JS_MIN_DIFF_CHARS
 # → site cần Playwright để render content đầy đủ.
 #
-# Dùng bởi: pipeline/fetcher.py (HybridFetchBlock._detect_js_fetch)
-#            learning/optimizer.py (PipelineGenerator.generate + run_optimizer)
+# Dùng bởi: pipeline/fetcher.py (HybridFetchBlock._detect_js_fetch), learning/phase.py
 #
 # Tăng ratio nếu muốn ít false positives hơn (chỉ flag site thật sự JS-heavy).
 # Giảm nếu muốn aggressive hơn (flag cả site load content nhỏ qua JS).

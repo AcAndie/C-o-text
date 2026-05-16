@@ -3,7 +3,7 @@ main.py — Entry point duy nhất của Cào Text.
 
 v3: Pipeline Architecture.
   CLI-1: Thêm --max-pw-instances N (default=2, override PW_MAX_CONCURRENCY)
-  CLI-2: Thêm --fast-learning (bỏ qua optimizer, chỉ dùng AI selectors)
+  CLI-2: Thêm --fast-learning (skip ProseRichness trong learning phase — nhanh hơn ~20%)
   CLI-3: Thêm --no-validation (bỏ qua ProseRichnessBlock — nhanh hơn nhưng ít filter)
   RELEARN-1: Giữ nguyên `!relearn <domain>` trong links.txt.
   ISSUE-1:   Gọi write_session_header() khi bắt đầu.
@@ -177,12 +177,29 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--fast-learning",
         action  = "store_true",
-        help    = "Bỏ qua optimizer, chỉ dùng AI selectors (nhanh hơn ~30%%)",
+        help    = "Skip ProseRichness validation trong learning phase (nhanh hơn ~20%%)",
     )
     parser.add_argument(
         "--no-validation",
         action  = "store_true",
         help    = "Bỏ qua ProseRichnessBlock (ít filter hơn, nhanh hơn nhẹ)",
+    )
+    parser.add_argument(
+        "--bulk-relearn",
+        action  = "store_true",
+        help    = "Bulk delete profile để force re-learn (mặc định dry-run, cần --apply)",
+    )
+    parser.add_argument(
+        "--pattern",
+        type    = str,
+        default = None,
+        metavar = "REGEX",
+        help    = "Regex filter cho --bulk-relearn (mặc định match tất cả)",
+    )
+    parser.add_argument(
+        "--apply",
+        action  = "store_true",
+        help    = "Confirm thực thi --bulk-relearn (mặc định dry-run, an toàn)",
     )
     return parser
 
@@ -196,11 +213,79 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
     if args.fast_learning:
         # Flag được đọc bởi learning/phase.py
         os.environ["CAO_FAST_LEARNING"] = "1"
-        print(f"  [Config] Fast learning mode: optimizer disabled", flush=True)
+        print(f"  [Config] Fast learning mode: ProseRichness validation skipped", flush=True)
 
     if args.no_validation:
         os.environ["CAO_NO_VALIDATION"] = "1"
         print(f"  [Config] Validation: ProseRichnessBlock disabled", flush=True)
+
+
+# ── Bulk relearn ──────────────────────────────────────────────────────────────
+
+async def _run_bulk_relearn(pattern: str | None, apply: bool) -> None:
+    """
+    Bulk delete profile khớp pattern. Default dry-run, --apply để thực thi.
+
+    UX an toàn:
+      1. Load profiles → filter theo regex (default match all)
+      2. Print danh sách matched
+      3. Không --apply → DRY RUN, exit
+      4. Có --apply → typed confirm prompt → delete atomic
+
+    Regex pattern có thể greedy hơn user nghĩ (vd "net" match cả
+    "fanfiction.net" và "novelfire.net") — dry-run default ngăn lỡ tay.
+    """
+    import re
+
+    profiles = await load_profiles()
+    if not profiles:
+        print("Không có profile nào trong data/site_profiles.json")
+        return
+
+    if pattern:
+        try:
+            rx = re.compile(pattern)
+        except re.error as e:
+            print(f"[ERR] Pattern regex không hợp lệ: {e}")
+            return
+        matched = {k: v for k, v in profiles.items() if rx.search(k)}
+    else:
+        matched = dict(profiles)
+
+    if not matched:
+        if pattern:
+            print(f"Không có profile nào khớp pattern {pattern!r}")
+        else:
+            print("Không có profile để xóa.")
+        return
+
+    print(f"Sẽ xóa {len(matched)} profile:")
+    for domain in sorted(matched):
+        p      = matched[domain]
+        n_urls = len(p.get("sample_urls", []) or [])
+        last   = (p.get("last_learned") or "?")[:10]
+        print(f"  - {domain} ({n_urls} sample URLs, last_learned {last})")
+
+    if not apply:
+        print("\nDRY RUN — không xóa gì. Thêm --apply để thực hiện.")
+        return
+
+    expected = f"delete {len(matched)} profiles"
+    print(f"\nTo proceed, type: {expected}")
+    try:
+        answer = input("> ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nCancelled.")
+        return
+
+    if answer != expected:
+        print("Cancelled.")
+        return
+
+    for domain in matched:
+        del profiles[domain]
+    await save_profiles(profiles)
+    print(f"\nDeleted {len(matched)} profile. Run 'python main.py links.txt' để re-learn.")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -213,6 +298,11 @@ async def main() -> None:
     # Tách links_file ra để không conflict với positional args
     args = parser.parse_args()
     _apply_cli_overrides(args)
+
+    # Bulk relearn mode — early exit, không cần links.txt
+    if args.bulk_relearn:
+        await _run_bulk_relearn(args.pattern, args.apply)
+        return
 
     links_file = args.links_file
     if not os.path.exists(links_file):

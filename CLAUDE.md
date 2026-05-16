@@ -731,6 +731,8 @@ Pipeline image stage chọn strategy theo input type, KHÔNG hardcode HTTP.
 | **23** | **Naming for EPUB** | **EPUB metadata first (`book.get_metadata('DC', 'title')`), AI fallback nếu metadata trống** | **EPUB chuẩn có Dublin Core metadata. Trust source trước, AI sau.** |
 | **24** | **Profile migration UX** | **`main.py --bulk-relearn [--pattern <regex>]` thay vì manual `!relearn` từng cái** | **User có 5+ profile cũ sau breaking schema change — manual không scale.** |
 | **25** | **README maintained throughout** | **README.md skeleton tạo ở Phase 0, update sau mỗi phase có CLI/UX change** | **Solo dev sau 2 tuần không động vào tool sẽ quên flag — cần reference cập nhật.** |
+| **26** | **Batch A done (2026-05-16, P0.2)** | **`learning/optimizer.py` xóa, `--fast-learning` semantic đổi sang "skip ProseRichness validation"** | **Optimizer "AI scoring AI" không add signal — xác nhận anti-pattern #9. ~450 dòng dead code đi.** |
+| **27** | **Batch B done (2026-05-16, P0.3)** | **`StepConfig`/`ChainConfig`/`PipelineConfig` + `learning/migrator.py` xóa. `PipelineRunner` đọc thẳng SiteProfile flat fields. `ProfileManager.get()` raise `ValueError` cho profile v1 (`pipeline` field)** | **Root cause bug M4 (nested params lost roundtrip) — xác nhận anti-pattern #3. Profile v1 fail-loud thay vì auto-migrate silent — user re-learn qua `!relearn` hoặc `--bulk-relearn`. ~330 dòng đi (Batch A+B tổng ~780 dòng).** |
 
 ---
 

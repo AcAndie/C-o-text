@@ -718,16 +718,16 @@ POST-LEARNING:
 
 ## 10. Roadmap (high-level — chi tiết xem ROADMAP.md)
 
-### Phase 0: Cleanup + Foundation (3 ngày)
+### Phase 0: Cleanup + Foundation (3 ngày) — ✅ DONE 2026-05-16
 
-- [ ] Baseline snapshot tool + capture 2 site đã learn
-- [ ] **Batch A**: Xóa `learning/optimizer.py` (~450 dòng)
-- [ ] **Batch B**: Xóa `StepConfig/ChainConfig/PipelineConfig` serialization (~330 dòng)
-- [ ] README.md skeleton
-- [ ] MIGRATION_NOTES.md + bulk-relearn script
-- [ ] Docs sync (CLAUDE.md, BLUEPRINT.md, ROADMAP.md)
+- [x] Baseline snapshot tool (`tools/snapshot_baseline.py`) — capture deferred (chưa có profile FFN/RR thật trong repo)
+- [x] **Batch A** (P0.2): Xóa `learning/optimizer.py` + stale refs — ~450 dòng
+- [x] **Batch B** (P0.3): Xóa `StepConfig/ChainConfig/PipelineConfig` serialization + `learning/migrator.py` + legacy guard trong `ProfileManager.get()` — ~330 dòng
+- [ ] README.md skeleton (P0.4 — DEFERRED, README hiện là placeholder)
+- [x] MIGRATION_NOTES.md (`docs/MIGRATION_NOTES.md`) + bulk-relearn (`main.py --bulk-relearn`) — P0.5
+- [x] Docs sync (CLAUDE.md §17, BLUEPRINT.md §10, ROADMAP.md Phase 0) — P0.6
 
-**Mục tiêu:** giảm ~780 dòng, foundation sạch. Zero new feature.
+**Mục tiêu:** giảm ~780 dòng, foundation sạch. Zero new feature. **Achieved.**
 
 ### Phase 1: Output Mode Abstraction (1 tuần) — TRƯỚC image support
 

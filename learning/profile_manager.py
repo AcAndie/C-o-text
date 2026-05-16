@@ -54,10 +54,19 @@ class ProfileManager:
         Fix P0-2: trả về copy thay vì live reference.
         Caller mutation sẽ không ảnh hưởng internal state — mọi thay đổi
         cần persist phải đi qua save_profile() để đảm bảo _dirty được set.
+
+        Batch B: raise ValueError nếu profile v1 (có 'pipeline' field).
+        Auto-migration đã bị xóa — user phải re-learn thủ công.
         """
         p = self._profiles.get(domain)
         if p is None:
             return {}  # type: ignore[return-value]
+        if "pipeline" in p:
+            raise ValueError(
+                f"Profile {domain!r} ở format v1 cũ (có 'pipeline' field). "
+                f"Cần re-learn. Thêm '!relearn {domain}' vào links.txt "
+                f"hoặc chạy 'python main.py --bulk-relearn'."
+            )
         return dict(p)  # type: ignore[return-value]
 
     def has(self, domain: str) -> bool:

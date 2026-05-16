@@ -53,9 +53,9 @@ async def run_learning_phase(
     domain = urlparse(start_url).netloc.lower()
     tag    = _dtag(domain)
 
-    # CAO_FAST_LEARNING là no-op sau Batch A (optimizer đã bỏ)
     if os.getenv("CAO_FAST_LEARNING") == "1":
-        print(f"  [{tag}] ℹ CAO_FAST_LEARNING set nhưng optimizer đã bỏ — ignored", flush=True)
+        os.environ["CAO_NO_VALIDATION"] = "1"
+        print(f"  [{tag}] ℹ Fast learning: ProseRichness validation skipped", flush=True)
 
     print(f"\n{'═'*62}", flush=True)
     print(f"  🎓 Deep Learning: {domain}", flush=True)

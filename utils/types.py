@@ -3,8 +3,9 @@
 utils/types.py — TypedDict definitions cho toàn bộ project.
 
 Batch B: Xóa pipeline/optimizer_score/requires_relearn/migration_notes khỏi SiteProfile.
-  Các fields này chỉ được dùng bởi PipelineConfig serialization và migrator.py
-  — cả hai đã bị xóa trong Batch B.
+  Các fields này chỉ được dùng bởi PipelineConfig serialization — đã xóa.
+  Profile v1 cũ có 'pipeline' field sẽ bị reject bởi ProfileManager.get() —
+  user phải re-learn (!relearn hoặc --bulk-relearn).
   profile_version giữ lại như metadata vô hại.
 """
 from __future__ import annotations
