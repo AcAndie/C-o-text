@@ -440,6 +440,17 @@ _S_IMAGE_POLICY = {
     "required": ["has_inline_images"],
 }
 
+_S_TXT_PATTERN = {
+    "type": "object",
+    "properties": {
+        "pattern"         : {"type": "string"},
+        "language"        : {"type": "string"},
+        "chapter_examples": {"type": "array", "items": {"type": "string"}},
+        "notes"           : {"type": "string", "nullable": True},
+    },
+    "required": ["pattern"],
+}
+
 _S_NAV_STRESS = {
     "type": "object",
     "properties": {
@@ -748,6 +759,32 @@ async def ai_image_policy(
         raise
     except Exception as e:
         print(f"  [AI#image] ⚠ Thất bại: {_fmt(e)}", flush=True)
+    return None
+
+
+async def ai_detect_txt_pattern(
+    sample_text: str,
+    limiter    : AIRateLimiter,
+) -> dict | None:
+    """
+    P5.2 — AI fallback cho TXT chapter boundary detection. Sample 50 dòng
+    đầu file, ask AI suy ra regex pattern.
+
+    Return dict {pattern, language, chapter_examples, notes} hoặc None nếu
+    AI fail / không detect được.
+    """
+    prompt = Prompts.detect_txt_chapter_pattern(sample_text)
+    try:
+        text   = await _call(prompt, limiter, _S_TXT_PATTERN)
+        result = _parse(text)
+        if isinstance(result, dict) and result.get("pattern"):
+            result.setdefault("language",         "other")
+            result.setdefault("chapter_examples", [])
+            return result
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        print(f"  [AI#txt-pattern] ⚠ Thất bại: {_fmt(e)}", flush=True)
     return None
 
 

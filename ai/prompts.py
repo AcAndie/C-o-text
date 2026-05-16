@@ -732,6 +732,60 @@ confidence: 0.0-1.0
 Nếu không tìm thấy nội dung truyện: confidence < 0.3 và content = "".
 """
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # P5.2: TXT chapter boundary detection (AI fallback)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    @staticmethod
+    def detect_txt_chapter_pattern(sample_text: str) -> str:
+        """
+        P5.2 AI fallback — file TXT không match regex case sẵn có trong
+        data/txt_cases.json. Ask AI detect chapter boundary pattern từ
+        sample 50 dòng đầu.
+
+        Scope v1.0 (Decision #21): VN + EN only. Other languages → fallback
+        nhưng tag language="other" để skip persist nếu cần.
+
+        Output JSON:
+          pattern: regex string (line-anchored ^...$, capture group 1 = number)
+          language: "vi" | "en" | "other"
+          chapter_examples: 2-3 sample lines từ input match pattern
+          notes: optional debug string
+        """
+        return f"""Phân tích đoạn văn bản TXT để tìm pattern phân chia chương.
+
+Sample text (50 dòng đầu file):
+---
+{sample_text}
+---
+
+NHIỆM VỤ:
+1. Tìm dòng nào là CHAPTER BOUNDARY (đầu chương mới)
+2. Suy ra regex pattern Python match được boundary đó
+3. Pattern PHẢI line-anchored (`^...$`) + capture group 1 = chapter number
+
+VÍ DỤ pattern hợp lệ:
+  "Chương 1: ..." → ^Chương\\s+(\\d+)\\s*[:\\-—]?\\s*(.*)$
+  "Chapter 42"   → ^Chapter\\s+(\\d+)\\s*$
+  "第1章: ..."    → ^第(\\d+)章\\s*[:\\-—]?\\s*(.*)$  (language=other)
+
+QUY TẮC NGHIÊM:
+  ✓ Pattern phải match ≥2 dòng riêng biệt trong sample
+  ✗ KHÔNG dùng pattern quá greedy như `^\\d+$` (match số bất kỳ)
+  ✗ KHÔNG dùng pattern match metadata header / TOC / disclaimer
+  ✗ Nếu sample không có chapter boundary rõ ràng → pattern=""
+
+Trả về JSON (CHỈ JSON thuần):
+{{
+  "pattern": "^Chương\\\\s+(\\\\d+)\\\\s*[:\\\\-—]?\\\\s*(.*)$",
+  "language": "vi",
+  "chapter_examples": ["Chương 1: Bắt đầu", "Chương 2"],
+  "notes": null
+}}
+
+Nếu không detect được pattern: pattern="" + chapter_examples=[].
+"""
+
 
 # ── Helper ────────────────────────────────────────────────────────────────────
 
