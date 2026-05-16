@@ -333,6 +333,19 @@ async def main() -> None:
         print(f"[ERR] Không tìm thấy {links_file}")
         return
 
+    # P3.6: detect input type — EPUB → orchestrator. Web path unchanged below.
+    from ingest.router import detect_input_type
+    input_type = detect_input_type(links_file)
+    if input_type == "epub":
+        from core.orchestrator import run_epub_flow
+        ai_limiter = AIRateLimiter(AI_MAX_RPM)
+        await run_epub_flow(links_file, run_config, ai_limiter=ai_limiter)
+        return
+    if input_type == "txt":
+        print("[ERR] TXT adapter chưa implement — Phase 5")
+        return
+    # input_type == "web" — fall through tới existing flow
+
     urls, relearn_domains = _parse_links_file(links_file)
 
     # Đếm dòng không hợp lệ

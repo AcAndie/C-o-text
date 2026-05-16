@@ -8,6 +8,9 @@ google-genai>=1.0.0
 # Env
 python-dotenv>=1.0.0
 
+# EPUB parsing (P3.1)
+ebooklib>=0.18
+
 # Optional — Cloudflare bypass (cài thêm nếu cần)
 # playwright>=1.44.0
 # playwright-stealth>=1.0.6
