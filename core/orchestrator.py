@@ -42,8 +42,14 @@ from pipeline.base                     import CleanedChapter
 from pipeline.executor                 import (
     ChainExecutor, PipelineRunner, build_cleaned_chapter, build_soup, make_context,
 )
+from utils.ads_filter                  import AdsFilter
 from utils.string_helpers              import slugify_filename
 from writers.obsidian                  import ObsidianWriter
+
+# AdsFilter thresholds — single-run auto-apply only (no AI verify cho EPUB).
+# Watermark "Read more at xyz.com" trong pirate EPUB sẽ appear N+ chapter edges
+# → auto-add → post_process strip khỏi files đã ghi.
+_EPUB_ADS_AUTO_THRESHOLD = 10
 
 if TYPE_CHECKING:
     from ai.client       import AIRateLimiter
@@ -96,8 +102,13 @@ async def run_epub_flow(
       - Validate chain (LengthValidator có thể reject short chapter hợp lệ)
       - Naming Phase (DC metadata thay thế)
       - Learning Phase (EPUB structured HTML đủ cho DensityHeuristic)
-      - AdsFilter (defer P3.7)
       - Progress/resume (defer P6+; atomic write idempotent)
+
+    AdsFilter (P3.7):
+      domain_key = f"epub:{story_slug}" — persist per-EPUB watermark set
+      vào data/ads_keywords.json. Filter Pass 1+2 per chapter (giống
+      scraper). Cuối run: auto-apply suspects ≥10 occurrences, save,
+      post_process_directory strip khỏi files đã ghi.
     """
     if run_config.output_mode != "obsidian":
         raise NotImplementedError(
@@ -118,9 +129,15 @@ async def run_epub_flow(
     writer = ObsidianWriter(output_dir=str(out_dir), run_config=run_config)
     runner = PipelineRunner.default()   # empty profile — heuristic-only
 
+    # P3.7: AdsFilter per-EPUB. Domain key namespace "epub:" tránh collision
+    # với web domain (vd "epub:thieu_nien_hanh" vs "novelfire.net").
+    domain_key = f"epub:{story_slug}"
+    ads_filter = AdsFilter.load(domain=domain_key)
+
     print(
         f"📖 EPUB: {story_name!r} → {out_dir}\n"
-        f"   mode={run_config.output_mode} download_images={run_config.download_images}",
+        f"   mode={run_config.output_mode} download_images={run_config.download_images}\n"
+        f"   ads_domain={domain_key!r} known_kws={ads_filter.stats}",
         flush=True,
     )
 
@@ -135,6 +152,7 @@ async def run_epub_flow(
                 run_config = run_config,
                 ai_limiter = ai_limiter,
                 story_name = story_name,
+                ads_filter = ads_filter,
             )
         except Exception as e:
             logger.warning("[EPUB] chapter %d build failed: %s", doc.chapter_index, e)
@@ -156,11 +174,34 @@ async def run_epub_flow(
                 chapter.body_markdown, chapter.images,
             )
 
-        await writer.write(chapter)
+        path = await writer.write(chapter)
         n_ok += 1
+
+        # P3.7: scan edges sau khi write — track watermark frequency cross-chapter
+        ads_filter.scan_edges_for_suspects(
+            chapter.body_markdown, chapter_url="", chapter_file=str(path),
+        )
 
         if n_ok % 25 == 0:
             print(f"   ... {n_ok} chapters written", flush=True)
+
+    # P3.7: end-of-run auto-apply suspects vượt threshold + post-process
+    auto, _ai_pending = ads_filter.get_candidates_by_frequency(
+        auto_threshold = _EPUB_ADS_AUTO_THRESHOLD,
+        min_count      = _EPUB_ADS_AUTO_THRESHOLD,   # bỏ AI branch — no AI verify cho EPUB
+        max_results    = 50,
+    )
+    if auto:
+        added = ads_filter.apply_verified(auto)
+        ads_filter.save()
+        removed = AdsFilter.post_process_directory(auto, str(out_dir))
+        print(
+            f"   🧹 AdsFilter: +{added} kws (threshold ≥{_EPUB_ADS_AUTO_THRESHOLD}), "
+            f"stripped {removed} lines từ files đã ghi",
+            flush=True,
+        )
+    else:
+        ads_filter.save()   # persist scan state cho run sau
 
     print(f"\n✔ EPUB done: {n_ok} chapters written, {n_skipped} skipped → {out_dir}", flush=True)
 
@@ -173,6 +214,7 @@ async def _build_chapter_from_epub_doc(
     run_config : "RunConfig",
     ai_limiter : "AIRateLimiter | None",
     story_name : str,
+    ads_filter : "AdsFilter | None" = None,
 ) -> CleanedChapter | None:
     """
     Run Extract + Title chains manually (skip Fetch/Nav/Validate).
@@ -210,6 +252,11 @@ async def _build_chapter_from_epub_doc(
         ctx.selector_used = "epub_body_fallback"
 
     ctx.content = clean_extracted_content(ctx.content)
+
+    # P3.7: AdsFilter Pass 1 — strip known kws (mirror scraper Pass 1 behavior).
+    # Pass 2 sau title dedup không cần thiết cho EPUB (no strip_nav_edges step).
+    if ads_filter is not None:
+        ctx.content = ads_filter.filter(ctx.content, chapter_url="")
 
     # Title chain — H1 thường winner cho EPUB chapter
     title_result = await ChainExecutor(runner._title_blocks(), "title").run(ctx)
