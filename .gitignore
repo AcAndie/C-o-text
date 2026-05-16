@@ -8,6 +8,9 @@ env/
 output/
 progress_*.json
 data/
+!data/baselines/
+data/baselines/**
+!data/baselines/.gitkeep
 links.txt
 progress/
 issues.md
