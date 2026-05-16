@@ -10,8 +10,12 @@ Note: package tên `writers/` thay vì `output/` (BLUEPRINT §7) — tránh
 conflict với runtime output dir `output/` (gitignored, chứa scrape result).
 """
 from writers.base        import ChapterWriter
+from writers.factory     import build_writer
 from writers.obsidian    import ObsidianWriter
 from writers.raw         import RawWriter
 from writers.translation import TranslationWriter
 
-__all__ = ["ChapterWriter", "ObsidianWriter", "RawWriter", "TranslationWriter"]
+__all__ = [
+    "ChapterWriter", "ObsidianWriter", "RawWriter", "TranslationWriter",
+    "build_writer",
+]

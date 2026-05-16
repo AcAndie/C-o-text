@@ -44,7 +44,7 @@ from pipeline.executor                 import (
 )
 from utils.ads_filter                  import AdsFilter
 from utils.string_helpers              import slugify_filename
-from writers.obsidian                  import ObsidianWriter
+from writers.factory                   import build_writer
 
 # AdsFilter thresholds — single-run auto-apply only (no AI verify cho EPUB).
 # Watermark "Read more at xyz.com" trong pirate EPUB sẽ appear N+ chapter edges
@@ -110,11 +110,8 @@ async def run_epub_flow(
       scraper). Cuối run: auto-apply suspects ≥10 occurrences, save,
       post_process_directory strip khỏi files đã ghi.
     """
-    if run_config.output_mode != "obsidian":
-        raise NotImplementedError(
-            f"Output mode {run_config.output_mode!r} chưa implement cho EPUB — "
-            "chỉ obsidian khả dụng ở Phase 3. TranslationWriter/RawWriter defer Phase 4."
-        )
+    # P4.3: writer factory dispatch theo run_config.output_mode.
+    # Output mode unknown → factory raise ValueError (fail loud).
 
     book = epub.read_epub(input_path)
 
@@ -126,7 +123,7 @@ async def run_epub_flow(
     out_dir = Path(run_config.output_dir) / story_slug
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    writer = ObsidianWriter(output_dir=str(out_dir), run_config=run_config)
+    writer = build_writer(str(out_dir), run_config)
     runner = PipelineRunner.default()   # empty profile — heuristic-only
 
     # P3.7: AdsFilter per-EPUB. Domain key namespace "epub:" tránh collision
@@ -163,15 +160,15 @@ async def run_epub_flow(
             n_skipped += 1
             continue
 
-        # Image stage — obsidian mode only
-        if chapter.images and run_config.download_images:
-            extractor = EpubImageExtractor(book, chapter.index)
-            try:
-                await extractor.fetch_batch(chapter.images, str(out_dir))
-            except Exception as e:
-                logger.warning("[EPUB] image batch failed ch.%d: %s", chapter.index, e)
-            chapter.body_markdown = _rewrite_epub_image_placeholders(
-                chapter.body_markdown, chapter.images,
+        # Image stage — mode-aware (P4.3)
+        if chapter.images:
+            chapter.body_markdown = await _apply_epub_image_stage(
+                content     = chapter.body_markdown,
+                image_refs  = chapter.images,
+                run_config  = run_config,
+                book        = book,
+                chapter_num = chapter.index,
+                out_dir     = str(out_dir),
             )
 
         path = await writer.write(chapter)
@@ -288,21 +285,58 @@ async def _build_chapter_from_epub_doc(
     return chapter
 
 
-# ── Image placeholder rewrite (parallel to scraper._apply_image_stage) ────────
+# ── EPUB image stage (P4.3 mode-aware, mirror scraper._apply_image_stage) ────
 
-def _rewrite_epub_image_placeholders(content: str, image_refs: list) -> str:
-    """
-    Rewrite `![alt](IMG_PLACEHOLDER_N)` → `![alt]({local_path or original})`.
+import re as _re
 
-    Mirror logic của core.scraper._apply_image_stage (obsidian branch) nhưng
-    không gọi WebImageFetcher — image_refs đã được EpubImageExtractor populate
-    `local_path` rồi.
+_IMG_PLACEHOLDER_RE = _re.compile(r"!\[[^\]]*\]\(IMG_PLACEHOLDER_\d+\)")
+
+
+async def _apply_epub_image_stage(
+    content     : str,
+    image_refs  : list,
+    run_config  : "RunConfig",
+    book        : "epub.EpubBook",
+    chapter_num : int,
+    out_dir     : str,
+) -> str:
     """
-    for ref in image_refs:
-        old    = f"![{ref.alt_text}]({ref.position_marker})"
-        target = ref.local_path or ref.original_url
-        new    = f"![{ref.alt_text}]({target})"
-        content = content.replace(old, new, 1)
+    Mode-aware EPUB image handling. Mirror `core.scraper._apply_image_stage`
+    nhưng dùng `EpubImageExtractor` (binary từ zip) thay vì `WebImageFetcher`.
+
+    Modes (per RunConfig defaults):
+      obsidian  (download_images=True)  → extract + rewrite local path
+      translate (image_placeholder=True) → rewrite → `[IMAGE: alt]`
+      raw       (else)                   → strip placeholder entirely
+    """
+    if not image_refs:
+        return content
+
+    if run_config.download_images:
+        # Obsidian mode — extract binary + rewrite local path
+        extractor = EpubImageExtractor(book, chapter_num)
+        try:
+            await extractor.fetch_batch(image_refs, out_dir)
+        except Exception as e:
+            logger.warning("[EPUB ImageStage] fetch_batch failed ch.%d: %s", chapter_num, e)
+
+        for ref in image_refs:
+            old    = f"![{ref.alt_text}]({ref.position_marker})"
+            target = ref.local_path or ref.original_url
+            new    = f"![{ref.alt_text}]({target})"
+            content = content.replace(old, new, 1)
+
+    elif run_config.image_placeholder:
+        # Translate mode — `[IMAGE: alt]` placeholder, no fetch
+        for ref in image_refs:
+            old = f"![{ref.alt_text}]({ref.position_marker})"
+            new = f"[IMAGE: {ref.alt_text}]"
+            content = content.replace(old, new, 1)
+
+    else:
+        # Raw mode — strip placeholder entirely
+        content = _IMG_PLACEHOLDER_RE.sub("", content)
+
     return content
 
 

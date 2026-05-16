@@ -75,6 +75,7 @@ from pipeline.executor    import run_chapter as pipeline_run_chapter
 from pipeline.executor    import build_cleaned_chapter
 from writers.base         import ChapterWriter
 from writers.obsidian     import ObsidianWriter
+from writers.factory      import build_writer
 
 logger = logging.getLogger(__name__)
 
@@ -900,9 +901,9 @@ async def run_novel_task(
 
     prefetch_map: dict[str, str] = {url: html for url, html in fetched_chapters}
 
-    # P1.5: build writer 1 lần per task. Default ObsidianWriter nếu run_config
-    # không pass — backward compat cho callers cũ (translate/raw mode dùng
-    # tạm ObsidianWriter cho đến P4 hoàn thiện TranslationWriter/RawWriter).
+    # P1.5: build writer 1 lần per task. P4.3: dispatch via factory theo
+    # run_config.output_mode (obsidian / translate / raw). Default
+    # RunConfig(obsidian) nếu caller không pass — backward compat.
     if run_config is None:
         run_config = RunConfig(
             output_mode       = "obsidian",
@@ -911,7 +912,7 @@ async def run_novel_task(
             fetch_metadata    = True,
             output_dir        = actual_output_dir,
         )
-    writer: ChapterWriter = ObsidianWriter(actual_output_dir, run_config)
+    writer: ChapterWriter = build_writer(actual_output_dir, run_config)
 
     # ── 3. Scrape loop ─────────────────────────────────────────────────────
     _cancelled = False
