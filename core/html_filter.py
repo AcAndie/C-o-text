@@ -38,6 +38,42 @@ _CONTAINS_RE = re.compile(
     re.DOTALL,
 )
 
+# OBFUSCATED-CLASS (v1.0.3): sites like RoyalRoad inject anti-piracy watermarks
+# inside <span class="cjBiZWI1ZTRlZTQzODQ0ODRhMjEzNmE0MjdjNzY0MTY4"> — random
+# alphanumeric class names that rotate per-render (can't be hardcoded).
+#
+# Strategy: strip any element whose ONLY class is 40+ pure alphanumeric chars.
+# This signature is statistically incompatible with framework classes:
+#   - Bootstrap: short readable names (col-md-3, container)
+#   - Tailwind: short utility names (pt-4, text-center)
+#   - CSS-in-JS build hashes: typically 6-12 chars (sc-jSdvCN, css-1q2x3y)
+#   - Module bundler scopes: usually <20 chars
+# 40+ chars is the threshold where signal becomes anti-piracy obfuscation.
+#
+# Conservative: requires SOLE class match (not class list). Real prose elements
+# never have a single 40+ char alphanumeric class — almost certainly noise.
+_OBFUSCATED_CLASS_RE = re.compile(r"^[A-Za-z0-9]{40,}$")
+
+
+def _strip_obfuscated_class_elements(soup: BeautifulSoup) -> int:
+    """
+    Strip elements whose only class matches OBFUSCATED-CLASS pattern.
+    Returns count of stripped elements. Logs each strip at debug level.
+    """
+    stripped = 0
+    for el in soup.find_all(True):
+        classes = el.get("class") or []
+        # Require SOLE class match — strict rule to avoid FP on legit
+        # framework class lists that happen to include one long hash.
+        if len(classes) == 1 and _OBFUSCATED_CLASS_RE.match(classes[0]):
+            logger.debug(
+                "[HtmlFilter] Stripped obfuscated-class element: <%s class=%r> text=%r",
+                el.name, classes[0], el.get_text(strip=True)[:60],
+            )
+            el.decompose()
+            stripped += 1
+    return stripped
+
 
 def _iter_selector(soup: BeautifulSoup, sel: str) -> list[Tag]:
     """
@@ -78,6 +114,14 @@ def prepare_soup(
     # Layer 1: Luôn xóa noise tags
     for tag in soup.find_all(_ALWAYS_REMOVE):
         tag.decompose()
+
+    # Layer 1b: OBFUSCATED-CLASS — strip anti-piracy watermarks wrapped in
+    # random alphanumeric class (RR pattern: 40+ char class names rotating
+    # per-render). Applied before profile selectors so text never reaches
+    # downstream content_cleaner / AdsFilter.
+    n_stripped = _strip_obfuscated_class_elements(soup)
+    if n_stripped:
+        logger.info("[HtmlFilter] Stripped %d obfuscated-class element(s)", n_stripped)
 
     # Layer 2: Known noise selectors — global safety net
     for sel in KNOWN_NOISE_SELECTORS:

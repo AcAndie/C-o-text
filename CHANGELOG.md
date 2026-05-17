@@ -4,6 +4,34 @@ All notable changes to Cào Text. Format based on [Keep a Changelog](https://kee
 
 ---
 
+## [1.0.3] — 2026-05-17
+
+Hotfix release. Filter RR anti-piracy watermarks at HTML source layer instead of post-extraction text — eliminates entire FP risk class.
+
+### Discovery
+Inspected RR raw HTML for `Rock falls everyone dies` ch.8: watermark wrapped in `<span class="cjBiZWI1ZTRlZTQzODQ0ODRhMjEzNmE0MjdjNzY0MTY4">` — a **44-char random alphanumeric class** that rotates per-render. Can't hardcode the class name, but the obfuscated signature is statistically incompatible with framework classes (Bootstrap 8-15 chars readable; Tailwind utility names; CSS-in-JS hashes typically 6-12 chars).
+
+### Fixed
+- **OBFUSCATED-CLASS** (`core/html_filter.py::_strip_obfuscated_class_elements`, new Layer 1b in `prepare_soup()`): Strips any element whose ONLY class matches `^[A-Za-z0-9]{40,}$`. Catches RR anti-piracy watermarks at HTML source before text extraction — eliminates entire false-positive class because matched text never reaches `content_cleaner` / `AdsFilter`.
+
+### Why Layer 1b (not text-level filter)
+- v1.0.2 used substring + regex on extracted text → MEDIUM FP risk (e.g. "Stolen from the Amazon basin" stripped wrongly)
+- Layer 1b strips at HTML source → 0 FP risk on text content
+- Conservative: requires SOLE class match (`len(classes) == 1`) → real prose elements never have a 40+ char alphanumeric solo class
+
+### Verified
+- Unit test 11/11 PASS: 3 RR random classes stripped, 8 framework/short-hash classes preserved (col-md-3, container, sc-jSdvCN-abc, css-1q2x3y4z, chapter-content, etc.)
+- Synthetic HTML test: watermark span stripped, prose paragraphs + framework div + short-hash div all preserved
+- Live RR re-scrape: 19/19 chapters, 0 watermark leaks across content sweep, 0 FP
+
+### Side effect
+- v1.0.2 substring/regex layer still active as second-defense if HTML strip misses (e.g. site uses different obfuscation technique like inline `style="display:none"`).
+
+### Bumped
+- `VERSION = "1.0.3"`.
+
+---
+
 ## [1.0.2] — 2026-05-17
 
 Hotfix release. RoyalRoad anti-piracy watermark leaks + Unicode braille blank lines in extracted chapters.
