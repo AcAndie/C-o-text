@@ -25,7 +25,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
 
 import config as _cfg   # import trước để có thể override constants
-from config import INIT_STAGGER, AI_MAX_RPM, OUTPUT_DIR, PROGRESS_DIR
+from config import INIT_STAGGER, AI_MAX_RPM, OUTPUT_DIR, PROGRESS_DIR, VERSION
 from ai.client                import AIRateLimiter
 from core.session_pool        import DomainSessionPool, PlaywrightPool
 from core.scraper             import run_novel_task
@@ -160,7 +160,12 @@ async def _apply_relearn(
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog        = "main.py",
-        description = "Cào Text — Web novel scraper với Pipeline Architecture",
+        description = f"Cào Text v{VERSION} — Universal novel content normalizer",
+    )
+    parser.add_argument(
+        "--version",
+        action  = "version",
+        version = f"Cào Text v{VERSION}",
     )
     parser.add_argument(
         "links_file",

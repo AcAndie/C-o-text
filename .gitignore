@@ -6,7 +6,12 @@ env/
 
 # Output & progress
 output/
+output_*/
 progress_*.json
+
+# User content
+*.epub
+smoke_test.txt
 data/*
 !data/baselines/
 data/baselines/*

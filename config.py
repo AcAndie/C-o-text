@@ -6,6 +6,7 @@ v2: Thêm PW_MAX_CONCURRENCY, EMPTY_BACKOFF_SCHEDULE cho pipeline architecture.
 v3: P1-B — thêm JS_CONTENT_RATIO, JS_MIN_DIFF_CHARS để tránh DRY violation.
     Hai nơi dùng cùng threshold: fetcher.py, phase.py.
     Đặt ở đây để thay đổi threshold chỉ cần sửa 1 file.
+v4: VERSION constant — first explicit version tag for v1.0.0 ship.
 """
 import os
 import re
@@ -17,6 +18,10 @@ from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
+
+# ── Project version ───────────────────────────────────────────────────────────
+# Bump on tagged release. See CHANGELOG.md for history.
+VERSION = "1.0.0"
 
 # ── API ───────────────────────────────────────────────────────────────────────
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")

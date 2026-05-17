@@ -2,9 +2,79 @@
 
 > Consolidated list of features deferred from v1.0. Each item has a rationale (why not v1.0) and a trigger condition (when to revisit).
 >
-> **Source**: CLAUDE.md §3 DEFERRED list + ROADMAP.md Phase 7+ + per-phase retrospective deferrals.
+> **Source**: CLAUDE.md §3 DEFERRED list + ROADMAP.md Phase 7+ + per-phase retrospective deferrals + v1.0 smoke test bugs.
 >
-> **Updated**: 2026-05-17 (v1.0 ship)
+> **Updated**: 2026-05-17 (v1.0 ship + retrospective)
+>
+> **Priority order**: see §0 below.
+
+---
+
+## 0. Priority Order (top 5 = v1.1 critical path)
+
+| Rank | Item | Section | Rationale |
+|------|------|---------|-----------|
+| **P1** | Baseline capture infrastructure | new §0.1 | Unlocks every other behavioral refactor. Currently blocking 5-10% LOC reduction target. |
+| **P2** | EPUB extraction bug fixes (title path fallback + image href + over-aggressive splitting) | new §0.2 | User-visible regression from v1.0 smoke. EPUB users see ugly filenames + broken images. |
+| **P3** | Multi-key Gemini rotation | new §0.3 | 503 / 429 spikes hit real during smoke. Single-key SPOF. |
+| **P4** | FlowSpec orchestrator unify | §1.1 | 80 LOC dead weight. Blocked by P1. |
+| **P5** | Cross-platform smoke (Linux + macOS) | new §0.5 | Project Windows-first by accident. Need verification. |
+
+Everything below P5 is "nice to have when motivated" — none blocking.
+
+### 0.1 — P1: Baseline capture infrastructure
+
+**Why**: `tools/snapshot_baseline.py` exists but never run. `data/baselines/` only has `.gitkeep`. Every behavioral refactor (FlowSpec §1.1, image stage extract §1.2) blocked.
+
+**Trigger**: First v1.1 session. Mandatory before any refactor.
+
+**Spec**: Capture 3 web sites (after learning) + 2 EPUBs + 2 TXTs. Commit to `data/baselines/`. Diff against v1.1 refactor branches.
+
+**Effort**: 1 session (~2-3 hours with API quota available).
+
+### 0.2 — P2: EPUB extraction bug fixes
+
+**Why**: Live smoke (Ready Player One.epub) surfaced 3 bugs:
+
+**Bug 1 — Title fallback returns source path**:
+- Symptom: `0004_UsersFpt_Mong_CaiDesktopSmall_ProjectCào_TextReady_Player_One_(Ernest_Cline)1_(Z.md`
+- Cause: Title chain falls through to `_title_from_url` which treats file path like URL
+- Fix: Skip `_title_from_url` if input is local file path (no `://` scheme)
+
+**Bug 2 — Image href relative-path miss**:
+- Symptom: `[EpubImageExtractor] href not found: ../images/img19.jpg`
+- Cause: EPUBs use various conventions (`../images/`, `OEBPS/images/`, absolute zip paths)
+- Fix: Resolve href against chapter HTML's location inside zip + try common fallback paths
+
+**Bug 3 — Over-aggressive chapter splitting**:
+- Symptom: 52 "chapters" from Ready Player One (real chapter count ~40)
+- Cause: SKIP_PATTERNS misses pirate-Z EPUB front matter (dedication, epigraph, acknowledgments)
+- Fix: Expand SKIP_PATTERNS + add structural heuristic (file size threshold)
+
+**Effort**: 1-2 days.
+
+### 0.3 — P3: Multi-key Gemini rotation
+
+**Why**: 503 UNAVAILABLE hit several times during EPUB AI image extract. Single `GEMINI_API_KEY` = SPOF.
+
+**Spec sketch**:
+```python
+_KEY_RE = re.compile(r"^GEMINI_API_KEY(?:_\d+)?$")
+ALL_KEYS = [v for k, v in os.environ.items() if _KEY_RE.match(k) and v]
+# In AIRateLimiter: round-robin on retry
+```
+
+**Effort**: 1 day.
+
+### 0.5 — P5: Cross-platform smoke
+
+**Why**: All dev on Windows. `_silence_transport_errors` (`main.py:471`) is Windows-specific hack. Path separators, line endings, asyncio event loop differences untested elsewhere.
+
+**Spec**: Run full 3-mode smoke on Ubuntu 22.04 + macOS Sonoma. Document any divergence.
+
+**Effort**: 1 day per platform.
+
+---
 
 ---
 
