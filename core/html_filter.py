@@ -75,6 +75,121 @@ def _strip_obfuscated_class_elements(soup: BeautifulSoup) -> int:
     return stripped
 
 
+# VISIBILITY-FILTER (v1.0.4): strip elements hidden from normal users via
+# inline style, HTML5 attributes, or well-known semantic class names. Targets
+# anti-piracy watermarks that escape OBFUSCATED-CLASS detection by using
+# different hiding techniques (display:none, aria-hidden, off-screen position,
+# sr-only screen-reader text, etc).
+#
+# Philosophy: "only scrape what visible to normal users". Hidden = noise.
+# Anything wrapped in display:none, visibility:hidden, opacity:0, off-screen
+# position, or sr-only convention is by-definition not part of user-visible
+# story content.
+#
+# Limitation: only catches INLINE style + HTML attr + well-known classes.
+# CSS-rule-defined `.foo { display:none }` requires browser computed style →
+# needs Playwright. Out of scope for HTML-only filter. Cross-chapter learning
+# (AdsFilter) is the fallback for rule-based hidden content.
+#
+# Conservative class match: exact class name, lowercased. Won't strip
+# .hidden-menu or .my-hide-button (partial matches).
+
+_HIDDEN_STYLE_RE = re.compile(
+    r"\b("
+    # display / visibility / opacity
+    r"display\s*:\s*none"
+    r"|visibility\s*:\s*hidden"
+    r"|opacity\s*:\s*0(?:\.0+)?(?=\s*[;\"']|\s*$)"
+    # size zero (text invisible)
+    r"|font-size\s*:\s*0(?:px|pt|em|rem)?(?=\s*[;\"']|\s*$)"
+    # off-screen position (left/right/top/bottom negative 4+ digits)
+    r"|(?:left|right|top|bottom)\s*:\s*-9{3,}"
+    # clip to nothing
+    r"|clip\s*:\s*rect\s*\(\s*0(?:\s*,?\s*0){3}\s*\)"
+    # transform scale 0
+    r"|transform\s*:\s*scale\s*\(\s*0\s*\)"
+    r")",
+    re.IGNORECASE,
+)
+
+_HIDDEN_CLASSES = frozenset({
+    # Bootstrap / Foundation accessibility
+    "sr-only", "sr-only-focusable",
+    "visually-hidden", "visually-hidden-focusable",
+    "screen-reader-only", "screenreader-only", "screenreader-text",
+    "screen-reader-text",
+    # Bootstrap display utilities
+    "d-none",
+    # Tailwind
+    "hidden", "invisible",
+    # Common generic
+    "hide", "is-hidden", "u-hidden", "js-hidden",
+    "hidden-text", "hide-text",
+    "off-screen", "offscreen",
+    "no-display", "nodisplay",
+    "aria-hidden",
+})
+
+
+def _strip_invisible_elements(soup: BeautifulSoup) -> int:
+    """
+    Strip elements not visible to normal users. Covers 4 hiding techniques:
+      1. `hidden` HTML5 boolean attribute
+      2. `aria-hidden="true"` attribute (intent: not for screen readers)
+      3. Inline style: display:none, visibility:hidden, opacity:0,
+         font-size:0, off-screen position, clip:rect(0,0,0,0), scale(0)
+      4. Semantic class name: sr-only, visually-hidden, d-none, hidden,
+         invisible, etc.
+
+    Returns total stripped count. Cumulative across all 4 checks (one
+    element may match multiple).
+    """
+    stripped = 0
+    # Snapshot list — decompose during iteration is safe with list() copy
+    for el in list(soup.find_all(True)):
+        # Element may already have been decomposed by ancestor strip
+        if el.parent is None and el.name != "[document]":
+            continue
+
+        # Check 1: HTML5 [hidden] attribute (boolean — presence = true)
+        if el.has_attr("hidden"):
+            logger.debug("[HtmlFilter] Stripped [hidden]: <%s>", el.name)
+            el.decompose()
+            stripped += 1
+            continue
+
+        # Check 2: [aria-hidden="true"]
+        if (el.get("aria-hidden") or "").lower() == "true":
+            logger.debug("[HtmlFilter] Stripped aria-hidden: <%s>", el.name)
+            el.decompose()
+            stripped += 1
+            continue
+
+        # Check 3: inline style invisible
+        style_attr = el.get("style") or ""
+        if style_attr and _HIDDEN_STYLE_RE.search(style_attr):
+            logger.debug(
+                "[HtmlFilter] Stripped hidden inline style: <%s style=%r>",
+                el.name, style_attr[:80],
+            )
+            el.decompose()
+            stripped += 1
+            continue
+
+        # Check 4: semantic hidden class (lowercased exact match)
+        classes = el.get("class") or []
+        if any(c.lower() in _HIDDEN_CLASSES for c in classes):
+            logger.debug(
+                "[HtmlFilter] Stripped hidden class: <%s class=%r>",
+                el.name, classes,
+            )
+            el.decompose()
+            stripped += 1
+            continue
+
+    return stripped
+
+
 def _iter_selector(soup: BeautifulSoup, sel: str) -> list[Tag]:
     """
     Wrapper quanh soup.select() có hỗ trợ `:contains()` pseudo-selector.
@@ -119,9 +234,17 @@ def prepare_soup(
     # random alphanumeric class (RR pattern: 40+ char class names rotating
     # per-render). Applied before profile selectors so text never reaches
     # downstream content_cleaner / AdsFilter.
-    n_stripped = _strip_obfuscated_class_elements(soup)
-    if n_stripped:
-        logger.info("[HtmlFilter] Stripped %d obfuscated-class element(s)", n_stripped)
+    n_obfuscated = _strip_obfuscated_class_elements(soup)
+    if n_obfuscated:
+        logger.info("[HtmlFilter] Stripped %d obfuscated-class element(s)", n_obfuscated)
+
+    # Layer 1c: VISIBILITY-FILTER — strip hidden elements (display:none,
+    # aria-hidden, off-screen position, sr-only class, etc). Only scrape
+    # what normal users see. Catches anti-piracy watermarks that escape
+    # OBFUSCATED-CLASS detection via alternate hiding techniques.
+    n_invisible = _strip_invisible_elements(soup)
+    if n_invisible:
+        logger.info("[HtmlFilter] Stripped %d invisible element(s)", n_invisible)
 
     # Layer 2: Known noise selectors — global safety net
     for sel in KNOWN_NOISE_SELECTORS:

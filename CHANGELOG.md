@@ -4,6 +4,44 @@ All notable changes to Cào Text. Format based on [Keep a Changelog](https://kee
 
 ---
 
+## [1.0.4] — 2026-05-17
+
+Generalized hidden-element strip. Implements user-stated principle: "only scrape what visible to normal users".
+
+### Discovery
+v1.0.3 missed ch.9 of RR Rock falls: watermark variant "Unauthorized reproduction: this story has been taken without approval. Report sightings." — contained no "amazon" or "royal road" keywords (text-level regex misses) AND wasn't wrapped in 40+ char obfuscated class (Layer 1b misses). Likely wrapped in `display:none` / `aria-hidden` / `sr-only` instead.
+
+### Fixed
+- **VISIBILITY-FILTER** (`core/html_filter.py::_strip_invisible_elements`, new Layer 1c in `prepare_soup()`): Strips elements not visible to normal users. 4 detection techniques:
+  1. `hidden` HTML5 boolean attribute → strip
+  2. `aria-hidden="true"` attribute → strip
+  3. Inline style: `display:none`, `visibility:hidden`, `opacity:0(.0)`, `font-size:0`, off-screen position (`left/right/top/bottom: -9999px+`), `clip:rect(0,0,0,0)`, `transform:scale(0)` → strip
+  4. Semantic hidden class names (exact match, lowercased): `sr-only`, `visually-hidden`, `screen-reader-only`, `screen-reader-text`, `d-none`, `hidden`, `invisible`, `hide`, `is-hidden`, `u-hidden`, `js-hidden`, `hidden-text`, `hide-text`, `off-screen`, `offscreen`, `no-display`, `nodisplay`, `aria-hidden` → strip
+
+### Why generalized over per-site
+Catches anti-piracy watermarks across ALL sites using ANY of these standard hiding techniques. Site-agnostic. Per-site enumeration would never finish.
+
+### Limitation
+CSS-rule-defined `.foo { display:none }` requires browser computed style → needs Playwright (out of scope for HTML-only filter). Cross-chapter learning (AdsFilter) is fallback for rule-based hidden content.
+
+### Verified
+- Synthetic adversarial test: 14/14 hidden elements stripped (all 4 techniques), 8/8 visible elements preserved including `aria-hidden="false"`, `opacity:0.9`, `font-size:14px`, `left:10px`, partial-match `hidden-menu` class (only exact class names hit).
+- Live RR re-scrape: 19/19 chapters clean. ch.9 line 49 watermark GONE. Full sweep across all chapters for `amazon|stolen|pilfered|unauthor|misappropriat|reproduction|sightings|approval` returned 0 hits.
+- Performance impact: negligible (single soup.find_all pass, in-memory only).
+
+### Defense-in-depth layer stack
+- Layer 1: `_ALWAYS_REMOVE` (script/style/noscript/iframe)
+- Layer 1b: Obfuscated-class strip (40+ random alphanumeric class)
+- **Layer 1c: Visibility filter** (display:none, aria-hidden, off-screen, sr-only class) ← NEW
+- Layer 2: `KNOWN_NOISE_SELECTORS` global
+- Layer 3: Profile `remove_selectors` per-domain
+- Post-extraction: `content_cleaner` 5-pass + `AdsFilter` substring/regex
+
+### Bumped
+- `VERSION = "1.0.4"`.
+
+---
+
 ## [1.0.3] — 2026-05-17
 
 Hotfix release. Filter RR anti-piracy watermarks at HTML source layer instead of post-extraction text — eliminates entire FP risk class.
