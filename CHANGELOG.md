@@ -4,6 +4,24 @@ All notable changes to Cào Text. Format based on [Keep a Changelog](https://kee
 
 ---
 
+## [1.0.2] — 2026-05-17
+
+Hotfix release. RoyalRoad anti-piracy watermark leaks + Unicode braille blank lines in extracted chapters.
+
+### Fixed
+- **ADS-RR-BUILTIN**: `AdsFilter` now pre-seeds known site-specific watermark phrases on load (per-domain `_BUILTIN_DOMAIN_WATERMARKS` dict). Strips RR boilerplate from chapter 1 without waiting for cross-chapter frequency learning.
+- **ADS-RR-REGEX**: RR rotates anti-piracy watermark through ~20 phrase variants ("If you stumble upon this narrative on Amazon...", "Unlawfully taken from Royal Road...", "Pilfered from Royal Road...", etc). Whack-a-mole via substring enumeration replaced by 3 regex patterns matching `amazon` ↔ attribution-verb co-location within 80 chars (also `royal road` ↔ verb).
+- **UNICODE-BLANK**: `content_cleaner.py` new Pass 0b strips lines containing only Unicode whitespace/blank chars (U+2800 braille blank used by RR for vertical spacing, NBSP, zero-width chars, U+3000 ideographic space, etc.). Inline blanks within prose preserved.
+
+### Verified
+- RR Rock falls everyone dies re-scrape: 19/19 chapters, 0 watermark leaks (`grep amazon|stolen|pilfered|unauthori[sz]ed` returned 0), 0 braille lines, all content preserved.
+- Regex false-positive sanity: "The stone rolled down the mountain", "Amazon rainforest is huge", "She typed the report and sent it" — all KEPT (3/3 pass).
+
+### Bumped
+- `VERSION = "1.0.2"`.
+
+---
+
 ## [1.0.1] — 2026-05-17
 
 Hotfix release. Title extraction container-leak bug found in v1.0.0 post-ship via user inspection of FFN output.

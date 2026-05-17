@@ -25,6 +25,39 @@ _MAX_STRIP_RATIO = 0.60
 _RAW_SCRIPT_LINE_RE = re.compile(r"^\s*<script\b", re.IGNORECASE)
 
 
+# ── Pass 0b: Unicode blank/spacer-only lines (v1.0.2) ─────────────────────────
+#
+# Some sites (esp. RoyalRoad) inject Unicode blank chars for vertical spacing:
+#   - U+2800 BRAILLE PATTERN BLANK (`⠀`) — visually empty but not whitespace
+#   - U+00A0 NBSP
+#   - U+200B/200C/200D zero-width chars
+#   - U+FEFF BOM
+#   - U+3000 ideographic space
+#
+# These render as lines of "invisible content" — clutter in Obsidian / batch
+# translate. ASCII whitespace stripping (`line.strip()`) treats most of these
+# as non-whitespace → line survives. Pass 0b targets lines containing ONLY
+# Unicode blanks (any combo) and drops them.
+#
+# Conservative: only line-only blanks. Inline blanks inside prose preserved
+# (could be intentional formatting trick).
+#
+_UNICODE_BLANK_LINE_RE = re.compile(
+    r"^[\s  -‏    ⠀　﻿]*$"
+)
+
+
+def _strip_unicode_blank_lines(text: str) -> str:
+    """
+    Drop lines that contain ONLY Unicode whitespace / blank chars (incl. braille
+    U+2800 used as RoyalRoad spacer). Preserves inline use within prose.
+    """
+    lines  = text.splitlines()
+    result = [line for line in lines if not _UNICODE_BLANK_LINE_RE.match(line)]
+    candidate = "\n".join(result)
+    return candidate if len(candidate.strip()) >= _MIN_REMAINING else text
+
+
 def _strip_raw_script_lines(text: str) -> str:
     """
     Strip lines that are raw <script> tag content rendered as text.
@@ -311,6 +344,7 @@ def clean_extracted_content(text: str) -> str:
 
     Pass order:
         0. _strip_raw_script_lines  (<script> text nodes từ sites như NovelFire)
+        0b. _strip_unicode_blank_lines (U+2800 braille spacer, NBSP-only lines)
         1. _strip_comment_section   (từ 30% trở xuống)
         2. _strip_settings_panel    (bất kỳ vị trí)
         3. _strip_postfix_section   (từ 35% trở xuống)
@@ -329,6 +363,7 @@ def clean_extracted_content(text: str) -> str:
     result       = text
 
     result = _strip_raw_script_lines(result)    # Pass 0
+    result = _strip_unicode_blank_lines(result) # Pass 0b
     result = _strip_comment_section(result)     # Pass 1
     result = _strip_settings_panel(result)      # Pass 2
     result = _strip_postfix_section(result)     # Pass 3

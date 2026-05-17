@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 from collections import Counter
 
@@ -17,6 +18,60 @@ _MAX_LINE_LEN = 300
 # FIX-ADSSAVE: module-level threading lock cho save().
 _ADS_SAVE_LOCK = threading.Lock()
 
+# ADS-RR-BUILTIN (v1.0.2): pre-seed known site-specific watermarks. AdsFilter
+# auto-learning needs ≥10 cross-chapter occurrences before adding a keyword;
+# user wouldn't see protection until chapter 10+. Pre-seed common boilerplate
+# so Pass 1 filter catches from chapter 1.
+#
+# Keys = canonical domain (with/without www variants both apply via load()).
+# Values = lowercase substring fragments. Filter does `kw in line.lower()`,
+# so fragments must be unique enough not to false-positive on real prose.
+_BUILTIN_DOMAIN_WATERMARKS: dict[str, list[str]] = {
+    # Substring fragments kept for backward compat. Most RR watermarks now
+    # caught by _BUILTIN_DOMAIN_WATERMARK_PATTERNS below (regex, covers
+    # rotated variants without enumerating each phrase).
+    "royalroad.com": [
+        "support the author by reading on royal road",
+        "read the original on royal road",
+        "royal road is the home of this novel",
+        "royal road as an amazon associate",
+    ],
+}
+
+
+# ADS-RR-REGEX (v1.0.2): RR rotates anti-piracy watermark through ~20 phrase
+# variants. All share signature: "amazon" within ~80 chars of an attribution
+# verb (stolen/taken/pilfered/permission/consent/...) OR "royal road" within
+# ~80 chars of same verb. Regex catches all variants without per-phrase
+# enumeration. Real prose almost never co-locates these terms.
+_BUILTIN_DOMAIN_WATERMARK_PATTERNS: dict[str, list[re.Pattern]] = {
+    "royalroad.com": [
+        re.compile(
+            r"\bamazon\b.{0,80}\b("
+            r"permission|consent|author|report|stolen|taken|pilfered|"
+            r"appropriated|misappropriated|illicit|illegal|unlawful|"
+            r"unauthori[sz]ed|violation"
+            r")\b",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\b("
+            r"permission|consent|stolen|taken|pilfered|appropriated|"
+            r"misappropriated|illicit|illegal|unlawful|unauthori[sz]ed|"
+            r"lifted|reported|report it"
+            r")\b.{0,80}\bamazon\b",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\b("
+            r"stolen|taken|pilfered|appropriated|misappropriated|illicit|"
+            r"illegal|unlawful|unauthori[sz]ed|lifted"
+            r")\b.{0,80}\broyal\s*road\b",
+            re.IGNORECASE,
+        ),
+    ],
+}
+
 class AdsFilter:
 
     def __init__(self, domain: str, known_keywords: set[str]) -> None:
@@ -29,6 +84,13 @@ class AdsFilter:
         self._file_counter : Counter = Counter()
         self._pending_review: dict = {}
         self._new_suspects : set[str] = set()
+        # ADS-RR-REGEX (v1.0.2): pre-compiled regex patterns for known site
+        # rotating watermarks. Filter applies these IN ADDITION to substring
+        # kws to catch variant phrasings without per-phrase enumeration.
+        canonical = domain.lower().removeprefix("www.").removeprefix("epub:").removeprefix("txt:")
+        self._regex_patterns: list[re.Pattern] = list(
+            _BUILTIN_DOMAIN_WATERMARK_PATTERNS.get(canonical, [])
+        )
 
     # ── Factory ───────────────────────────────────────────────────────────────
 
@@ -47,7 +109,16 @@ class AdsFilter:
             except Exception as e:
                 logger.warning("[Ads] load failed: %s", e)
 
-        return cls(domain=domain, known_keywords=global_kws | domain_kws)
+        # ADS-RR-BUILTIN: merge builtin site-specific watermarks (strip www. for
+        # lookup). Domain key normalize to handle "royalroad.com" and
+        # "www.royalroad.com" both matching the builtin entry.
+        canonical = domain.lower().removeprefix("www.")
+        builtin_kws = set(_BUILTIN_DOMAIN_WATERMARKS.get(canonical, []))
+
+        return cls(
+            domain         = domain,
+            known_keywords = global_kws | domain_kws | builtin_kws,
+        )
 
     def inject_from_profile(self, profile: dict) -> int:
         kws = profile.get("ads_keywords_learned") or []
@@ -60,15 +131,23 @@ class AdsFilter:
     # ── Filtering ─────────────────────────────────────────────────────────────
 
     def filter(self, content: str, chapter_url: str = "") -> str:
-        if not self._keywords:
+        if not self._keywords and not self._regex_patterns:
             return content
 
         lines   = content.splitlines()
         cleaned = []
         for line in lines:
             lo = line.lower().strip()
-            if lo and any(kw in lo for kw in self._keywords):
-                logger.debug("[Ads] Filtered: %r", line[:80])
+            if not lo:
+                cleaned.append(line)
+                continue
+            # Substring kws (cross-chapter learned + builtin exact phrases)
+            if any(kw in lo for kw in self._keywords):
+                logger.debug("[Ads] Filtered (kw): %r", line[:80])
+                continue
+            # Regex patterns (builtin rotating watermarks per-domain)
+            if any(p.search(line) for p in self._regex_patterns):
+                logger.debug("[Ads] Filtered (regex): %r", line[:80])
                 continue
             cleaned.append(line)
 

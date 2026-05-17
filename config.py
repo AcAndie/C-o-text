@@ -21,7 +21,7 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
 
 # ── Project version ───────────────────────────────────────────────────────────
 # Bump on tagged release. See CHANGELOG.md for history.
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 
 # ── API ───────────────────────────────────────────────────────────────────────
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
