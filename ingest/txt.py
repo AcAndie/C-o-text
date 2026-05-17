@@ -34,7 +34,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, AsyncIterator
 
-from ingest.epub import RawDocument
+from ingest.types import RawDocument
 
 if TYPE_CHECKING:
     from ai.client import AIRateLimiter

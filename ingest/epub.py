@@ -21,28 +21,12 @@ hold book separately). Hiện tại P3.4 scope giới hạn: parse + yield.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator
 
 from ebooklib import ITEM_DOCUMENT, epub
 
-
-@dataclass
-class RawDocument:
-    """
-    Common contract giữa input adapter và pipeline core.
-
-    Pipeline core không biết source — chỉ thấy chapter_index + html.
-    `source_url` cho web, `source_path` cho epub/txt.
-    `metadata` carry naming hint (story_name từ DC, ...) qua orchestrator
-    về writer.
-    """
-    chapter_index: int
-    html         : str
-    source_url   : str | None       = None
-    source_path  : str | None       = None
-    metadata     : dict             = field(default_factory=dict)
+from ingest.types import RawDocument
 
 
 # Filename heuristic — pirate EPUB thường có những file này ở đầu spine.
