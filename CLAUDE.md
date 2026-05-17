@@ -755,6 +755,13 @@ Pipeline image stage chọn strategy theo input type, KHÔNG hardcode HTTP.
 | **47** | **TranslationWriter image → `[IMAGE: alt]` defensive strip (P4.1)** | **Writer regex strip `![alt](url)` → `[IMAGE: alt]` cả khi caller đã pre-rewrite** | **Web scraper + EPUB orchestrator pre-rewrite cho translate mode. Writer fallback handles edge cases (defensive defense). Cost zero — regex no-op nếu không có MD image syntax.** |
 | **48** | **`writers/factory.py` `build_writer()` central dispatch (P4.3)** | **Single function dispatch `output_mode → ChapterWriter`. Scraper + orchestrator both call** | **Single source of truth. Replace 2× hardcoded `ObsidianWriter()`. Fail-loud `ValueError` cho unknown mode (CLAUDE §11). New writer = register vào `_WRITER_REGISTRY` dict.** |
 | **49** | **`_apply_epub_image_stage` mirror scraper's image_stage (P4.3)** | **Mode-aware 3 branches (obsidian/translate/raw), `EpubImageExtractor` thay `WebImageFetcher`** | **EPUB writer parity với web cho mọi mode. Duplication accepted ngắn hạn — Strategy-injected unified helper defer P6.** |
+| **50** | **TXT case DB ship trong repo (`data/txt_cases.json`)** | **Initial 6 cases (VN "Chương N" 4 variants + EN "Chapter N" 2 variants) committed. `load_cases()` fail-loud nếu file missing.** | **Pattern là code-equivalent — shipping ensures every user gets same baseline. AI-learned cases append atomic, lock-protected. Fail-loud prevents silent skip → user sees corruption immediately.** |
+| **51** | **TXT regex score ≥1 wins (P5.2)** | **`detect_pattern_regex` returns best case nếu match ≥1 line. AI fallback chỉ khi 0 matches across all cases.** | **Score = boundary line count in first 100 lines; one match = real signal (chapter heading). AI fallback expensive — reserve cho genuinely novel formats. Threshold 1 (not 3) trades AI cost vs precision; verify step catches false positives.** |
+| **52** | **TXT AI verify random 3 chunks (P5.2)** | **`_ai_verify_pattern` picks 3 non-overlapping 80-line chunks from middle of file. Each must contain ≥1 match.** | **AI hallucinates regex that matches header only (vd "Tác giả: ..."). Random middle chunks catch headers-only patterns. File too small (<240 lines) → trust AI, skip verify (probability narrow).** |
+| **53** | **TXT namespace `txt:{slug}` AdsFilter (P5.4)** | **Mirror EPUB `epub:` prefix to avoid collision with web domain keys** | **Same `data/ads_keywords.json` file but 3 namespaces: web domain, `epub:`, `txt:`. Per-source watermark learning enables cross-run improvement without polluting web profiles.** |
+| **54** | **TXT exit ramp at P5.5 — NOT triggered (2026-05-17)** | **VN + EN regex detection passed > 50% threshold, AI fallback work as expected. Phase 5 ships as planned.** | **Exit ramp was insurance against scope creep (CJK pattern complexity). Live test confirmed scope narrow đủ — ship without defer.** |
+| **55** | **Phase 6 Batch C — safe subset only (2026-05-17)** | **Pure-deletion items shipped: autoflake (17 imports), f-prefix drop (22 occurrences), delete ingest/web.py, move RawDocument → ingest/types.py, inline _title_from_url. ~0.6% LOC reduction.** | **FlowSpec orchestrator unify + image stage extract require live baseline + STOP §10 clearance — deferred until next session với explicit user OK + baseline run.** |
+| **56** | **Phase 6 baseline NOT created (2026-05-17)** | **`data/baselines/.gitkeep` only — live snapshot defer (cần API quota + 5-10 min scrape).** | **All Batch C items chosen for zero behavior change verifiable by inspection (pure deletion / structural). Behavioral refactors blocked until baseline capture.** |
 
 ---
 
@@ -865,8 +872,9 @@ Root folder:
 | Version | Date | Change |
 |---|---|---|
 | 1.0 | 2026-05-15 | Initial — adapt từ TriLex CLAUDE.md v2.1 cho Cào Text, thêm READ-FIRST (§6) + CONTEXT-BUDGET (§7) rules |
-| **1.1** | **2026-05-16** | **Phase ordering fix (output trước image), baseline snapshot protocol (§8.5 + Decision #19), Strategy pattern cho image fetch (Decision #20), TXT scope narrow VN+EN (Decision #21), i18n baseline (Decision #22), bulk-relearn UX (Decision #24), README throughout (Decision #25), 4 anti-patterns mới (13-16)** |
+| 1.1 | 2026-05-16 | Phase ordering fix (output trước image), baseline snapshot protocol (§8.5 + Decision #19), Strategy pattern cho image fetch (Decision #20), TXT scope narrow VN+EN (Decision #21), i18n baseline (Decision #22), bulk-relearn UX (Decision #24), README throughout (Decision #25), 4 anti-patterns mới (13-16) |
+| **1.2** | **2026-05-17** | **v1.0 ship state. Decision #50-56 covering Phase 5 (TXT adapter) + Phase 6 (Batch C cleanup). All 8 phases done. README.md full feature/troubleshooting/FAQ. CHANGELOG.md v1.0.0 entry. docs/V1_1_BACKLOG.md + docs/TROUBLESHOOTING.md added.** |
 
-**END CLAUDE.md v1.1**
+**END CLAUDE.md v1.2**
 
 > *"Đọc đúng chỗ giá trị hơn đọc nhiều chỗ. Hỏi sớm tiết kiệm hơn fix sau. Root cause đáng giá hơn 10 lớp band-aid. Phase ordering có lý do, đừng đảo."*

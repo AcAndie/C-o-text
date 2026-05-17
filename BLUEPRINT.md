@@ -1,5 +1,7 @@
-# Cào Text — Project Blueprint v1.1
+# Cào Text — Project Blueprint v1.2
 
+> **Status (2026-05-17):** ✅ **v1.0 SHIPPED.** All 8 phases done — Phase 0 cleanup, Phase 1 output abstraction, Phase 2 image support, Phase 3 EPUB adapter, Phase 4 translation/raw writers, Phase 5 TXT adapter, Phase 6 final cleanup, docs finalized. See [ROADMAP.md](ROADMAP.md) for phase-by-phase status and [CHANGELOG.md](CHANGELOG.md) for v1.0.0 entry.
+>
 > **Một công cụ chuẩn hóa nội dung tiểu thuyết cá nhân, đa dụng, đa ngôn ngữ** — ném input nào vào (URL truyện đa site / EPUB / TXT) cũng ra được một bộ chapter sạch, không noise, đọc được trên Obsidian hoặc đem đi dịch.
 >
 > Site mới chỉ cần học 1 lần (~8 AI calls), lần sau xài lại profile đã lưu. Free khi không cần re-learn.
@@ -849,10 +851,33 @@ Sẽ trả lời từng cái khi đụng vào phase tương ứng — không pre
 | Version | Date | Change |
 |---|---|---|
 | 1.0 | 2026-05-15 | Initial vision + architecture |
-| **1.1** | **2026-05-16** | **Phase ordering fix (output trước image), Strategy pattern cho image fetch (Decision #19), FormattingRules explicit schema + image_alt_strategy enum (Decision #23), TXT scope narrow VN+EN (Decision #20), i18n baseline (Decision #21), EPUB Dublin Core naming (Decision #22), bulk-relearn UX (Decision #24), Input × Output matrix table, baseline regression protocol (Decision #18), tools/ folder, README maintained throughout (Decision #25)** |
+| 1.1 | 2026-05-16 | Phase ordering fix (output trước image), Strategy pattern cho image fetch (Decision #19), FormattingRules explicit schema + image_alt_strategy enum (Decision #23), TXT scope narrow VN+EN (Decision #20), i18n baseline (Decision #21), EPUB Dublin Core naming (Decision #22), bulk-relearn UX (Decision #24), Input × Output matrix table, baseline regression protocol (Decision #18), tools/ folder, README maintained throughout (Decision #25) |
+| **1.2** | **2026-05-17** | **v1.0 SHIPPED. All 8 phases done. Phase 5 TXT adapter ships (exit ramp NOT triggered — VN+EN regex pass). Phase 6 Batch C cleanup ships (safe subset only — pure deletion ~0.6% LOC reduction). Behavioral refactors (FlowSpec, image stage extract) deferred to v1.1 backlog pending baseline capture. CLAUDE Decision #50-56, full Decision Log + ROADMAP marked complete.** |
 
 ---
 
-**END BLUEPRINT v1.1**
+## 14. v1.0 Final Status
+
+| Component | Status | Note |
+|---|---|---|
+| Web scraper (existing) | ✅ working | 5+ site profiles tested |
+| EPUB adapter | ✅ done | Dublin Core naming, body fallback, watermark filter (`epub:` namespace) |
+| TXT adapter | ✅ done | VN + EN regex pass. CJK defer v1.1. AI fallback with verify. |
+| Output modes | ✅ done | obsidian (Markdown + image), translate (plain + placeholder), raw (text only) |
+| Image stage | ✅ done | Mode-aware, Strategy pattern (WebImageFetcher + EpubImageExtractor) |
+| Learning Phase | ✅ done | 8 AI calls + Naming + AI#image |
+| AdsFilter | ✅ done | Cross-chapter freq, 3 namespaces (web / `epub:` / `txt:`) |
+| Resume / Cancel | ✅ done | Progress JSON per story, Ctrl+C safe |
+| CLI | ✅ done | `--output-mode`, `--bulk-relearn`, `--fast-learning`, `--no-validation` |
+| Docs | ✅ done | README + CHANGELOG + CLAUDE + BLUEPRINT + ROADMAP + TROUBLESHOOTING + V1_1_BACKLOG |
+| Baseline snapshot capture | ⚠️ deferred | Tool ready (`tools/snapshot_baseline.py`), live capture defer (user discretion: needs API quota + scrape time) |
+| FlowSpec orchestrator unify | ⚠️ deferred v1.1 | Behavioral refactor — needs baseline first |
+| Image stage extract to shared | ⚠️ deferred v1.1 | STOP §10 + baseline first |
+
+**Codebase:** ~11,340 LOC across 52 Python files.
+
+---
+
+**END BLUEPRINT v1.2**
 
 *Living document — update khi vision/architecture đổi.*
