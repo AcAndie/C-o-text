@@ -9,9 +9,11 @@ output/
 output_*/
 progress_*.json
 
-# User content
+# User content / test fixtures (binary or per-user, never committed)
 *.epub
-smoke_test.txt
+/smoke_test.txt
+/links_*.txt
+docs/test_data/
 data/*
 !data/baselines/
 data/baselines/*
