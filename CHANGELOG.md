@@ -110,8 +110,9 @@ First production release. Universal novel content normalizer supporting 3 input 
 ### Ship Smoke Test Results (2026-05-17)
 - **EPUB** (Ready Player One.epub): 52 chapters × 3 output modes (obsidian/translate/raw) = **156 files, all exit 0**
 - **TXT** (synthetic 3-chapter test): 3 chapters × 3 output modes = **9 files, all exit 0**
-- **Web** (3 sites × 3 modes = 9 outputs): deferred to user — requires live API quota + 30+ chapter fetches per learn × 3 fresh learns. See ROADMAP P6.4.
-- Bugs surfaced during smoke (deferred v1.1): EPUB title-path-fallback, EPUB image href relative-path miss, EPUB over-aggressive splitting (52 vs ~40 real chapters), AI 503 spikes (single-key SPOF).
+- **Web** (Royal Road `Rock falls, everyone dies` — fresh learn + scrape): 19 chapters obsidian mode, exit 0 (9:13 elapsed). Title + frontmatter + body all clean. Translate + raw modes for this story blocked by `--output-dir` CLI bug (new V1_1 P2.0); writer code itself validated via EPUB + TXT smokes.
+- **Web** (FFN + 69shuba): deferred to user — needs API + fresh learns per site (~10 min each).
+- Bugs surfaced during smoke (deferred v1.1): EPUB title-path-fallback, EPUB image href relative-path miss, EPUB over-aggressive splitting (52 vs ~40 real chapters), AI 503 spikes (single-key SPOF), **web `--output-dir` CLI flag ignored** (writes to `output/` regardless).
 
 ### Known Tech Debt (deferred v1.1)
 Priority order in [docs/V1_1_BACKLOG.md §0](docs/V1_1_BACKLOG.md):

@@ -32,7 +32,19 @@ Everything below P5 is "nice to have when motivated" — none blocking.
 
 **Effort**: 1 session (~2-3 hours with API quota available).
 
-### 0.2 — P2: EPUB extraction bug fixes
+### 0.2 — P2: Smoke-surfaced bugs (EPUB + Web)
+
+#### 2.0 Web `--output-dir` CLI flag ignored (NEW — found 2026-05-17 web smoke)
+
+**Symptom**: `python main.py --output-dir foo/bar links.txt` writes to `output/{slug}/` not `foo/bar/{slug}/`.
+
+**Cause**: `main.py::_output_dir(url)` hard-codes `config.OUTPUT_DIR` constant. Web flow uses `_output_dir()` directly; `RunConfig.output_dir` (from CLI parse) only flows to EPUB/TXT orchestrator paths.
+
+**Fix**: `_output_dir(url, base=None)` accepts override → `base or OUTPUT_DIR`. Caller in `main()` passes `run_config.output_dir`. Same for `_progress_path` (currently keys on `_output_dir`, so progress collides across modes when --output-dir not respected).
+
+**Effort**: 30 min + smoke re-test.
+
+#### 2.1 EPUB extraction bugs (original P2 content)
 
 **Why**: Live smoke (Ready Player One.epub) surfaced 3 bugs:
 
