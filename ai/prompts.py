@@ -107,6 +107,20 @@ content_selector KHÔNG ĐƯỢC bao gồm các phần sau:
 
 Nếu selector của bạn bao gồm bất kỳ phần nào trên → CHỌN SELECTOR CON (child) HẸP HƠN.
 
+CHAPTER_TITLE_SELECTOR FORBIDDEN ELEMENTS (⚠ CRITICAL):
+  ✗ TUYỆT ĐỐI KHÔNG chọn selector trỏ vào hoặc bao gồm:
+    - <select> dropdown (vd FFN `select#chap_select`) — extract sẽ concat
+      TẤT CẢ chapter options thành 1 string khổng lồ
+    - <option> trong dropdown (cùng lý do)
+    - <nav> chứa chapter list — concat tất cả link text
+    - <ul>/<ol> chứa list chapter — concat list items
+    - <table>/<tbody> chứa table of contents
+  ✓ chapter_title_selector phải trỏ vào element CHỈ chứa title của chapter
+    hiện tại: thường là <h1>, <h2>, <div.chapter-title>, <span.title>
+  ✓ Nếu site có dropdown chapter list NHƯNG title hiện tại ở h1 → chọn h1
+  ✓ Nếu KHÔNG TÌM THẤY title element độc lập → return null (fallback chain
+    sẽ tự lấy từ <title> tag hoặc URL slug)
+
 QUAN TRỌNG — title_is_inside_remove_candidate:
   Đặt true nếu chapter_title NẰM BÊN TRONG một element mà bình thường
   bạn muốn remove (VD: title trong div.text-center cùng với nav buttons).
@@ -143,6 +157,13 @@ Trước khi chọn content_selector, verify nó KHÔNG bao gồm:
   - Reading settings/options panels
   - Author bio sections
 Nếu nghi ngờ → chọn selector CON hẹp hơn.
+
+TITLE PURITY RULE (⚠ CRITICAL):
+chapter_title_selector TUYỆT ĐỐI KHÔNG được trỏ vào container element như:
+  - <select> dropdown / <option> (FFN `select#chap_select` — concat ALL options)
+  - <nav>, <ul>, <ol>, <table>, <tbody> chứa chapter list
+Title phải là element chứa CHỈ tên chapter hiện tại (h1, h2, span.title, div.chapter-name).
+Nếu không có element độc lập → return null (fallback chain xử lý).
 
 PHÂN BIỆT:
   • chapter_title ≠ story_title ≠ author_name
@@ -296,6 +317,16 @@ PHÂN BIỆT:
   ✗ story_title   : "Rock falls, everyone dies"
   ✗ author_name   : "zechamp" / "AuthorNameFollow Author"
   ✗ site_suffix   : "| Royal Road" / "- FanFiction.net"
+
+FORBIDDEN TITLE SOURCES (⚠ CRITICAL — nếu chọn sẽ get garbage):
+  ✗ <select> dropdown của chapter list (FFN `select#chap_select`,
+    `option[selected]`) — extract sẽ concat TẤT CẢ option text:
+    "1. Chapter 12. Chapter 23. Chapter 3..."
+  ✗ <nav>/<ul>/<ol>/<table> chứa chapter list — concat tất cả link text
+  ✓ Chỉ chọn element CHỈ chứa title hiện tại: <h1>, <h2>, <span class="title">,
+    <div class="chapter-name">, <a class="chapter-link"> (nếu unique)
+  ✓ Nếu site CHỈ có dropdown selector (no h1) → recommended_title_selector = null
+    (fallback chain dùng <title> tag hoặc URL slug — an toàn hơn)
 
 Trả về JSON (CHỈ JSON thuần):
 {{

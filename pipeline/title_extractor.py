@@ -26,6 +26,16 @@ from utils.string_helpers import normalize_title, strip_site_suffix
 
 
 _MIN_TITLE_LEN = 3
+# Fix TITLE-C: titles longer than this are almost certainly extracted from
+# a container like <select> dropdown (FFN chap_select), <nav>, or full body.
+# Real chapter titles top out around 100-150 chars even with long subtitles.
+# Reject + fall through to next title block in chain.
+_MAX_TITLE_LEN = 200
+
+# Fix TITLE-D: selectors pointing at these element types extract container
+# text (all children concatenated) — almost never a single chapter title.
+# Drop selector candidate at execute-time even if AI/profile chose them.
+_FORBIDDEN_TITLE_TAGS = {"select", "option", "nav", "ul", "ol", "table", "tbody"}
 
 # URL slug → title helper (inlined from former core/extractor.py in Phase 6).
 _SLUG_CLEAN_RE   = re.compile(r"[-_]+")
@@ -97,6 +107,18 @@ class SelectorTitleBlock(ScraperBlock):
                     start,
                 )
 
+            # Fix TITLE-D: reject container elements (select/nav/ul/...) — they
+            # concat ALL child text. Common AI mistake: picking <select> dropdown
+            # of chapter list as title selector (FFN `select#chap_select`).
+            tag_name = (getattr(el, "name", "") or "").lower()
+            if tag_name in _FORBIDDEN_TITLE_TAGS:
+                return self._timed(
+                    BlockResult.failed(
+                        f"title selector {sel!r} resolves to <{tag_name}> container"
+                    ),
+                    start,
+                )
+
             raw = el.get_text(strip=True)
 
             # Fix TITLE-A: Apply strip_site_suffix() unconditionally — handles
@@ -108,6 +130,18 @@ class SelectorTitleBlock(ScraperBlock):
             if len(text) < _MIN_TITLE_LEN:
                 return self._timed(
                     BlockResult.failed(f"title too short: {text!r}"),
+                    start,
+                )
+
+            # Fix TITLE-C: reject suspiciously long titles. Real chapter titles
+            # top out ~150 chars. >200 = container text leak (multiple options
+            # joined, nav text, etc). Fall through to H1/TitleTag fallback.
+            if len(text) > _MAX_TITLE_LEN:
+                return self._timed(
+                    BlockResult.failed(
+                        f"title selector {sel!r} produced {len(text)} chars — "
+                        f"likely container leak, falling through"
+                    ),
                     start,
                 )
 
@@ -146,7 +180,8 @@ class H1TitleBlock(ScraperBlock):
                     # "[ ... words ]" và các artifacts trước normalize.
                     raw  = strip_site_suffix(el.get_text(strip=True))
                     text = normalize_title(raw)
-                    if len(text) >= _MIN_TITLE_LEN:
+                    # Fix TITLE-C: length sanity (skip if container leak)
+                    if _MIN_TITLE_LEN <= len(text) <= _MAX_TITLE_LEN:
                         return self._timed(
                             BlockResult.success(
                                 data        = text,
@@ -190,6 +225,11 @@ class TitleTagBlock(ScraperBlock):
 
             if len(text) < _MIN_TITLE_LEN:
                 return self._timed(BlockResult.failed("title tag too short"), start)
+            if len(text) > _MAX_TITLE_LEN:
+                return self._timed(
+                    BlockResult.failed(f"title tag too long ({len(text)} chars)"),
+                    start,
+                )
 
             return self._timed(
                 BlockResult.success(
@@ -232,6 +272,11 @@ class OgTitleBlock(ScraperBlock):
 
             if len(text) < _MIN_TITLE_LEN:
                 return self._timed(BlockResult.failed("og:title too short"), start)
+            if len(text) > _MAX_TITLE_LEN:
+                return self._timed(
+                    BlockResult.failed(f"og:title too long ({len(text)} chars)"),
+                    start,
+                )
 
             return self._timed(
                 BlockResult.success(

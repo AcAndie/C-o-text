@@ -4,6 +4,24 @@ All notable changes to Cào Text. Format based on [Keep a Changelog](https://kee
 
 ---
 
+## [1.0.1] — 2026-05-17
+
+Hotfix release. Title extraction container-leak bug found in v1.0.0 post-ship via user inspection of FFN output.
+
+### Fixed
+- **TITLE-D**: `SelectorTitleBlock` rejects selectors resolving to container elements (`<select>`, `<option>`, `<nav>`, `<ul>`, `<ol>`, `<table>`, `<tbody>`). These concat ALL child text → garbled titles like `"1. Chapter 12. Chapter 23. Chapter 34..."` (entire FFN chapter dropdown).
+- **TITLE-C**: All title blocks (`SelectorTitleBlock`, `H1TitleBlock`, `TitleTagBlock`, `OgTitleBlock`) reject titles >200 chars and fall through chain. Defense-in-depth against container leaks past Fix D.
+- **FILENAME-F**: `format_chapter_filename()` clamps `raw_title` to 200 chars before pattern parsing. Belt-and-suspenders for cases where title chain is bypassed (progress fallback path).
+- **AI prompts** (AI#1 / AI#2 / AI#5 title): explicit forbidden-element list. AI now instructed to never pick `<select>`, `<option>`, `<nav>`, `<ul>`, `<ol>`, `<table>`, `<tbody>` for `chapter_title_selector`. Return `null` if no clean element exists — fallback chain (H1/title/og/url_slug) safer than container leak.
+
+### Verified
+- FFN (`Monster? No, I'm a Cultivator!`) re-learn after fix: AI picked `title_selector: 'b'` (NOT `<select>`). 75 chapters scraped, all filenames clean (`0001_Chapter1.md` through `0075_*.md`). Titles: `"Monster? No, I'm a Cultivator! Chapter N"` — readable, bounded.
+
+### Discovered (logged v1.1 backlog)
+- AI sometimes picks bare tag selector (`'b'`) — works but fragile. Future: prompt should prefer ID/class selectors with high specificity.
+
+---
+
 ## [1.0.0] — 2026-05-17
 
 First production release. Universal novel content normalizer supporting 3 input sources × 3 output modes.

@@ -37,6 +37,12 @@ _RE_WORD_COUNT = re.compile(
 
 _NAV_EDGE_SCAN = 7
 
+# Fix FILENAME-F: belt-and-suspenders title clamp.
+# If raw_title >200 chars, title_extractor TITLE-C/D guards failed upstream
+# (e.g. progress fallback path bypasses title chain). Truncate to keep
+# filename sane + fall back to `{kw}{n}` if no chapter pattern found.
+_RAW_TITLE_MAX_LEN = 200
+
 
 # ── Garbage subtitle detection (Fix FILENAME-C) ────────────────────────────────
 
@@ -103,6 +109,12 @@ def format_chapter_filename(
     prefix_strip = (progress.get("story_prefix_strip") or "").strip()
 
     title = raw_title.strip()
+
+    # Fix FILENAME-F: clamp pathologically long titles (container leak from
+    # bypassed title chain). Use only first N chars for parsing; if no chapter
+    # pattern matches, downstream falls back to `{kw}{chapter_num}`.
+    if len(title) > _RAW_TITLE_MAX_LEN:
+        title = title[:_RAW_TITLE_MAX_LEN]
 
     # Bóc story prefix
     if prefix_strip:
