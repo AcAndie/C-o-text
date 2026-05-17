@@ -690,6 +690,59 @@ Trả về JSON (CHỈ JSON thuần):
 """
 
     @staticmethod
+    def classify_input_url(html_snippet: str, url: str, real_link_candidates: str) -> str:
+        return f"""Phân loại URL người dùng cung cấp + extract metadata.
+
+URL: {url}
+HTML (8000 chars đầu):
+{html_snippet}
+
+CHAPTER LINK CANDIDATES extracted từ HTML (URLs THẬT — chọn từ list này,
+KHÔNG tự ý sinh URL):
+{real_link_candidates}
+
+NHIỆM VỤ:
+Người dùng paste URL truyện vào scraper. URL có thể là:
+- "chapter" : trang chứa NỘI DUNG MỘT chương (prose dài, dialogue, narrative)
+- "index"   : trang chứa DANH SÁCH chapter (table of contents — nhiều link
+              dẫn đến chapter, ít/no prose)
+- "story_root": trang giới thiệu truyện (synopsis, author, tags — chưa có
+              chapter list rõ ràng, có link "Start Reading"/"Chapter 1")
+- "unknown" : không thể xác định
+
+PHÁT HIỆN NGÔN NGỮ chính của HTML:
+  "en" = English, "vi" = Tiếng Việt, "zh" = 中文 (Chinese), "ja" = 日本語,
+  "ko" = 한국어, "ru" = Русский, "other" = khác
+
+PHÁT HIỆN chapter_keyword theo ngôn ngữ:
+  EN → "Chapter"
+  VI → "Chương"
+  ZH → "第N章" (template, kèm số)
+  JA → "第N話" hoặc "第N章"
+  KO → "제N장"
+  RU → "Глава"
+  → return null nếu không xác định
+
+NẾU page_type == "index" hoặc "story_root":
+  Chọn URL CHAPTER 1 từ list CANDIDATES trên — chương đầu tiên, số nhỏ
+  nhất hoặc match với text "Chapter 1"/"Chương 1"/"第一章"/"Глава 1".
+  TUYỆT ĐỐI CHỌN URL TỪ list CANDIDATES, KHÔNG tự ý sinh URL mới.
+  Nếu list candidates empty → first_chapter_url = null.
+
+Trả về JSON (CHỈ JSON thuần, không markdown):
+{{
+  "page_type": "chapter" | "index" | "story_root" | "unknown",
+  "language": "en" | "vi" | "zh" | "ja" | "ko" | "ru" | "other",
+  "language_iso": "en-US" | "zh-CN" | ... (nullable),
+  "first_chapter_url": "https://..." (nếu page_type != chapter; null nếu chapter hoặc không tìm thấy),
+  "story_name": "Tên truyện trích từ HTML (nullable)",
+  "chapter_keyword": "Chapter" | "Chương" | "第N章" | "Глава" | null,
+  "chapter_count_estimate": số chapter ước tính nếu index (null nếu không xác định),
+  "confidence": 0.0-1.0
+}}
+"""
+
+    @staticmethod
     def classify_and_find(hint_block: str, html_snippet: str, base_url: str) -> str:
         return f"""Phân loại trang và tìm URL chương tiếp theo (emergency fallback).
 

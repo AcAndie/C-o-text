@@ -392,6 +392,28 @@ async def main() -> None:
     print(f"📋 {len(profiles)} domain profile đã load\n")
     write_session_header(len(urls))
 
+    # ── Phase 0: Upfront URL classification (v1.0.5) ────────────────────────────
+    # User may paste an index/TOC URL instead of a chapter URL. Classify each
+    # URL once (AI cached), redirect index → first_chapter_url, skip if cache
+    # hit. Cost: 1 AI call per new URL (~negligible for free tier). Also
+    # detects language (en/vi/zh/ja/ko/ru) — multi-lang support hook.
+    from utils.url_classifier import resolve_to_chapter_url
+
+    print(f"🧭 Phase 0: Classify {len(urls)} URL (index → chapter 1 redirect)...\n", flush=True)
+    resolved_urls: list[str] = []
+    for raw_url in urls:
+        try:
+            final_url, _info = await resolve_to_chapter_url(
+                raw_url, pool, app.pw_pool, app.ai_limiter,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"  [WARN] Classify thất bại {raw_url[:55]}: {e} — dùng URL gốc", flush=True)
+            final_url = raw_url
+        resolved_urls.append(final_url)
+    urls = resolved_urls
+
     # ── Phase 1: Sequential learning ──────────────────────────────────────────────
     # Học tất cả domains cần học TRƯỚC, tuần tự từng domain một.
     # Phase 2 (scraping) sẽ tìm thấy profiles và không học lại → không bao giờ

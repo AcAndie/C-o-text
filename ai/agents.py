@@ -553,6 +553,25 @@ _S_EXTRACT_CONTENT = {
     "required": ["content", "confidence"],
 }
 
+# v1.0.5 — upfront input URL classifier (vs in-pipeline NAV fallback above)
+_S_INPUT_CLASSIFY = {
+    "type": "object",
+    "properties": {
+        "page_type": {
+            "type": "string",
+            "enum" : ["chapter", "index", "story_root", "unknown"],
+        },
+        "language"        : {"type": "string"},  # ISO 639-1 ish: en/vi/zh/ja/ko/ru/other
+        "language_iso"    : {"type": "string", "nullable": True},  # specific tag: zh-CN/ja-JP/...
+        "first_chapter_url": {"type": "string", "nullable": True},
+        "story_name"      : {"type": "string", "nullable": True},
+        "chapter_keyword" : {"type": "string", "nullable": True},  # "Chapter"/"Chương"/"第N章"/"Глава"
+        "chapter_count_estimate": {"type": "integer", "nullable": True},
+        "confidence"      : {"type": "number"},
+    },
+    "required": ["page_type", "language", "confidence"],
+}
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LEARNING PHASE AGENTS
@@ -968,6 +987,63 @@ async def ai_verify_ads(
     except Exception as e:
         print(f"  [AI verify_ads] ⚠ Thất bại: {_fmt(e)}", flush=True)
     return []
+
+
+async def ai_classify_input_url(
+    html      : str,
+    url       : str,
+    limiter   : AIRateLimiter,
+) -> dict | None:
+    """
+    v1.0.5 — upfront classifier for user-provided URL.
+
+    Determines whether URL points at an index/TOC page or actual chapter
+    page, plus extracts language + chapter_keyword + (if index) first
+    chapter URL. Called ONCE per new URL before pipeline starts.
+
+    Anti-hallucination: extract REAL chapter links from HTML via
+    _chapter_links() and pass top 30 as candidates. AI must pick from
+    candidates, not invent URL.
+
+    Returns dict with keys per _S_INPUT_CLASSIFY schema, or None if
+    AI call failed.
+    """
+    # Extract real chapter link candidates from HTML (prevents AI URL hallucination)
+    real_links = await asyncio.to_thread(_chapter_links, html, url)
+    candidates_block = "\n".join(f"  - {link}" for link in real_links[:30]) if real_links else "  (no chapter-style links found)"
+
+    snip   = snippet(html, 8000)
+    prompt = Prompts.classify_input_url(snip, url, candidates_block)
+    try:
+        text   = await _call(prompt, limiter, _S_INPUT_CLASSIFY)
+        result = _parse(text)
+        if not isinstance(result, dict):
+            return None
+
+        # Anti-hallucination guard: validate first_chapter_url against real links
+        proposed = result.get("first_chapter_url")
+        if proposed:
+            if proposed in real_links:
+                pass  # valid pick from candidates
+            else:
+                # AI returned URL not in extracted candidates → likely hallucinated
+                # Fall back to first extracted link if any
+                print(
+                    f"  [AI classify-input] ⚠ first_chapter_url not in real links — "
+                    f"fallback to extracted first link",
+                    flush=True,
+                )
+                result["first_chapter_url"] = real_links[0] if real_links else None
+        elif result.get("page_type") in ("index", "story_root") and real_links:
+            # AI didn't pick but we have links — use first
+            result["first_chapter_url"] = real_links[0]
+
+        return result
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        print(f"  [AI classify-input] ⚠ Thất bại: {_fmt(e)}", flush=True)
+    return None
 
 
 async def ai_extract_content(

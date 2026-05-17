@@ -4,6 +4,35 @@ All notable changes to Cào Text. Format based on [Keep a Changelog](https://kee
 
 ---
 
+## [1.0.5] — 2026-05-17
+
+Phase 0 — Upfront URL classifier. User paste any URL (index page, story root, chapter), scraper auto-classifies + redirects to chapter 1 if needed. Detects language for multi-language support hook (en/vi/zh/ja/ko/ru/other).
+
+### Added
+- **`ai/agents.py::ai_classify_input_url`** + **`_S_INPUT_CLASSIFY`** schema: 1 AI call classifies user URL into `chapter`/`index`/`story_root`/`unknown`. Returns `page_type`, `language`, `language_iso`, `first_chapter_url`, `story_name`, `chapter_keyword`, `chapter_count_estimate`, `confidence`.
+- **`ai/prompts.py::classify_input_url`**: prompt instructs detection of page type + language + chapter keyword in target language ("Chapter"/"Chương"/"第N章"/"Глава"/"제N장"/...). Passes REAL extracted chapter link candidates to AI.
+- **`utils/url_classifier.py`** (NEW): cache + AI dispatch + `resolve_to_chapter_url()` helper. Cache file `data/url_classifications.json`. Cache hit policy: skip AI if confidence ≥ 0.7.
+- **`main.py` Phase 0**: classifies all input URLs upfront, redirects index/story_root → first_chapter_url before passing to learning + scrape phases.
+
+### Anti-hallucination guard
+First test revealed AI invented fake chapter URL (`chapter/929457/...` for "Rock falls" → 404 → redirected to different story "Obscurity"). Fix: `_chapter_links()` extracts REAL `<a href>` chapter links from HTML and passes top 30 as candidates in prompt. AI must pick from list, can't invent. If AI returns URL not in candidates → fallback to first extracted link.
+
+### Multi-language support
+Classifier detects `language` + `chapter_keyword` for any language Gemini understands (en/vi/zh/ja/ko/ru/other). Profile/Naming phase can consume these fields in future v1.1 work for filename / regex localization. v1.0.5 ships detection only — downstream regex/filename uses still EN/VN as before.
+
+### Verified
+- Index URL `https://www.royalroad.com/fiction/55418/rock-falls-everyone-dies` → AI classified `page_type="index"`, `language="en"`, redirected to real chapter 1 (`chapter/1083016/...`), 18 chapters scraped successfully.
+- Cache hit on second run: 0 AI calls, instant redirect from cached data.
+- Story name correct ("Rock falls, everyone dies"), not hallucinated wrong story.
+
+### CLI behavior change
+New Phase 0 stage prints `🧭 Phase 0: Classify N URL...` before Phase 1 learning. ~5-10s per new URL (1 fetch + 1 AI call). Subsequent runs use cache → no overhead.
+
+### Bumped
+- `VERSION = "1.0.5"`.
+
+---
+
 ## [1.0.4] — 2026-05-17
 
 Generalized hidden-element strip. Implements user-stated principle: "only scrape what visible to normal users".
