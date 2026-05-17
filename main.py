@@ -228,11 +228,11 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
     if args.fast_learning:
         # Flag được đọc bởi learning/phase.py
         os.environ["CAO_FAST_LEARNING"] = "1"
-        print(f"  [Config] Fast learning mode: ProseRichness validation skipped", flush=True)
+        print("  [Config] Fast learning mode: ProseRichness validation skipped", flush=True)
 
     if args.no_validation:
         os.environ["CAO_NO_VALIDATION"] = "1"
-        print(f"  [Config] Validation: ProseRichnessBlock disabled", flush=True)
+        print("  [Config] Validation: ProseRichnessBlock disabled", flush=True)
 
 
 # ── Bulk relearn ──────────────────────────────────────────────────────────────

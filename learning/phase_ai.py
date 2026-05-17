@@ -67,9 +67,9 @@ async def run_10_ai_calls_internal(
     dangerous_selectors: set[str]        = set()
 
     # ── PHASE 1: Structure Discovery ──────────────────────────────────────────
-    print(f"\n  [Learn] ━━ Phase 1: Structure Discovery ━━", flush=True)
+    print("\n  [Learn] ━━ Phase 1: Structure Discovery ━━", flush=True)
 
-    print(f"  [Learn] 🤖 AI#1: DOM structure mapping (Ch.1+2)...", flush=True)
+    print("  [Learn] 🤖 AI#1: DOM structure mapping (Ch.1+2)...", flush=True)
     ai1 = await ai_dom_structure(
         snippet(htmls[0], 10000), urls[0],
         snippet(htmls[1], 8000),  urls[1],
@@ -84,9 +84,9 @@ async def run_10_ai_calls_internal(
             flush=True,
         )
     else:
-        print(f"  [Learn] ⚠ AI#1 thất bại", flush=True)
+        print("  [Learn] ⚠ AI#1 thất bại", flush=True)
 
-    print(f"  [Learn] 🤖 AI#2: Independent cross-check (Ch.1+2)...", flush=True)
+    print("  [Learn] 🤖 AI#2: Independent cross-check (Ch.1+2)...", flush=True)
     ai2 = await ai_independent_check(
         snippet(htmls[0], 10000), urls[0],
         snippet(htmls[1], 8000),  urls[1],
@@ -97,17 +97,17 @@ async def run_10_ai_calls_internal(
         print(f"     → content={ai2.get('content_selector')!r} conf={ai2.get('confidence', 0):.2f}", flush=True)
 
     if not ai1 and not ai2:
-        print(f"  [Learn] ✗ AI#1 và AI#2 đều thất bại — không thể học", flush=True)
+        print("  [Learn] ✗ AI#1 và AI#2 đều thất bại — không thể học", flush=True)
         return None
 
     consensus, p1_conflicts = resolve_phase1_conflicts(ai1, ai2)
     if p1_conflicts:
         print(f"  [Learn] ⚠ {len(p1_conflicts)} conflicts Phase 1: {p1_conflicts}", flush=True)
     else:
-        print(f"  [Learn] ✓ Phase 1: AI#1 và AI#2 đồng thuận", flush=True)
+        print("  [Learn] ✓ Phase 1: AI#1 và AI#2 đồng thuận", flush=True)
 
     if n >= 4:
-        print(f"  [Learn] 🤖 AI#3: Selector stability (Ch.3+4)...", flush=True)
+        print("  [Learn] 🤖 AI#3: Selector stability (Ch.3+4)...", flush=True)
         ai3 = await ai_stability_check(
             snippet(htmls[2], 8000), urls[2],
             snippet(htmls[3], 8000), urls[3],
@@ -133,11 +133,11 @@ async def run_10_ai_calls_internal(
         all_results["ai3"] = None
 
     # ── PHASE 2: Conflict Resolution ──────────────────────────────────────────
-    print(f"\n  [Learn] ━━ Phase 2: Conflict Resolution ━━", flush=True)
+    print("\n  [Learn] ━━ Phase 2: Conflict Resolution ━━", flush=True)
     current_remove = list(consensus.get("remove_selectors") or [])
 
     if n >= 5 and current_remove:
-        print(f"  [Learn] 🤖 AI#4: Remove selectors audit (Ch.5)...", flush=True)
+        print("  [Learn] 🤖 AI#4: Remove selectors audit (Ch.5)...", flush=True)
         ai4 = await ai_remove_audit(
             snippet(htmls[4], 8000), urls[4],
             current_remove,
@@ -158,7 +158,7 @@ async def run_10_ai_calls_internal(
         all_results["ai4"] = None
 
     if n >= 6:
-        print(f"  [Learn] 🤖 AI#5: Title deep-dive (Ch.6)...", flush=True)
+        print("  [Learn] 🤖 AI#5: Title deep-dive (Ch.6)...", flush=True)
         ai5 = await ai_title_deepdive(
             snippet(htmls[5], 8000), urls[5],
             consensus.get("chapter_title_selector"),
@@ -175,14 +175,14 @@ async def run_10_ai_calls_internal(
         all_results["ai5"] = None
 
     # ── PHASE 3: Content Intelligence ─────────────────────────────────────────
-    print(f"\n  [Learn] ━━ Phase 3: Content Intelligence ━━", flush=True)
+    print("\n  [Learn] ━━ Phase 3: Content Intelligence ━━", flush=True)
 
     # P1-C: init đầy đủ TRƯỚC khi AI#6 chạy. Nếu AI#6 thất bại thì default
     # vẫn đúng. Nếu thành công thì keys sẽ bị override bên dưới.
     formatting_rules: dict = _default_formatting_rules()
 
     if n >= 7:
-        print(f"  [Learn] 🤖 AI#6: Special content detection (Ch.7)...", flush=True)
+        print("  [Learn] 🤖 AI#6: Special content detection (Ch.7)...", flush=True)
         ai6 = await ai_special_content(snippet(htmls[6], 8000), urls[6], ai_limiter)
         all_results["ai6"] = ai6
         if ai6:
@@ -216,7 +216,7 @@ async def run_10_ai_calls_internal(
     ads_keywords: list[str] = []
 
     if n >= 8:
-        print(f"  [Learn] 🤖 AI#7: Ads deep scan (Ch.8)...", flush=True)
+        print("  [Learn] 🤖 AI#7: Ads deep scan (Ch.8)...", flush=True)
         ai7 = await ai_ads_deepscan(snippet(htmls[7], 8000), urls[7], ai_limiter)
         all_results["ai7"] = ai7
         if ai7:
@@ -235,7 +235,7 @@ async def run_10_ai_calls_internal(
     download_images : bool       = False
     image_selector  : str | None = None
     if n >= 1:
-        print(f"  [Learn] 🤖 AI#image: Inline image policy (Ch.1)...", flush=True)
+        print("  [Learn] 🤖 AI#image: Inline image policy (Ch.1)...", flush=True)
         ai_img = await ai_image_policy(
             snippet(htmls[0], 8000), urls[0],
             consensus.get("content_selector"),
@@ -252,8 +252,8 @@ async def run_10_ai_calls_internal(
             )
 
     # ── PHASE 4: Master Synthesis (AI#8) ──────────────────────────────────────
-    print(f"\n  [Learn] ━━ Phase 4: Master Synthesis ━━", flush=True)
-    print(f"  [Learn] 🤖 AI#8: Master profile synthesis...", flush=True)
+    print("\n  [Learn] ━━ Phase 4: Master Synthesis ━━", flush=True)
+    print("  [Learn] 🤖 AI#8: Master profile synthesis...", flush=True)
 
     synthesis_summary = _build_synthesis_summary(
         all_results, consensus, dangerous_selectors, ads_keywords, formatting_rules, n,
@@ -292,7 +292,7 @@ async def run_10_ai_calls_internal(
             "image_selector"        : image_selector,
         }
     else:
-        print(f"  [Learn] ⚠ AI#8 thất bại — dùng consensus", flush=True)
+        print("  [Learn] ⚠ AI#8 thất bại — dùng consensus", flush=True)
         final_remove = [s for s in (consensus.get("remove_selectors") or []) if s not in dangerous_selectors]
         confidence   = _estimate_confidence(all_results, n)
         return {
@@ -317,14 +317,14 @@ async def run_10_ai_calls_internal(
 def _build_synthesis_summary(results, consensus, dangerous_selectors, ads_keywords, formatting_rules, n_chapters):
     lines: list[str] = []
     lines.append(f"Chapters fetched: {n_chapters}")
-    lines.append(f"\n--- PHASE 1 CONSENSUS ---")
+    lines.append("\n--- PHASE 1 CONSENSUS ---")
     lines.append(f"content_selector      : {consensus.get('content_selector')!r}")
     lines.append(f"chapter_title_selector: {consensus.get('chapter_title_selector')!r}")
     lines.append(f"next_selector         : {consensus.get('next_selector')!r}")
     lines.append(f"nav_type              : {consensus.get('nav_type')!r}")
     lines.append(f"remove_selectors      : {consensus.get('remove_selectors', [])}")
     if dangerous_selectors:
-        lines.append(f"\n--- ⚠ DANGEROUS SELECTORS ---")
+        lines.append("\n--- ⚠ DANGEROUS SELECTORS ---")
         for s in sorted(dangerous_selectors):
             lines.append(f"  DANGEROUS: {s!r}")
     # Batch A: ai8/ai9 (nav_stress/full_simulation) đã bị bỏ — không còn trong summary
@@ -336,7 +336,7 @@ def _build_synthesis_summary(results, consensus, dangerous_selectors, ads_keywor
             for k, v in list(r.items())[:5]:
                 lines.append(f"  {k}: {str(v)[:80]}")
     if formatting_rules:
-        lines.append(f"\n--- FORMATTING ---")
+        lines.append("\n--- FORMATTING ---")
         lines.append(f"tables: {formatting_rules.get('tables', False)}")
         lines.append(f"math:   {formatting_rules.get('math_support', False)}")
     if ads_keywords:
