@@ -18,9 +18,8 @@ import asyncio
 import json
 import math
 import time
-from typing import Any
 
-from bs4 import BeautifulSoup, Tag
+from bs4 import Tag
 
 from config import FALLBACK_CONTENT_SELECTORS
 from pipeline.base import BlockType, BlockResult, PipelineContext, ScraperBlock

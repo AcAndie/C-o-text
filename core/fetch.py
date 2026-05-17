@@ -15,7 +15,7 @@ import asyncio
 import logging
 from urllib.parse import urlparse
 
-from utils.string_helpers import is_cloudflare_challenge, is_junk_page
+from utils.string_helpers import is_cloudflare_challenge
 
 logger = logging.getLogger(__name__)
 

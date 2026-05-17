@@ -15,7 +15,6 @@ import asyncio
 import json
 import logging
 import os
-from pathlib import Path
 
 from config import PROFILES_FILE, DATA_DIR, OUTPUT_DIR, PROGRESS_DIR
 from utils.types import ProgressDict, SiteProfile

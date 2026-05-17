@@ -10,9 +10,9 @@ from __future__ import annotations
 import re
 from urllib.parse import urljoin, urlparse
 
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup
 
-from config import RE_NEXT_BTN, RE_CHAP_HREF, RE_CHAP_SLUG, RE_FANFIC, RE_CHAP_URL
+from config import RE_NEXT_BTN, RE_CHAP_SLUG, RE_FANFIC, RE_CHAP_URL
 
 # Patterns cho index/TOC pages
 _INDEX_PATH_RE = re.compile(

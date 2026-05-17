@@ -74,7 +74,6 @@ from ai.agents            import ai_classify_and_find, ai_find_first_chapter
 from pipeline.executor    import run_chapter as pipeline_run_chapter
 from pipeline.executor    import build_cleaned_chapter
 from writers.base         import ChapterWriter
-from writers.obsidian     import ObsidianWriter
 from writers.factory      import build_writer
 
 logger = logging.getLogger(__name__)

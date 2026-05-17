@@ -3,10 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import threading
 from collections import Counter
-from pathlib import Path
 
 from config import ADS_DB_FILE
 from utils.string_helpers import is_valid_ads_keyword as _is_valid_ads_keyword

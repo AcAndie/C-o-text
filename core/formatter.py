@@ -28,7 +28,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from bs4 import BeautifulSoup, NavigableString, Tag
+from bs4 import NavigableString, Tag
 
 from pipeline.base    import ImageRef
 from utils.image_url  import resolve_image_url

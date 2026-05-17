@@ -19,7 +19,6 @@ import asyncio
 import time
 from urllib.parse import urljoin
 
-from bs4 import BeautifulSoup, Tag
 
 from config import RE_NEXT_BTN, RE_CHAP_SLUG, RE_FANFIC
 from pipeline.base import BlockType, BlockResult, PipelineContext, ScraperBlock

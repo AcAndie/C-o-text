@@ -14,7 +14,7 @@ P1.1: Thêm RunConfig dataclass (per-run, transient — không persist).
 """
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Any, Literal, Optional, TypedDict
+from typing import Literal, Optional, TypedDict
 
 
 # ── Formatting rules ──────────────────────────────────────────────────────────
