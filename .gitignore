@@ -19,9 +19,14 @@ data/*
 data/baselines/*
 !data/baselines/.gitkeep
 !data/txt_cases.json
-links.txt
 progress/
 issues.md
+
+# v1.0.10: input/ folder — user-managed inputs
+input/
+
+# v1.0.7: User config — copy from config.toml.example, per-user
+config.toml
 
 # Python
 __pycache__/

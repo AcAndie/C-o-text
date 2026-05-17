@@ -41,8 +41,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Path: data/txt_cases.json relative to project root
-_TXT_CASES_PATH = Path(__file__).resolve().parent.parent / "data" / "txt_cases.json"
+# Path: data/txt_cases.json relative to project root.
+# v1.0.8: code moved into src/, so parent.parent.parent = root (src/ingest/.. = src/, .. = root).
+_TXT_CASES_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "txt_cases.json"
 
 # Detection windows
 _SAMPLE_LINES         = 100   # Regex detection scan window

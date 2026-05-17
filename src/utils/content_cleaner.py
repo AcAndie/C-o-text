@@ -51,9 +51,16 @@ def _strip_unicode_blank_lines(text: str) -> str:
     """
     Drop lines that contain ONLY Unicode whitespace / blank chars (incl. braille
     U+2800 used as RoyalRoad spacer). Preserves inline use within prose.
+
+    Fix v1.0.13: skip pure empty lines (`""`) — they're paragraph breaks in
+    Markdown. Bug halved newlines in EPUB output (`\\n\\n` → `\\n`), joining
+    all paragraphs into one giant line. Only drop if line has ≥1 char.
     """
     lines  = text.splitlines()
-    result = [line for line in lines if not _UNICODE_BLANK_LINE_RE.match(line)]
+    result = [
+        line for line in lines
+        if not (line and _UNICODE_BLANK_LINE_RE.match(line))
+    ]
     candidate = "\n".join(result)
     return candidate if len(candidate.strip()) >= _MIN_REMAINING else text
 
@@ -336,6 +343,137 @@ def _strip_ui_navigation_text(text: str) -> str:
     return candidate if len(candidate.strip()) >= _MIN_REMAINING else text
 
 
+# ── Pass 6: Status box reformat (v1.0.11) ─────────────────────────────────────
+#
+# LitRPG/cultivation novels (RoyalRoad in particular) wrap status displays
+# in <strong> per line:
+#   <strong>HP</strong>: 144/144
+#   <strong>Mana</strong>: 0/0
+#   <strong>Level</strong>: 11
+#
+# MarkdownFormatter correctly emits:
+#   **HP**: 144/144
+#   **Mana**: 0/0
+#   **Level**: 11
+#
+# Visual result in Obsidian: ugly wall of bold markers. Some lines have broken
+# bold (whitespace inside markers) → not rendered as bold → user sees raw `**`.
+#
+# Fix: detect 3+ consecutive lines matching status pattern, wrap in Obsidian
+# callout `> [!info]+ Status` block, strip inner bold (label is self-evident).
+#
+# Conservative: requires strict pattern — bold-prefix only, single line.
+# Won't false-positive on prose with occasional bold emphasis.
+
+# 3 patterns covering valid status line shapes. Order matters — most specific first.
+# Constrain length (<160 chars) to avoid false positive on prose paragraphs that
+# happen to start with a bold word.
+_STATUS_LINE_PATTERNS = [
+    re.compile(r"^\s*\*\*([^*\n]+?):\*\*\s*(.*?)\s*$"),         # **X:** value  (colon inside)
+    re.compile(r"^\s*\*\*([^*\n]+?)\*\*\s*[:=]\s*(.+?)\s*$"),   # **X**: value  (colon outside)
+    re.compile(r"^\s*\*\*([^*\n]+?)\*\*\s*$"),                  # **X**         (label only)
+]
+
+_MIN_STATUS_CLUSTER  = 3
+_STATUS_LINE_MAX_LEN = 160
+
+
+def _match_status_line(line: str) -> tuple[str, str] | None:
+    """Try each pattern. Return (label, value) on match, else None."""
+    if len(line) > _STATUS_LINE_MAX_LEN:
+        return None
+    for p in _STATUS_LINE_PATTERNS:
+        m = p.match(line)
+        if m:
+            label = m.group(1).strip()
+            value = (m.group(2).strip() if m.lastindex and m.lastindex >= 2 else "")
+            # Strip stray inner bold markers from value
+            value = re.sub(r"^\*+|\*+$", "", value).strip()
+            return (label, value)
+    return None
+
+
+def _wrap_status_blocks(text: str) -> str:
+    """
+    Detect consecutive `**X**` / `**X**: value` lines (3+) and wrap in
+    Obsidian callout. Preserves prose around the block. Blank lines inside
+    block tolerated.
+    """
+    if not text or "**" not in text:
+        return text
+
+    lines = text.splitlines()
+    out: list[str] = []
+    i      = 0
+    while i < len(lines):
+        cluster: list[tuple[str, str] | None] = []  # None = blank separator
+        j = i
+        while j < len(lines):
+            line = lines[j]
+            parsed = _match_status_line(line)
+            if parsed is not None:
+                cluster.append(parsed)
+                j += 1
+            elif (
+                line.strip() == ""
+                and cluster
+                and j + 1 < len(lines)
+                and _match_status_line(lines[j + 1]) is not None
+            ):
+                cluster.append(None)
+                j += 1
+            else:
+                break
+
+        # Trim trailing blank markers
+        while cluster and cluster[-1] is None:
+            cluster.pop()
+            j -= 1
+
+        if sum(1 for x in cluster if x is not None) >= _MIN_STATUS_CLUSTER:
+            out.append("> [!info]+ Status")
+            for entry in cluster:
+                if entry is None:
+                    out.append(">")
+                else:
+                    label, value = entry
+                    if value:
+                        out.append(f"> **{label}:** {value}")
+                    else:
+                        out.append(f"> **{label}**")
+            out.append("")   # blank after callout
+            i = j
+        else:
+            out.append(lines[i])
+            i += 1
+
+    return "\n".join(out)
+
+
+# ── Pass 7: Broken bold pattern fix (v1.0.11) ─────────────────────────────────
+#
+# CommonMark requires no whitespace at bold span boundary:
+#   `**foo: **bar`        → NOT bold (space before closing **)
+#   `**foo: ** bar`       → NOT bold
+#   `**foo:** bar`        → OK
+#
+# RR HTML occasionally has `<strong>X: </strong>Y` with trailing space inside
+# strong → formatter emits `**X: **Y` → Obsidian shows literal asterisks.
+#
+# Fix: detect `**...space**` and move whitespace out.
+
+# [ \t] horizontal whitespace only — \s would match \n and cause cross-line
+# greedy match (bug found smoke test v1.0.11).
+_BROKEN_BOLD_RE = re.compile(r"\*\*([^*\n]+?)[ \t]+\*\*")
+
+
+def _fix_broken_bold(text: str) -> str:
+    """Move trailing whitespace out of bold span so CommonMark renders bold."""
+    if not text or "**" not in text:
+        return text
+    return _BROKEN_BOLD_RE.sub(r"**\1** ", text)
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def clean_extracted_content(text: str) -> str:
@@ -369,6 +507,8 @@ def clean_extracted_content(text: str) -> str:
     result = _strip_postfix_section(result)     # Pass 3
     result = _strip_metadata_header(result)     # Pass 4
     result = _strip_ui_navigation_text(result)  # Pass 5
+    result = _fix_broken_bold(result)           # Pass 6  (v1.0.11)
+    result = _wrap_status_blocks(result)        # Pass 7  (v1.0.11)
 
     cleaned_len = len(result.strip())
 

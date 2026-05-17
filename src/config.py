@@ -7,21 +7,51 @@ v3: P1-B — thêm JS_CONTENT_RATIO, JS_MIN_DIFF_CHARS để tránh DRY violatio
     Hai nơi dùng cùng threshold: fetcher.py, phase.py.
     Đặt ở đây để thay đổi threshold chỉ cần sửa 1 file.
 v4: VERSION constant — first explicit version tag for v1.0.0 ship.
+v5 (1.0.7): User-facing config.toml override. Tunable constants now read
+    from optional config.toml (Python 3.11+ stdlib tomllib). Priority:
+    CLI flag > config.toml > code default. .env still owns API secrets.
+v6 (1.0.8): Code moved into src/. .env + config.toml resolve from project root
+    (one level above src/).
 """
 import os
 import re
 import random
+import tomllib
 from pathlib import Path
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
-load_dotenv(dotenv_path=Path(__file__).parent / ".env")
-load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
+# Project root = parent of src/ (this file lives at src/config.py since v1.0.8).
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(dotenv_path=_PROJECT_ROOT / ".env")
+# Legacy fallback for nested-project setups where .env lives one level above.
+load_dotenv(dotenv_path=_PROJECT_ROOT.parent / ".env")
+
+# ── User config.toml (optional) ───────────────────────────────────────────────
+# User-facing override file. Drop a config.toml next to main.py at project
+# root and tune behavior without editing this file. See config.toml.example
+# for template. Missing file or section → falls back to code default below.
+_TOML_PATH = _PROJECT_ROOT / "config.toml"
+_user_cfg: dict = {}
+if _TOML_PATH.exists():
+    try:
+        with open(_TOML_PATH, "rb") as _f:
+            _user_cfg = tomllib.load(_f) or {}
+    except (tomllib.TOMLDecodeError, OSError) as _e:
+        print(f"[WARN] config.toml load failed: {_e} — dùng code defaults", flush=True)
+        _user_cfg = {}
+
+
+def _get(section: str, key: str, default):
+    """Read `[section] key` từ config.toml, fallback default nếu thiếu."""
+    return _user_cfg.get(section, {}).get(key, default)
+
 
 # ── Project version ───────────────────────────────────────────────────────────
 # Bump on tagged release. See CHANGELOG.md for history.
-VERSION = "1.0.5"
+VERSION = "1.0.16"
+
 
 # ── API ───────────────────────────────────────────────────────────────────────
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
@@ -43,52 +73,50 @@ def _derive_fallback(primary: str) -> str:
 GEMINI_FALLBACK_MODEL: str = os.getenv("GEMINI_FALLBACK_MODEL", _derive_fallback(GEMINI_MODEL))
 
 # ── Giới hạn scraper ──────────────────────────────────────────────────────────
-MAX_CHAPTERS             = 5000
-MAX_CONSECUTIVE_ERRORS   = 5
-MAX_CONSECUTIVE_TIMEOUTS = 3
-TIMEOUT_BACKOFF_BASE     = 30   # seconds
+MAX_CHAPTERS             = _get("scraper", "max_chapters",             5000)
+MAX_CONSECUTIVE_ERRORS   = _get("scraper", "max_consecutive_errors",   5)
+MAX_CONSECUTIVE_TIMEOUTS = _get("scraper", "max_consecutive_timeouts", 3)
+TIMEOUT_BACKOFF_BASE     = _get("scraper", "timeout_backoff_base",     30)   # seconds
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-DATA_DIR      = "data"
-OUTPUT_DIR    = "output"
-PROGRESS_DIR  = "progress"
+DATA_DIR      = _get("paths", "data_dir",     "data")
+OUTPUT_DIR    = _get("paths", "output_dir",   "output")
+PROGRESS_DIR  = _get("paths", "progress_dir", "progress")
 PROFILES_FILE = os.path.join(DATA_DIR, "site_profiles.json")
 ADS_DB_FILE   = os.path.join(DATA_DIR, "ads_keywords.json")
 
 # ── Learning phase ────────────────────────────────────────────────────────────
-LEARNING_CHAPTERS         = 10
-LEARNING_MIN_CONTENT      = 300
-PROFILE_MAX_AGE_DAYS      = 30
-LEARNING_AI_CALLS         = 10
-LEARNING_CONFLICT_THRESHOLD = 3
+LEARNING_CHAPTERS           = _get("learning", "chapters",            10)
+LEARNING_MIN_CONTENT        = _get("learning", "min_content",         300)
+PROFILE_MAX_AGE_DAYS        = _get("learning", "profile_max_age_days", 30)
+LEARNING_AI_CALLS           = _get("learning", "ai_calls",            10)
+LEARNING_CONFLICT_THRESHOLD = _get("learning", "conflict_threshold",   3)
 
 # ── AI ────────────────────────────────────────────────────────────────────────
-AI_MAX_RPM = 10
-AI_JITTER  = (0.5, 2.0)
+AI_MAX_RPM = _get("ai", "max_rpm", 10)
+AI_JITTER  = tuple(_get("ai", "jitter", [0.5, 2.0]))
 
 # ── HTTP ──────────────────────────────────────────────────────────────────────
-REQUEST_TIMEOUT = 60
+REQUEST_TIMEOUT = _get("http", "request_timeout", 60)
 
 # ── Playwright concurrency ────────────────────────────────────────────────────
-PW_MAX_CONCURRENCY: int = int(os.getenv("PW_MAX_CONCURRENCY", "2"))
+# Priority: env PW_MAX_CONCURRENCY > config.toml > default 2.
+PW_MAX_CONCURRENCY: int = int(
+    os.getenv("PW_MAX_CONCURRENCY", str(_get("scraper", "playwright_concurrency", 2)))
+)
 
 # ── JS-heavy detection thresholds (P1-B) ─────────────────────────────────────
 # Playwright/curl content ratio threshold để classify site là JS-heavy.
 # Nếu pw_text_len > curl_text_len * JS_CONTENT_RATIO AND diff > JS_MIN_DIFF_CHARS
 # → site cần Playwright để render content đầy đủ.
-#
-# Dùng bởi: pipeline/fetcher.py (HybridFetchBlock._detect_js_fetch), learning/phase.py
-#
-# Tăng ratio nếu muốn ít false positives hơn (chỉ flag site thật sự JS-heavy).
-# Giảm nếu muốn aggressive hơn (flag cả site load content nhỏ qua JS).
-JS_CONTENT_RATIO  : float = 1.5
-JS_MIN_DIFF_CHARS : int   = 500
+JS_CONTENT_RATIO  : float = _get("js_detection", "content_ratio",  1.5)
+JS_MIN_DIFF_CHARS : int   = _get("js_detection", "min_diff_chars", 500)
 
 # ── Empty streak backoff schedule ─────────────────────────────────────────────
-EMPTY_BACKOFF_SCHEDULE: list[int] = [60, 120, 300]
+EMPTY_BACKOFF_SCHEDULE: list[int] = _get("scraper", "empty_backoff_schedule", [60, 120, 300])
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
-INIT_STAGGER = 2.0  # seconds giữa các task khi khởi động
+INIT_STAGGER = _get("scraper", "init_stagger", 2.0)  # seconds giữa task khởi động
 
 # ── Chrome fingerprint rotation ───────────────────────────────────────────────
 CHROME_VERSIONS: list[str] = ["chrome119", "chrome120", "chrome123", "chrome124", "chrome131"]

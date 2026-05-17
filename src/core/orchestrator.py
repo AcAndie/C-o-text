@@ -28,6 +28,7 @@ EPUB flow:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -90,7 +91,7 @@ async def run_epub_flow(
     input_path : str,
     run_config : "RunConfig",
     ai_limiter : "AIRateLimiter | None" = None,
-) -> None:
+) -> int:
     """
     Read EPUB → iterate spine → run pipeline (extract + title) → image stage
     via EpubImageExtractor → writer.write.
@@ -137,10 +138,20 @@ async def run_epub_flow(
         flush=True,
     )
 
+    # v1.0.16: Build chapter plan — Tier 2 (AI) default, Tier 1 (rules) fallback
+    # Config: [epub] analyzer = "ai" | "rules"  (config.toml)
+    import config as _cfg
+    from ingest.epub_structure import build_chapter_plan, build_chapter_plan_with_ai
+    analyzer = _cfg._get("epub", "analyzer", "ai")
+    if analyzer == "ai" and ai_limiter is not None:
+        plan = await build_chapter_plan_with_ai(book, input_path, ai_limiter)
+    else:
+        plan = build_chapter_plan(book)
+
     n_ok      = 0
     n_skipped = 0
 
-    async for doc in ingest_epub(input_path):
+    async for doc in ingest_epub(input_path, plan=plan):
         try:
             chapter = await _build_chapter_from_epub_doc(
                 doc        = doc,
@@ -199,7 +210,21 @@ async def run_epub_flow(
     else:
         ads_filter.save()   # persist scan state cho run sau
 
+    # v1.0.12: Index TOC + top/bottom nav for Obsidian readers (.md only).
+    if writer.__class__.__name__ == "ObsidianWriter":
+        try:
+            from writers.nav_injector import inject_nav_and_index
+            n_nav, idx_written = await asyncio.to_thread(
+                inject_nav_and_index, str(out_dir), story_name,
+            )
+            idx_msg = " + index" if idx_written else ""
+            if n_nav or idx_written:
+                print(f"   🔗 Nav: {n_nav} chapters{idx_msg}", flush=True)
+        except Exception as e:
+            logger.warning("[EPUB] nav_injector failed: %s", e)
+
     print(f"\n✔ EPUB done: {n_ok} chapters written, {n_skipped} skipped → {out_dir}", flush=True)
+    return n_ok
 
 
 # ── TXT flow ──────────────────────────────────────────────────────────────────
@@ -366,13 +391,32 @@ async def _build_chapter_from_epub_doc(
     if ads_filter is not None:
         ctx.content = ads_filter.filter(ctx.content, chapter_url="")
 
-    # Title chain — H1 thường winner cho EPUB chapter
-    title_result = await ChainExecutor(runner._title_blocks(), "title").run(ctx)
-    if title_result.ok:
-        ctx.title_clean = title_result.data
-        ctx.title_raw   = title_result.data
+    # Title resolution priority (v1.0.14):
+    #   1. matter bucket → "Front Matter" (no chain run, deterministic)
+    #   2. TOC entry title (non-numeric) → use directly
+    #   3. Title chain (H1 typically winner)
+    #   4. TOC entry title (numeric) → "Chapter N" with TOC label as suffix
+    #   5. Default `Chapter N`
+    doc_meta  = getattr(doc, "metadata", {}) or {}
+    doc_kind  = doc_meta.get("kind", "chapter")
+    toc_title = (doc_meta.get("toc_title") or "").strip()
+
+    if doc_kind == "matter":
+        ctx.title_clean = "Front Matter"
+        ctx.title_raw   = ctx.title_clean
+    elif toc_title and not toc_title.isdigit():
+        ctx.title_clean = toc_title
+        ctx.title_raw   = toc_title
     else:
-        ctx.title_clean = f"Chapter {doc.chapter_index}"
+        title_result = await ChainExecutor(runner._title_blocks(), "title").run(ctx)
+        if title_result.ok:
+            ctx.title_clean = title_result.data
+            ctx.title_raw   = title_result.data
+        elif toc_title:
+            # Numeric TOC label as last resort, e.g. "0001"
+            ctx.title_clean = f"Chapter {toc_title.lstrip('0') or '0'}"
+        else:
+            ctx.title_clean = f"Chapter {doc.chapter_index}"
 
     # Title dedup — body fallback path includes <h1> trong content. Drop dòng đầu
     # nếu trùng title (same logic as core/scraper.py:303-307).

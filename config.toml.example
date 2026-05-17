@@ -1,0 +1,110 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Cào Text — User Config (v1.0.7)
+#
+# Copy file này thành `config.toml` rồi chỉnh thoải mái.
+# `config.toml` được .gitignore — riêng từng user, không commit.
+#
+# Priority order:
+#   CLI flag (--output-mode ...) > config.toml > code default
+#
+# API key/secret VẪN ở `.env` — KHÔNG bỏ vô đây (.env gitignored riêng).
+# Mọi giá trị optional — comment out hoặc xóa = dùng default trong code.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# ── Output ───────────────────────────────────────────────────────────────────
+[output]
+# Format output mỗi chapter:
+#   "obsidian"  → Markdown + YAML frontmatter + image embed (default)
+#   "translate" → plain NNNN.txt, strip markdown, image → [IMAGE: alt]
+#   "raw"       → text-only, không format
+mode = "obsidian"
+
+# Base directory cho output. Mỗi truyện thành sub-folder con.
+dir = "output"
+
+# Download ảnh trong chapter về local? (Obsidian mode mới dùng)
+download_images = true
+
+
+# ── Scraper ──────────────────────────────────────────────────────────────────
+[scraper]
+# Max chapter mỗi story (safety cap, tránh infinite loop)
+max_chapters = 5000
+
+# Dừng story sau N consecutive errors
+max_consecutive_errors = 5
+
+# Dừng story sau N consecutive timeouts liên tiếp
+max_consecutive_timeouts = 3
+
+# Backoff base (seconds) sau timeout — exponential
+timeout_backoff_base = 30
+
+# Số Playwright instances tối đa chạy song song (đụng RAM cao thì giảm)
+playwright_concurrency = 2
+
+# Delay giữa các task khi khởi động (seconds)
+init_stagger = 2.0
+
+# Empty content streak — backoff schedule (seconds)
+empty_backoff_schedule = [60, 120, 300]
+
+
+# ── Learning Phase ───────────────────────────────────────────────────────────
+[learning]
+# Số chapter fetch lúc học domain mới
+chapters = 10
+
+# Min char content để chapter được tính là valid trong learning
+min_content = 300
+
+# Profile cũ hơn N ngày → tự động re-learn
+profile_max_age_days = 30
+
+# Số AI call cho learning phase (8 cơ bản + buffer)
+ai_calls = 10
+
+# Threshold conflict giữa AI calls
+conflict_threshold = 3
+
+
+# ── AI / Gemini ──────────────────────────────────────────────────────────────
+[ai]
+# Max requests per minute (rate limit token bucket)
+max_rpm = 10
+
+# Jitter range (seconds) giữa AI calls — [min, max]
+jitter = [0.5, 2.0]
+
+
+# ── HTTP ─────────────────────────────────────────────────────────────────────
+[http]
+# Request timeout per fetch (seconds)
+request_timeout = 60
+
+
+# ── JS-Heavy Detection ───────────────────────────────────────────────────────
+# Site có pw_text_len > curl_text_len * content_ratio AND diff > min_diff_chars
+# → flag JS-heavy, force Playwright.
+[js_detection]
+content_ratio  = 1.5    # Tăng = ít false positive (chỉ flag site thật sự JS-heavy)
+min_diff_chars = 500    # Giảm = aggressive hơn
+
+
+# ── EPUB Analyzer (v1.0.16) ──────────────────────────────────────────────────
+# Cách phân tích cấu trúc EPUB để chia chapter + classify front/back matter.
+#   "ai"    : AI analyzer (1 call/EPUB, cached SHA256). Smart classify + title
+#             extraction. Default. Fallback "rules" nếu AI fail.
+#   "rules" : Rule-based (TOC keyword match + filename pattern). Deterministic,
+#             no AI cost. Đủ cho most EPUBs hiện đại.
+[epub]
+analyzer = "ai"
+
+
+# ── Paths ────────────────────────────────────────────────────────────────────
+# Hiếm khi cần sửa. Đường dẫn relative tới project root.
+[paths]
+data_dir     = "data"
+output_dir   = "output"
+progress_dir = "progress"

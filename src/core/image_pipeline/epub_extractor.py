@@ -45,9 +45,18 @@ class EpubImageExtractor(ImageFetchStrategy):
     async def fetch(self, ref: ImageRef) -> bytes | None:
         """
         Resolve href → EpubItem → get_content() bytes.
-        Try multiple href variants vì EPUB chapter có thể reference image
-        bằng relative path khác cách manifest stores.
+
+        Strategies tried in order:
+          1. Direct manifest match
+          2. Common prefix variants (OEBPS/, OPS/, leading-slash strip)
+          3. Path normalization (handles `../images/foo.jpg` relative paths)
+          4. Basename fallback — scan all ITEM_IMAGE for matching filename
+             (v1.0.13: covers EPUB where chapter ref uses relative path that
+             doesn't match manifest's normalized form)
         """
+        import posixpath
+        import ebooklib
+
         href = ref.original_url
         item = self.book.get_item_with_href(href)
 
@@ -56,10 +65,24 @@ class EpubImageExtractor(ImageFetchStrategy):
                 href.lstrip("/"),
                 "OEBPS/" + href,
                 "OEBPS/" + href.lstrip("/"),
+                "OPS/" + href,
+                "OPS/" + href.lstrip("/"),
+                posixpath.normpath(href),
+                posixpath.normpath("OPS/" + href.lstrip("/")),
+                posixpath.normpath("OEBPS/" + href.lstrip("/")),
             ):
                 item = self.book.get_item_with_href(variant)
                 if item:
                     break
+
+        # Basename fallback — match by filename only across all image items
+        if item is None:
+            target = posixpath.basename(href)
+            if target:
+                for it in self.book.get_items_of_type(ebooklib.ITEM_IMAGE):
+                    if posixpath.basename(it.get_name()) == target:
+                        item = it
+                        break
 
         if item is None:
             logger.warning("[EpubImageExtractor] href not found: %s", href)

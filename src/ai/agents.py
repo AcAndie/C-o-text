@@ -553,6 +553,32 @@ _S_EXTRACT_CONTENT = {
     "required": ["content", "confidence"],
 }
 
+# v1.0.16 — EPUB structure analyzer (Step 2 Tier 2)
+_S_EPUB_STRUCTURE = {
+    "type": "object",
+    "properties": {
+        "docs": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "doc_id": {"type": "string"},
+                    "kind"  : {
+                        "type": "string",
+                        "enum" : ["chapter", "frontmatter", "backmatter", "divider", "skip"],
+                    },
+                    "title"           : {"type": "string", "nullable": True},
+                    "merge_with_prev" : {"type": "boolean", "nullable": True},
+                    "reason"          : {"type": "string", "nullable": True},
+                },
+                "required": ["doc_id", "kind"],
+            },
+        },
+    },
+    "required": ["docs"],
+}
+
+
 # v1.0.5 — upfront input URL classifier (vs in-pipeline NAV fallback above)
 _S_INPUT_CLASSIFY = {
     "type": "object",
@@ -987,6 +1013,51 @@ async def ai_verify_ads(
     except Exception as e:
         print(f"  [AI verify_ads] ⚠ Thất bại: {_fmt(e)}", flush=True)
     return []
+
+
+async def ai_analyze_epub_structure(
+    docs_meta : list[dict],
+    limiter   : AIRateLimiter,
+) -> list[dict] | None:
+    """
+    v1.0.16 — Step 2 EPUB analyzer.
+
+    Input: list of doc metadata dicts (doc_id, name, spine_pos, toc_title,
+    size_bytes, first_300_chars, first_h1, first_h2).
+
+    Output: list of classification dicts (doc_id, kind, title, merge_with_prev,
+    reason) — 1 entry per input doc. Returns None on AI failure.
+    """
+    import json as _json
+    docs_json = _json.dumps(docs_meta, ensure_ascii=False, indent=2)
+    prompt    = Prompts.analyze_epub_structure(docs_json)
+
+    try:
+        text   = await _call(prompt, limiter, _S_EPUB_STRUCTURE)
+        result = _parse(text)
+        if not isinstance(result, dict):
+            return None
+        docs = result.get("docs")
+        if not isinstance(docs, list):
+            return None
+
+        # Validate: every input doc_id appears in output
+        input_ids  = {d["doc_id"] for d in docs_meta}
+        output_ids = {d.get("doc_id") for d in docs if isinstance(d, dict)}
+        missing    = input_ids - output_ids
+        if missing:
+            print(
+                f"  [AI epub-analyze] ⚠ Missing {len(missing)} doc_ids in output — "
+                f"will fallback for: {sorted(missing)[:5]}",
+                flush=True,
+            )
+
+        return docs
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        print(f"  [AI epub-analyze] ⚠ Thất bại: {_fmt(e)}", flush=True)
+    return None
 
 
 async def ai_classify_input_url(

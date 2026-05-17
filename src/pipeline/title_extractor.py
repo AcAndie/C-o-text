@@ -53,9 +53,15 @@ def _title_from_url(url: str) -> str | None:
         /chapter-5-the-rise-of-heroes → "The Rise Of Heroes"
         /s/12345678/5/My-Story-Title  → "My Story Title"
         /fiction/55418/the-wandering-inn → "The Wandering Inn"
+
+    v1.0.13: reject file paths (no http/https scheme). EPUB orchestrator
+    sets ctx.url = epub file path → URL slug ate full Windows path as title.
     """
     try:
-        path     = urlparse(url).path
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return None
+        path     = parsed.path
         segments = [s for s in path.strip("/").split("/") if s]
         if not segments:
             return None

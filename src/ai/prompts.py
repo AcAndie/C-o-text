@@ -787,6 +787,81 @@ Trả về JSON (CHỈ JSON thuần):
 """
 
     @staticmethod
+    def analyze_epub_structure(docs_meta_json: str) -> str:
+        """
+        v1.0.16 — EPUB structure analyzer (Step 2).
+
+        Input: JSON list of {doc_id, name, spine_pos, toc_title, size_bytes,
+                             first_300_chars, first_h1, first_h2}.
+        Output: JSON {docs: [{doc_id, kind, title, merge_with_prev, reason}]}
+        """
+        return f"""Bạn là chuyên gia phân tích cấu trúc EPUB. Bạn nhận danh sách các document trong 1 EPUB (theo thứ tự spine), classify mỗi document và đặt title hiển thị tốt.
+
+INPUT (JSON):
+{docs_meta_json}
+
+NHIỆM VỤ: Trả JSON object với field "docs" là list. Mỗi item:
+  - doc_id   : khớp với input
+  - kind     : "chapter" | "frontmatter" | "backmatter" | "divider" | "skip"
+  - title    : tên hiển thị (string, NOT null nếu kind != skip)
+  - merge_with_prev : true nếu là tiếp nối của chapter trước (continuation)
+  - reason   : 1 câu ngắn giải thích quyết định (optional)
+
+QUY TẮC CLASSIFY:
+
+1. **chapter** — nội dung truyện chính
+   - Thường có toc_title như "Chapter N", "0001", hoặc tên chương
+   - first_300_chars là prose, dialogue, narrative
+   - size_bytes thường >5000
+
+2. **frontmatter** — trang phụ ĐẦU SÁCH
+   - toc_title: "Contents", "Title Page", "About the Book/Author", "Dedication", "Preface", "Foreword", "Introduction"
+   - Cover page
+   - first_300_chars ngắn, mô tả meta
+
+3. **backmatter** — trang phụ CUỐI SÁCH
+   - toc_title: "Acknowledgments", "Copyright", "Appendix", "Afterword"
+   - About the Author (nếu ở cuối)
+   - Footnotes, References
+
+4. **divider** — trang chia phần (KHÔNG có nội dung truyện)
+   - toc_title: "Part 1", "Level One", "Book One", "Volume 1"
+   - size_bytes thường <2000
+   - first_300_chars chỉ là title/banner
+
+5. **skip** — KHÔNG ghi file, bỏ qua hoàn toàn
+   - Promo/excerpt cho TRUYỆN KHÁC: "Extract from <other book>", "Excerpt from...", "Also by <author>"
+   - Advert/Ads pages: "Find out what happens next", "Out now", "Read on for preview"
+   - Empty/placeholder pages
+
+QUY TẮC TITLE:
+- Numeric TOC label ("0000", "0001"): dùng "Prologue" cho 0000, "Chapter N" cho 0001+
+- Generic TOC label ("1", "2"): dùng "Chapter N"
+- Meaningful TOC ("The Hunt", "First Encounter"): giữ nguyên
+- first_h1 hoặc first_h2 thường là chapter title — dùng nếu TOC label rác
+- Kết hợp: "Chapter N: <title>" nếu cả 2 có sẵn
+
+QUY TẮC MERGE:
+- merge_with_prev=true KHI: doc không có TOC entry + first_300_chars là prose continuation (không phải chapter mới)
+- Spine có thể chia 1 chapter dài thành 2-3 docs liên tiếp
+
+QUY TẮC CHUNG:
+- KHÔNG bỏ sót doc_id — mỗi input doc PHẢI có 1 entry output
+- skip = mất luôn (không vào front/back matter)
+- Nếu không chắc: chọn conservative (chapter hơn skip)
+
+OUTPUT format (JSON):
+{{
+  "docs": [
+    {{"doc_id": "titlepage", "kind": "frontmatter", "title": "Title Page", "reason": "TOC entry"}},
+    {{"doc_id": "advert_text", "kind": "skip", "title": null, "reason": "Excerpt from other novel"}},
+    {{"doc_id": "chapter_001", "kind": "chapter", "title": "Chapter 1", "merge_with_prev": false}},
+    ...
+  ]
+}}
+"""
+
+    @staticmethod
     def extract_content(html_snippet: str, url: str) -> str:
         return f"""Bạn là chuyên gia extract nội dung từ trang web novel.
 Nhiệm vụ: Tìm và extract ĐÚNG NỘI DUNG CHƯƠNG TRUYỆN từ HTML dưới đây.

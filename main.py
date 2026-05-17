@@ -24,6 +24,10 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
 
+# v1.0.8: code lives in src/. Prepend to sys.path so all `from config import ...`,
+# `from ai.client import ...` etc. resolve transparently. KHÔNG sửa internal imports.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+
 import config as _cfg   # import trước để có thể override constants
 from config import INIT_STAGGER, AI_MAX_RPM, OUTPUT_DIR, PROGRESS_DIR, VERSION
 from ai.client                import AIRateLimiter
@@ -170,8 +174,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "links_file",
         nargs   = "?",
-        default = "links.txt",
-        help    = "File chứa URLs cần cào (default: links.txt)",
+        default = os.path.join("input", "links.txt"),
+        help    = "File chứa URLs cần cào (default: input/links.txt)",
     )
     parser.add_argument(
         "--max-pw-instances",
@@ -207,18 +211,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action  = "store_true",
         help    = "Confirm thực thi --bulk-relearn (mặc định dry-run, an toàn)",
     )
-    # ── P1.1: Output mode (chưa wire vào pipeline yet) ────────────────────────
+    # ── P1.1: Output mode — defaults pull từ config.toml [output] section ─────
+    # CLI flag > config.toml > hardcoded fallback. Priority same cho cả 2.
+    _output_section = getattr(_cfg, "_user_cfg", {}).get("output", {})
     parser.add_argument(
         "--output-mode",
         type    = str,
         choices = ["obsidian", "translate", "raw"],
-        default = "obsidian",
-        help    = "Output format mode (default: obsidian — Markdown ready cho Obsidian vault)",
+        default = _output_section.get("mode", "obsidian"),
+        help    = "Output format mode (default: obsidian)",
     )
     parser.add_argument(
         "--output-dir",
         type    = str,
-        default = "output",
+        default = _output_section.get("dir", "output"),
         help    = "Base directory cho output chapters (default: output/)",
     )
     return parser
@@ -308,6 +314,67 @@ async def _run_bulk_relearn(pattern: str | None, apply: bool) -> None:
     print(f"\nDeleted {len(matched)} profile. Run 'python main.py links.txt' để re-learn.")
 
 
+# ── EPUB inbox (v1.0.6) ───────────────────────────────────────────────────────
+
+async def _run_epub_inbox(run_config) -> int:
+    """
+    Scan input_epub/ → process new files → mark in manifest.
+
+    Returns count of EPUBs successfully processed in this run.
+    Skip already-done (SHA256 hash match in data/processed_epubs.json).
+    """
+    from utils.epub_inbox import scan_inbox, mark_processed
+    from core.orchestrator import run_epub_flow
+    from utils.string_helpers import slugify_filename
+
+    todo, skipped = scan_inbox()
+
+    if not todo and not skipped:
+        return 0   # Inbox rỗng — silent
+
+    print(
+        f"\n📥 EPUB inbox: {len(todo)} mới, {len(skipped)} đã xử lý",
+        flush=True,
+    )
+    for p in skipped:
+        print(f"  ⏭  skip: {p.name}", flush=True)
+
+    if not todo:
+        return 0
+
+    ai_limiter = AIRateLimiter(AI_MAX_RPM)
+    processed  = 0
+    for p, h in todo:
+        print(f"\n📖 Xử lý: {p.name}", flush=True)
+        try:
+            n_chapters = await run_epub_flow(
+                str(p), run_config, ai_limiter=ai_limiter,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(
+                f"  ❌ {p.name}: {type(e).__name__}: {e} — không mark, retry lần sau",
+                flush=True,
+            )
+            continue
+
+        # Mark only after successful flow — fail mid-process = retry next run
+        mark_processed(
+            file_hash = h,
+            filename  = p.name,
+            slug      = slugify_filename(p.stem),
+            chapters  = n_chapters or 0,
+        )
+        processed += 1
+
+    print(
+        f"\n✔ EPUB inbox done: {processed}/{len(todo)} processed\n",
+        flush=True,
+    )
+    return processed
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def main() -> None:
@@ -333,8 +400,15 @@ async def main() -> None:
         flush=True,
     )
 
+    # v1.0.6: EPUB inbox scan — process input_epub/ trước khi vào web flow.
+    # Silent no-op nếu folder rỗng. Mỗi file new (hash chưa có trong manifest)
+    # sẽ được xử lý + mark. File đã xử lý → skip.
+    inbox_processed = await _run_epub_inbox(run_config)
+
     links_file = args.links_file
     if not os.path.exists(links_file):
+        if inbox_processed > 0:
+            return   # Inbox đã làm việc — links.txt missing OK
         print(f"[ERR] Không tìm thấy {links_file}")
         return
 

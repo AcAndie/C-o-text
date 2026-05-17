@@ -55,13 +55,36 @@ _CONTAINS_RE = re.compile(
 _OBFUSCATED_CLASS_RE = re.compile(r"^[A-Za-z0-9]{40,}$")
 
 
+def _is_alive(el) -> bool:
+    """
+    True nếu element vẫn trong DOM (chưa decomposed).
+    Fix v1.0.9: BS4 decompose() clear attrs → descendant Tag trong find_all
+    snapshot crash khi gọi .get(...). Skip decomposed elements.
+    """
+    if el is None:
+        return False
+    if getattr(el, "attrs", None) is None:
+        return False
+    # Soup root has parent=None but name=[document] — allow it.
+    if el.parent is None and getattr(el, "name", None) != "[document]":
+        return False
+    return True
+
+
 def _strip_obfuscated_class_elements(soup: BeautifulSoup) -> int:
     """
     Strip elements whose only class matches OBFUSCATED-CLASS pattern.
     Returns count of stripped elements. Logs each strip at debug level.
+
+    Fix v1.0.9: snapshot via list() + _is_alive() guard. Decompose ancestor
+    cascade nullifies descendant attrs → unguarded .get() crash with
+    'NoneType object has no attribute get' → entire html_filter fallback
+    to raw parse → watermarks leak.
     """
     stripped = 0
-    for el in soup.find_all(True):
+    for el in list(soup.find_all(True)):
+        if not _is_alive(el):
+            continue
         classes = el.get("class") or []
         # Require SOLE class match — strict rule to avoid FP on legit
         # framework class lists that happen to include one long hash.
@@ -147,8 +170,10 @@ def _strip_invisible_elements(soup: BeautifulSoup) -> int:
     stripped = 0
     # Snapshot list — decompose during iteration is safe with list() copy
     for el in list(soup.find_all(True)):
-        # Element may already have been decomposed by ancestor strip
-        if el.parent is None and el.name != "[document]":
+        # Fix v1.0.9: tighten guard — also check attrs not None (was insufficient
+        # — `el.parent is None` skip missed cases where parent still linked but
+        # attrs cleared via cascade).
+        if not _is_alive(el):
             continue
 
         # Check 1: HTML5 [hidden] attribute (boolean — presence = true)
@@ -246,10 +271,14 @@ def prepare_soup(
     if n_invisible:
         logger.info("[HtmlFilter] Stripped %d invisible element(s)", n_invisible)
 
-    # Layer 2: Known noise selectors — global safety net
+    # Layer 2: Known noise selectors — global safety net.
+    # Fix v1.0.9: _is_alive guard skips elements already decomposed by Layer 1b/1c
+    # cascade (avoid double-decompose noise + edge crashes).
     for sel in KNOWN_NOISE_SELECTORS:
         try:
             for el in _iter_selector(soup, sel):
+                if not _is_alive(el):
+                    continue
                 el.decompose()
         except Exception as e:
             logger.debug("[HtmlFilter] KNOWN_NOISE selector error %r: %s", sel, e)
@@ -273,6 +302,9 @@ def prepare_soup(
             continue
         try:
             for el in _iter_selector(soup, sel):
+                # Fix v1.0.9: skip already-decomposed (Layer 1b/1c/2 cascade).
+                if not _is_alive(el):
+                    continue
                 if _is_protected(el, protected):
                     logger.debug("[HtmlFilter] Skipped protected element: %s", sel)
                     continue

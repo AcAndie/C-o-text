@@ -959,6 +959,23 @@ async def run_novel_task(
 
         await _run_protected(pm.flush(), timeout=_FLUSH_TIMEOUT_SEC, label="pm.flush")
 
+        # v1.0.12: Index TOC + top/bottom nav for Obsidian readers (.md only).
+        if writer.__class__.__name__ == "ObsidianWriter":
+            try:
+                from writers.nav_injector import inject_nav_and_index
+                story_display = progress.get("story_name_clean") or story_label
+                n_nav, idx_written = await asyncio.to_thread(
+                    inject_nav_and_index, actual_output_dir, story_display,
+                )
+                idx_msg = " + index" if idx_written else ""
+                if n_nav or idx_written:
+                    print(
+                        f"  [{tag}] 🔗 Nav: {n_nav} chapters{idx_msg}",
+                        flush=True,
+                    )
+            except Exception as e:
+                logger.warning("[Scraper] nav_injector failed: %s", e)
+
         icon = "✔" if completed else ("🛑" if _cancelled else "⏸")
         print(f"\n  {icon} [{tag}] {story_label} — {total} chapters\n", flush=True)
 

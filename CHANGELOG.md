@@ -4,6 +4,419 @@ All notable changes to Cào Text. Format based on [Keep a Changelog](https://kee
 
 ---
 
+## [1.0.16] — 2026-05-17
+
+EPUB analyzer Tier 1 + Tier 2 (config-selectable). Default Tier 2 (AI), fallback Tier 1 on AI failure.
+
+### Tier 1 enhancements (rule-based, no AI)
+- **`src/ingest/epub_structure.py::SKIP_KEYWORDS`** (NEW): `extract from`, `excerpt from`, `also by`, `praise for`, `advert`, `out now`, etc. Promo/excerpt cho TRUYỆN KHÁC → kind=`skip`, KHÔNG ghi file.
+- **`SKIP_FILENAME_PATTERNS`**: `advert`, `ads_`, `promo`, `excerpt`. Catch promo files khi TOC missing.
+- **`smart_title_from_toc(toc_title, idx)`**: convert TOC label thông minh:
+  - `"0000"` → `"Prologue"`
+  - `"0001"`..`"0099"` (numeric) → `"Chapter N"` (strip leading zeros)
+  - Non-numeric → keep as-is
+- **`ChapterPlan.kind`** thêm `"skip"` value (chưa yield, không ghi file).
+- **Test RPO**: 43 chapters + 9 matter + 4 skipped (ads_front, advert, advert_text, ads_back). Trước: 47KB Front Matter chứa Armada excerpt. Sau: 4 promo docs gone, Front Matter chỉ ~17KB Contents+About+Dedication+Acknowledgments+Copyright.
+
+### Tier 2 — AI analyzer
+- **`src/ai/prompts.py::analyze_epub_structure(docs_meta_json)`**: prompt cho AI classify mỗi spine doc (chapter/frontmatter/backmatter/divider/skip) + suggest title + detect merge continuation.
+- **`src/ai/agents.py::ai_analyze_epub_structure(docs_meta, limiter)`**: 1 call/EPUB, validate output covers all input doc_ids.
+- **`src/ai/agents.py::_S_EPUB_STRUCTURE`**: response schema.
+- **`src/ingest/epub_structure.py::build_chapter_plan_with_ai(book, path, ai_limiter)`**: cache lookup → AI call → apply decisions → cache write. SHA256 of EPUB file = cache key.
+- **Cache**: `data/epub_analyses.json` — re-process cùng file = 0 AI cost.
+- **Doc metadata gathered**: doc_id, name, spine_pos, toc_title, size_bytes, first_300_chars, first_h1, first_h2 (BS4 parse per doc).
+
+### Config (selectable)
+- **`config.toml.example`** thêm:
+  ```toml
+  [epub]
+  analyzer = "ai"     # "ai" (default) | "rules"
+  ```
+- **`src/core/orchestrator.py::run_epub_flow`** đọc `_cfg._get("epub", "analyzer", "ai")` dispatch:
+  - `"ai"` + có ai_limiter → `build_chapter_plan_with_ai` (Tier 2)
+  - `"rules"` hoặc Tier 2 fail → `build_chapter_plan` (Tier 1)
+- **`src/ingest/epub.py::ingest_epub(path, plan=None)`**: accept optional pre-built plan. Backward-compat default = Tier 1.
+
+### Fallback chain
+```
+Tier 2 (AI)
+  ├─ Cache hit → use cached decisions
+  ├─ AI call success → cache + apply
+  └─ AI fail → log warn → Tier 1
+       └─ Always works (deterministic rules)
+```
+
+### Verified
+- Compile clean: ai/prompts, ai/agents, ingest/epub_structure, ingest/epub, core/orchestrator.
+- Tier 1 plan on RPO: 43 chapters + 9 matter + 4 skipped (Armada excerpt gone). Titles: Prologue, Level One, Chapter 1-39, Level Two, Chapter 17-27, Level Three, Chapter 28-39.
+- Doc metadata gather: 56 docs from RPO with proper h1/h2/text snippets.
+
+---
+
+## [1.0.15] — 2026-05-17
+
+EPUB matter merge fix — body inner extraction. Previous v1.0.14 merged full HTML docs with `<hr/>`, producing multiple `<body>` tags. `soup.find('body')` returned only first (often empty) → formatter output 0 bytes → cleaned content empty → italic emphasis appeared split (text leak from prior runs).
+
+### Fix
+- **`src/ingest/epub.py::ingest_epub`**: parse each doc's `<body>`, extract inner children only, then wrap merged inner content in single `<html><body>...</body></html>`. Single body tag → formatter sees all content.
+- Empty body chunks (e.g. titlepage with only whitespace) skipped.
+
+### Verified
+- RPO matter merged HTML: 1 `<body>` tag (was 13).
+- Formatter output: 29KB / 220 newlines (was 0 bytes).
+- Italic `*not*` preserved inline (was split across lines).
+- Cleaned newlines stable end-to-end.
+
+---
+
+## [1.0.14] — 2026-05-17
+
+EPUB chapter planner — TOC-driven structure analysis (Step 1, no AI). Front + back matter docs merge into `0000_Front_Matter.md`. Real chapters use TOC title hint.
+
+### Added
+- **`src/ingest/epub_structure.py`** (NEW): `build_chapter_plan(book)` reads EPUB TOC (`book.toc`) recursive, normalizes hrefs, classifies each spine doc:
+  - TOC entry matches FRONT_MATTER_KEYWORDS (`contents`, `cover`, `dedication`, `about`, `title page`, ...) → matter bucket.
+  - TOC entry matches BACK_MATTER_KEYWORDS (`acknowledg`, `copyright`, `excerpt`, `advert`, ...) → matter bucket.
+  - Filename matches MATTER_FILENAME_PATTERNS → matter bucket (covers EPUBs missing TOC).
+  - TOC chapter entry → new chapter, use TOC title as hint.
+  - Spine doc NOT in TOC, current chapter open → continuation (merge with prev chapter).
+- **`src/ingest/epub.py`** rewrite: yields `RawDocument` per `ChapterPlan` entry. Multi-doc chapters concat with `<hr/>` separator. `metadata['kind']` = `"chapter"` or `"matter"`. `metadata['toc_title']` set if TOC matched.
+- **`src/core/orchestrator.py::_build_chapter_from_epub_doc`** title resolution priority:
+  1. `kind == matter` → "Front Matter" (deterministic)
+  2. Non-numeric TOC title → use directly (handles "Prologue", "Level One", etc)
+  3. Title chain (H1/H2)
+  4. Numeric TOC ("0001") → `Chapter N` with TOC label stripped of leading zeros
+  5. Default `Chapter N`
+
+### Result (Ready Player One test)
+**Before (v1.0.13)**: 39 spine docs each as separate "chapter" file, front matter (Contents, About, Dedication) mixed in with real chapters, garbage titles.
+
+**After (v1.0.14)**:
+```
+output/Ready_Player_One/
+├── 0000_Front_Matter.md   ← 13 front+back matter docs merged
+├── 0001_Chapter1.md        ← Prologue (TOC label "0000" stripped, fallback Chapter 1)
+├── 0002_Level_One.md       ← Part divider
+├── 0003_Chapter1.md        ← Chapter 1 (TOC "0001")
+...
+└── 0043_Chapter39.md       ← Chapter 39 (TOC "0039")
+```
+44 entries total (1 matter + 43 real). Down from 50+ confused entries.
+
+### Verified
+- Planner correctly classifies 13 matter docs (Contents, About×2, Title Page, Dedication, Acknowledgments, Copyright, Extract from ARMADA, etc) into single bucket.
+- Real chapters preserve original spine order including part dividers.
+- TOC parse handles recursive sections (`Level One` → children `0001`..`0016`).
+- Filename: index=0 + "Front Matter" → `0000_Front_Matter.md` ✓.
+
+### Not yet (Step 2, defer)
+- AI to clean ambiguous TOC entries.
+- Numeric TOC label → smart title extraction from chapter h1.
+- Separate front vs back matter files (user wanted gộp 1 file, kept simple).
+- EPUB progress/resume (Ctrl+C still loses work).
+
+---
+
+## [1.0.13] — 2026-05-17
+
+EPUB scrape — 3 critical bugs fixed.
+
+### Bug 1: Title = full Windows file path
+**Symptom**: EPUB chapter file `0005_UsersFpt_Mong_CaiDesktopSmall_ProjectCào_TextInputEpubReady_Player_One.Epub.md` — title was full file path slugified.
+**Cause**: orchestrator sets `ctx.url = doc.source_path` (file path). Title chain falls through all blocks. `UrlSlugTitleBlock._title_from_url()` doesn't validate URL scheme → treats Windows path as URL → extracts whole path as title.
+**Fix**: `src/pipeline/title_extractor.py::_title_from_url` validates `urlparse(url).scheme in ("http", "https")` — returns None for file paths. Title chain falls through to orchestrator's `f"Chapter {doc.chapter_index}"` default.
+
+### Bug 2: All paragraphs joined into one giant line
+**Symptom**: EPUB chapter body = 5KB+ single line, no paragraph breaks. Obsidian renders as wall of text.
+**Cause**: `src/utils/content_cleaner.py::_strip_unicode_blank_lines` drops ALL whitespace-only lines via `_UNICODE_BLANK_LINE_RE` (matches both Unicode blanks AND empty `""` ASCII lines). Markdown paragraph break = blank line between paragraphs. Stripping = collapses `\n\n` → `\n` everywhere.
+**Fix**: skip strip if line is empty (`""`). Only drop lines with ≥1 char (true Unicode blank like U+2800 braille). Verified: 112 newlines preserved end-to-end (was 56).
+
+### Bug 3: EPUB image relative path not resolved
+**Symptom**: `[EpubImageExtractor] href not found: ../images/img19.jpg`. Images fall to fallback URL → broken in Obsidian.
+**Cause**: `EpubImageExtractor.fetch` tries `OEBPS/` prefix variants but EPUB uses `OPS/` (RPO case). No path normalization for `..`. No basename fallback.
+**Fix**: added `OPS/` variants + `posixpath.normpath()` + basename fallback (scan all `ITEM_IMAGE` for matching filename). Verified: `../images/img19.jpg` → 6190 bytes fetched.
+
+### Verified
+- `_title_from_url` rejects Windows path → no more garbage titles.
+- Prologue chapter: 112 newlines preserved (was 56). Paragraph breaks intact.
+- Image extractor handles `../images/foo.jpg` reliably.
+
+---
+
+## [1.0.12] — 2026-05-17
+
+Obsidian TOC + top/bottom nav. Each story folder gets `0000_Index.md` listing all chapters. Each chapter file gets nav at top AND bottom: `[← Prev] | [🏠 Index] | [Next →]`.
+
+### Added
+- **`src/writers/nav_injector.py::build_index_content`**: generate TOC file at `output/{story}/0000_Index.md`. Format:
+  ```markdown
+  # {story_name}
+
+  > [!abstract] Story Info
+  > - **Chapters**: 15
+  > - **Source**: royalroad.com
+  > - **Last updated**: 2026-05-17
+
+  ## Chapters
+
+  1. [Chapter 2 – Gathering moss](0001_Gathering_moss.md)
+  ...
+  ```
+  Naming `0000_` ensures Index sorts FIRST in folder (before any `0001_..0999_` chapter). User opens story folder → sees Index → clicks chapter.
+- **`inject_nav_and_index(output_dir, story_name)`**: replaces `inject_nav_links` (kept as alias for back-compat). Returns `(chapters_updated, index_written)`. Reads chapter titles + source URL from frontmatter for TOC.
+- Each chapter nav now has 3 links: `[← Prev]`, `[🏠 Index](0000_Index.md)`, `[Next → ]`. First chapter omits Prev. Last chapter omits Next.
+
+### Changed
+- Nav now injected at BOTH top (after frontmatter) AND bottom (after content + `---` HR). Reader can navigate from start or end of chapter without scrolling.
+- Wire updated in `src/core/scraper.py` + `src/core/orchestrator.py`: pass `story_name` from progress / DC metadata.
+
+### Robustness
+- `_inject_chapter_nav` rewrites file deterministically: strip all nav blocks → extract FM → reassemble in canonical layout. Recovers from corrupt prior state (missing newlines, nav at wrong position from earlier bugs).
+- Idempotent: 2nd+ run on stable file returns `(0, False)` — no churn.
+- Stale legacy v1.0.11 `<!-- nav-links -->` markers stripped on migration.
+
+### Reading flow
+```
+Mở folder → 0000_Index.md (TOC)
+         ↓ click chapter
+    đọc chapter
+    ┌─────────────────┐
+    ↓                 ↓
+Next chapter    🏠 Back to Index
+```
+
+### Verified
+- Live test 15-chapter RR story: Index generated, all 15 chapters get top + bottom nav, mid chapter has 3 links (Prev + Index + Next), first/last have 2 links.
+- Recovery: previously corrupt file with `---# Chapter` (missing newline) auto-fixed to canonical format.
+- Idempotent: Run A applies fix, Run B stabilizes, Run C+ unchanged.
+
+---
+
+## [1.0.11] — 2026-05-17
+
+Obsidian reader polish — status box callout, broken bold fix, prev/next chapter nav links.
+
+### Added
+- **`src/utils/content_cleaner.py::_wrap_status_blocks`** (Pass 7): detect 3+ consecutive LitRPG status lines (`**HP**: 144/144`, `**Level**: 11`, etc) and wrap in Obsidian callout `> [!info]+ Status`. Three patterns covered: `**X:**value` (colon inside), `**X**: value` (colon outside), `**X**` (label only). Max line length 160 to avoid false positive on prose. Blank lines inside cluster tolerated.
+- **`src/utils/content_cleaner.py::_fix_broken_bold`** (Pass 6): repair `**X: **Y` (trailing whitespace inside bold span — invalid CommonMark, renders as raw asterisks in Obsidian) → `**X:** Y`. Uses `[ \t]+` not `\s+` to avoid cross-line greedy match.
+- **`src/writers/nav_injector.py`** (NEW): post-process output dir, append prev/next chapter footer to each `.md` file. Markers `<!-- nav-links -->...<!-- /nav-links -->` enable idempotent regenerate. First chapter: only Next →. Last chapter: only ← Prev. Mid chapters: both.
+- **`src/core/scraper.py::run_novel_task`**: call `inject_nav_links` after pm.flush() (Obsidian writer only).
+- **`src/core/orchestrator.py::run_epub_flow`**: same call after EPUB scrape done.
+
+### Examples
+**Before** (raw RR status box bleeding bold markers):
+```
+**HP**: 144/144
+**Mana**: 0/0
+**Level**: 11
+**Energy Level (E): **10 000 MW
+```
+
+**After**:
+```markdown
+> [!info]+ Status
+> **HP:** 144/144
+> **Mana:** 0/0
+> **Level:** 11
+> **Energy Level (E):** 10 000 MW
+```
+
+**Nav footer appended to each chapter**:
+```markdown
+---
+<!-- nav-links -->
+[← 0004_Stone_Cold_Killer](0004_Stone_Cold_Killer.md) | [0006_Yes_Hard_Feelings →](0006_Yes_Hard_Feelings.md)
+<!-- /nav-links -->
+```
+
+### Verified
+- Status block detection: cluster size ≥3, false-positive guard via 160-char line length cap.
+- Broken bold regex: line-bounded (`[ \t]` not `\s`) — fixed cross-line greedy bug discovered smoke test.
+- Nav injector idempotent: run twice → 2nd run returns 0 updated (no churn).
+- Live test on existing `output/Rock_falls,_everyone_dies/` (15 chapters): 15 files linked correctly, first/last chapter directional, mid chapters bidirectional.
+
+---
+
+## [1.0.10] — 2026-05-17
+
+Root tidy — internal-only docs moved to `docs/`, user inputs consolidated under `input/`.
+
+### Layout
+```
+Cào text/
+├── main.py                ← entry
+├── .env                   ← API keys
+├── config.toml            ← user knobs (optional)
+├── config.toml.example    ← template
+├── README.md              ← stays root (GitHub convention)
+├── CHANGELOG.md           ← stays root (convention)
+├── CLAUDE.md              ← stays root (Claude Code auto-load)
+├── issues.md              ← runtime log (gitignored)
+├── requirements.txt
+├── input/                 ← all user inputs (NEW)
+│   ├── links.txt          ← web URLs
+│   └── epub/              ← drop .epub here
+├── data/ output/ progress/  ← runtime state
+├── docs/                  ← all internal docs
+│   ├── BLUEPRINT.md       ← moved from root
+│   ├── ROADMAP.md         ← moved from root
+│   └── ... (existing)
+└── src/                   ← code (v1.0.8)
+```
+
+### Changed
+- `git mv BLUEPRINT.md ROADMAP.md docs/` — repo organization.
+- `mv links.txt → input/links.txt`, `mv input_epub/ → input/epub/` (untracked, gitignored).
+- **`src/utils/epub_inbox.py`**: `INBOX_DIR = os.path.join("input", "epub")`.
+- **`main.py`**: argparse `links_file` default `"links.txt"` → `os.path.join("input", "links.txt")`.
+- **`.gitignore`**: `input_epub/` → `input/epub/`, `links.txt` → `input/links.txt`.
+
+### Kept at root (convention)
+- `README.md` — GitHub renders on repo page.
+- `CHANGELOG.md` — Keep-a-Changelog convention.
+- `CLAUDE.md` — Claude Code auto-loads from root; moving = lose auto-context.
+
+### Migration note
+- Old `links.txt` at root → move to `input/links.txt`.
+- Old `input_epub/*.epub` → move to `input/epub/`.
+- Manifest `data/processed_epubs.json` unchanged (hash-keyed, location-agnostic).
+
+### Verified
+- `python main.py --version` → 1.0.10.
+- `INBOX_DIR` resolves `input/epub`, exists=True.
+- `scan_inbox()` works post-move.
+
+---
+
+## [1.0.9] — 2026-05-17
+
+Fix html_filter cascade crash — Layer 1b/1c watermark filters silently bypassed since v1.0.4. RR (+ other sites with nested obfuscated-class wrappers) watermarks leaked into output.
+
+### Root cause
+`_strip_obfuscated_class_elements` iterates `soup.find_all(True)` snapshot. When ancestor `<span class="cjBiZWI1...">` decomposed, descendants in snapshot list lose `attrs` (BS4 4.12+ clears them). Next iteration: `el.get("class")` → `self.attrs.get(...)` → `'NoneType' object has no attribute 'get'`. Exception propagates to `prepare_soup`, caught by executor's `except Exception` → `[Executor] html_filter thất bại, dùng raw parse` → ALL layers (1b/1c/2/3) silently skipped → watermarks leak to content.
+
+Observed in v1.0.5 RR scrape: every chapter logged `html_filter thất bại`, then watermark variants ("Unauthorized reproduction...", "this story has been taken without approval...") leaked despite Layer 1c being designed to catch them.
+
+### Fix
+- **`src/core/html_filter.py::_is_alive(el)`** (NEW helper): returns False if `el is None`, `el.attrs is None`, OR `el.parent is None` (excluding soup root). Used as defensive guard before any `.get()`/`.has_attr()`/`.decompose()` call.
+- **Layer 1b** `_strip_obfuscated_class_elements`: snapshot via `list(...)` + `_is_alive` guard per iteration.
+- **Layer 1c** `_strip_invisible_elements`: existing `parent is None` guard replaced with `_is_alive` (catches edge cases where parent linked but attrs cleared).
+- **Layer 2** KNOWN_NOISE selector loop: `_is_alive` guard before decompose (skip double-strip cascade).
+- **Layer 3** profile remove_selectors loop: `_is_alive` guard before protected check (skip already-stripped descendants).
+
+### Verified
+- Repro test (nested obfuscated `<span>` wrapping `display:none` + `.sr-only`): SUCCESS, no crash, watermarks stripped, real prose preserved.
+- Compile pass.
+
+### Impact
+v1.0.4 visibility filter + v1.0.3 obfuscated-class filter now **actually run** in production. Profile remove_selectors finally take effect on sites that triggered cascade (every RR scrape since v1.0.4 was running unfiltered).
+
+---
+
+## [1.0.8] — 2026-05-17
+
+Code consolidation — all source moved into `src/`. User-editable folders (`data/`, `output/`, `progress/`, `input_epub/`, `docs/`) + entry (`main.py`) + user files (`.env`, `config.toml`, `links.txt`) stay at root. Goal: user touches root only; never touches `src/`.
+
+### Layout
+```
+Cào text/
+├── main.py              ← entry (thin sys.path shim → src/)
+├── .env                 ← API keys (user)
+├── config.toml          ← user behavior knobs (optional, copy from .example)
+├── config.toml.example  ← template (committed)
+├── links.txt            ← user URLs (web mode)
+├── input_epub/          ← drop .epub here
+├── data/                ← profiles, ads, cache, manifests (auto-managed)
+├── output/              ← scraped chapters (user reads)
+├── progress/            ← resume state (auto-managed)
+├── docs/                ← docs
+├── CHANGELOG.md, README.md, CLAUDE.md, BLUEPRINT.md, ROADMAP.md
+└── src/                 ← ALL CODE — KHÔNG động vào
+    ├── config.py
+    ├── ai/ core/ ingest/ learning/ pipeline/ utils/ writers/ tools/
+```
+
+### Changed
+- `git mv ai/ core/ ingest/ learning/ pipeline/ utils/ writers/ tools/ config.py src/` — history preserved.
+- **`main.py`**: prepend `sys.path.insert(0, ".../src")` BEFORE any internal import. Existing `from config import ...`, `from ai.client import ...` resolve transparently — zero import-string changes in `main.py` or any moved module.
+- **`src/config.py`**: `_PROJECT_ROOT = Path(__file__).resolve().parent.parent` — `.env` + `config.toml` resolve from root (one level above `src/`).
+- **`src/ingest/txt.py`**: `_TXT_CASES_PATH` uses `.parent.parent.parent` (src/ingest/.. = src, .. = root).
+- **`src/tools/snapshot_baseline.py`**: existing `sys.path.insert(0, parent.parent)` still correct (parent.parent = src/ post-move).
+
+### Verified
+- Compile + import: all 9 subpackages + `config.py` import clean.
+- `_TXT_CASES_PATH` resolves to root/data/txt_cases.json (exists=True).
+- `_TOML_PATH` resolves to root/config.toml.
+- `ObsidianWriter` factory + `scan_inbox()` work post-move.
+- `python main.py --version` → 1.0.8.
+- `python main.py --help` lists all flags.
+
+### Migration note
+No user action needed if running `python main.py` from project root (which is the only documented invocation). Hardcoded paths to internal modules in external tooling would break — none known.
+
+---
+
+## [1.0.7] — 2026-05-17
+
+User config file — `config.toml` cho tuning behavior không cần sửa code. Python 3.11+ stdlib `tomllib`, không thêm dep.
+
+### Added
+- **`config.toml.example`** (NEW, committed): template với comments giải thích từng knob. User copy → `config.toml`, chỉnh thoải mái.
+- **`config.py`**: load `config.toml` ở top via `tomllib`. Tunable constants (`MAX_CHAPTERS`, `LEARNING_CHAPTERS`, `AI_MAX_RPM`, `JS_CONTENT_RATIO`, paths, ...) đọc qua helper `_get(section, key, default)`.
+- **`main.py::_build_arg_parser`**: `--output-mode` + `--output-dir` defaults pull từ `[output]` section của TOML (CLI flag vẫn override).
+- **`.gitignore`**: `config.toml` (per-user, không commit).
+
+### Priority order
+```
+CLI flag (--output-mode, --max-pw-instances, ...) > config.toml > code default
+```
+`.env` vẫn giữ API key/secret riêng. `config.toml` chỉ chứa behavior knobs.
+
+### TOML sections
+- `[output]` — mode, dir, download_images
+- `[scraper]` — max_chapters, errors/timeouts, playwright_concurrency, init_stagger, backoff
+- `[learning]` — chapters, profile_max_age_days, ai_calls, thresholds
+- `[ai]` — max_rpm, jitter
+- `[http]` — request_timeout
+- `[js_detection]` — content_ratio, min_diff_chars
+- `[paths]` — data_dir, output_dir, progress_dir
+
+### Verified
+- Missing `config.toml` → silent fallback, behavior unchanged.
+- Malformed TOML → warn + use defaults (no crash).
+- Compile pass.
+
+---
+
+## [1.0.6] — 2026-05-17
+
+EPUB inbox — drop-folder UX for batch EPUB processing. User drops `.epub` files in `input_epub/`, runs `python main.py` (no flags), program auto-processes new files + skips already-done. No CLI changes needed.
+
+### Added
+- **`utils/epub_inbox.py`** (NEW): `scan_inbox()` walks `input_epub/*.epub`, compares against SHA256 manifest (`data/processed_epubs.json`). Returns `(todo, skipped)`. `mark_processed()` writes manifest entry after successful run.
+- **`main.py::_run_epub_inbox()`**: helper invoked before web flow. Silent no-op if inbox empty. Process each new EPUB via `run_epub_flow`. Mark hash → manifest only AFTER successful flow (fail mid-process = retry next run).
+- **`core/orchestrator.py::run_epub_flow`**: return type `None → int` (chapter count). Backward-compatible additive change; only caller (`main.py`) consumes new return.
+- **`.gitignore`**: `input_epub/` added.
+
+### Skip semantics
+- Same hash → skip (rename file = idempotent — hash unchanged)
+- Different hash, same name → process (file edited / replaced)
+- Hash missing from manifest → process
+
+### Verified
+- Empty inbox + valid `links.txt` → web flow unchanged, no inbox print.
+- Empty inbox + missing `links.txt` → exits with error (existing behavior preserved).
+- Compile check passes: `main.py`, `utils/epub_inbox.py`, `core/orchestrator.py`.
+
+### UX
+```bash
+mkdir input_epub  # auto-created lần đầu chạy
+mv ~/Downloads/*.epub input_epub/
+python main.py    # processes new + skips done
+```
+
+---
+
 ## [1.0.5] — 2026-05-17
 
 Phase 0 — Upfront URL classifier. User paste any URL (index page, story root, chapter), scraper auto-classifies + redirects to chapter 1 if needed. Detects language for multi-language support hook (en/vi/zh/ja/ko/ru/other).
