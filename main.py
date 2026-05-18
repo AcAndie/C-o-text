@@ -85,16 +85,21 @@ def _valid_url(url: str) -> bool:
         return False
 
 
-def _output_dir(url: str) -> str:
+def _output_dir(url: str, base: str | None = None) -> str:
+    """v1.0.33: optional base override — CLI --output-dir / config.toml
+    [output] dir flows through RunConfig. Default None → fall back to
+    config OUTPUT_DIR (legacy behavior)."""
     p      = urlparse(url)
     domain = p.netloc.replace("www.", "").replace(".", "_")
     parts  = [seg for seg in p.path.strip("/").split("/") if seg][:2]
     slug   = "_".join(parts) if parts else "unknown"
-    return os.path.join(OUTPUT_DIR, f"{domain}_{slug}")
+    return os.path.join(base or OUTPUT_DIR, f"{domain}_{slug}")
 
 
-def _progress_path(url: str) -> str:
-    out_dir   = _output_dir(url)
+def _progress_path(url: str, base: str | None = None) -> str:
+    """Hash keyed on out_dir → progress collision-free across modes
+    when --output-dir differs."""
+    out_dir   = _output_dir(url, base)
     domain    = urlparse(url).netloc.replace(".", "_")
     dir_hash  = hashlib.md5(out_dir.encode()).hexdigest()[:8]
     base_slug = out_dir.split(os.sep)[-1]
@@ -504,7 +509,7 @@ async def main() -> None:
         try:
             await run_learning_only(
                 start_url     = url,
-                progress_path = _progress_path(url),
+                progress_path = _progress_path(url, run_config.output_dir),
                 pool          = pool,
                 pw_pool       = app.pw_pool,
                 pm            = pm,
@@ -522,8 +527,8 @@ async def main() -> None:
         await asyncio.sleep(idx * INIT_STAGGER)
         await run_novel_task(
             start_url       = url,
-            output_dir      = _output_dir(url),
-            progress_path   = _progress_path(url),
+            output_dir      = _output_dir(url, run_config.output_dir),
+            progress_path   = _progress_path(url, run_config.output_dir),
             pool            = pool,
             pw_pool         = app.pw_pool,
             pm              = pm,
