@@ -4,6 +4,139 @@ All notable changes to Cào Text. Format based on [Keep a Changelog](https://kee
 
 ---
 
+## [1.1.0] — 2026-05-18
+
+Stability + multi-site hardening release. Adds Obsidian vault in-repo layout,
+webnovel.com support, multi-key Gemini rotation, post-learning calibration,
+EPUB divider merge, retry coverage for transient network errors. ~10 commits
+across 6 areas. Focus: make scraper reliable across more sites + surface AI
+hallucinations before they ship to user.
+
+### Highlights
+
+- **Vault in-repo layout** — `Vault/` folder serves as Obsidian vault. Open it
+  in Obsidian → read scraped chapters, edit `_Scraper/links.md`, drop
+  `.epub` files into `epub_inbox/` without leaving the app. `.env` stays
+  outside vault (vault may sync someday → secret leak risk avoided).
+- **Webnovel.com support** — fast-path chapter-1 detection via ID-sort heuristic.
+  Zero AI cost, instant.
+- **Multi-key Gemini** — `GEMINI_API_KEY_1`, `_2`, ... read from .env.
+  Round-robin rotation on 429/503 quota errors. Single-key still works (no
+  regression).
+- **Post-learning calibration** — 3-dimension probe (content/title/remove
+  selectors) on 5 sample chapters. Surfaces silent AI hallucinations.
+- **Markdown escape** — author's literal `*****` (censor) no longer
+  triggers Obsidian italic/bold cascade.
+- **EPUB divider merge** — Part/Level/Book/Section/Volume/Act header pages
+  merge into following chapter.
+
+### Added
+
+- **Vault layout** (`0e7b6f9`): `Vault/Novels/` + `Vault/_Scraper/{links.md,
+  issues.md, epub_inbox/, README.md}`. `config.py` adds `ISSUES_FILE`,
+  `LINKS_FILE`, `EPUB_INBOX_DIR` constants, all read from `[paths]` in
+  `config.toml`. `.gitignore` ignores vault runtime, keeps theme + README
+  + plugin config committed. Beginner-friendly `README.md` (Python install →
+  pip → API key → first scrape + EPUB + Shell Commands plugin hotkey).
+- **Webnovel fast-path** (`8fb7c31`): `utils/url_classifier::_resolve_webnovel`
+  detects `webnovel.com` URL, fetches book index page, picks smallest chapter
+  ID = chapter 1. Verified on 2 books (chapters 1-86 + 1-49). Replaces AI
+  Phase 0 which picked mid-story IDs as "chapter 1".
+- **Multi-key Gemini** (`2d36253`): `config::ALL_GEMINI_KEYS` strict regex
+  `^GEMINI_API_KEY(?:_\d+)?$` (NOT startswith — avoids `_DEV`, `_OLD`,
+  `_BACKUP`). `ai/client::ApiKeyPool` round-robin + per-key cooldown 60s on
+  429/503. `_call()` calls `mark_rate_limited()` only on quota errors
+  (network blips don't cool key).
+- **Calibration phase** (`7aa8f57`): `learning/phase::_calibrate_profile`
+  runs after Master Synthesis. Three checks: M0 content_selector (≥3/5
+  ≥300c, HARD fail), M1 title_selector (≥3/5 produce 3-200c title, SOFT
+  warn), M2 remove_selectors (don't strip >60%, SOFT warn). Only M0 caps
+  confidence to 0.3.
+- **Validation guard** (`a769ec8`): standalone `_validate_content_selector`
+  catches AI hallucinations like webnovel `div.cha-p` (substring match
+  against `cha-page`/`cha-poster` class names, real selector is
+  `div.cha-content`).
+
+### Fixed
+
+- **Markdown escape** (`748c58c`): `core/formatter::_escape_md` escapes
+  literal `*` and `` ` `` in plain text from source HTML. Outer
+  `**bold**` / `*italic*` wrappers from `<strong>`/`<em>` tags intentional,
+  stay unescaped. Root cause for webnovel `*****` censor → Obsidian
+  italic/bold cascade.
+- **ConnectError retry** (`987ca86`): `_is_retriable()` keyword
+  `connection` → `connect` + includes `type(e).__name__` in haystack.
+  Previously `ConnectError('')` empty msg + class name = `connecterror`
+  matched nothing → no retry → fail loud on transient blip.
+- **EPUB divider merge** (`70e4386`): `ingest/epub_structure::_merge_dividers`
+  detects Part/Level/Book/Section/Volume/Act titles, merges doc_ids into
+  following chapter. Title becomes "Level Two — Chapter 17". Ready Player
+  One: 45 → 42 files (3 dividers absorbed).
+- **`--output-dir` CLI ignored** (`5588e33`): `_output_dir()` + `_progress_path()`
+  in `main.py` now accept `base` kw, caller passes `run_config.output_dir`.
+  Web flow previously hardcoded `config.OUTPUT_DIR`, only EPUB/TXT orchestrator
+  respected override.
+
+### Internal
+
+- **AI naming `ConnectError` retry** flows through ALL `ai/*` call sites
+  (naming, classify, find_first, extract, ads_verify, image_policy,
+  epub_analyze, etc.) — broader resilience.
+
+### Migration notes
+
+- **No breaking changes for users with single `GEMINI_API_KEY`.** Multi-key
+  is opt-in via additional `GEMINI_API_KEY_N` env vars.
+- **Vault layout** — old `output/`, `input/`, `issues.md`, `input/epub/` paths
+  are deprecated. Existing scraped data move into `Vault/Novels/`, EPUB
+  inbox into `Vault/_Scraper/epub_inbox/`. Profiles + progress unchanged
+  (still in `data/` + `progress/`). If you already had scraped output,
+  manually move folders into vault or re-scrape.
+- **Calibration may emit ⚠ on existing profiles** with hallucinated title
+  selectors (vd webnovel `h3.chapter_title` real h1). Profile still works
+  via title chain fallback. Run `!relearn <domain>` to refresh, or ignore.
+
+### Defer to 1.1.x / 1.2
+
+- **Baseline capture infrastructure** — `tools/snapshot_baseline.py` exists
+  but never run. Required before behavioral refactors.
+- **FlowSpec orchestrator unify** — 80 LOC duplicate between `run_epub_flow`
+  + `run_txt_flow`. Blocked by baseline.
+- **Image stage shared helper** — 60 LOC duplicate between scraper +
+  orchestrator. Blocked by baseline.
+- **CJK i18n hardening** — encoding heuristic, font deobfuscation, chapter
+  regex `第N章`/`第N話`/`제N장`. Triggered when user scrapes native CN/JP/KR
+  source regularly.
+- **Cross-platform smoke** — verify on Linux + macOS.
+
+---
+
+## [1.0.18] — [1.0.28] — 2026-05-17 → 2026-05-18
+
+Session sprint between v1.0.17 ship and v1.1.0 consolidation. Not separately
+changelogged (commits exist in git log). Themes:
+
+- Royal Road escalation: obfuscated-class anti-piracy watermarks, hidden
+  visibility strip, RR braille blank spacer.
+- ScribbleHub Story ID guard fix (numeric-prefix-with-dash priority — picks
+  `/read/1539267` not `/read/1539267-the-quantum-wanderer/chapter/1539274`).
+- ScribbleHub title `H1TitleBlock` excluded ancestor check (skip
+  `h2.comments-title`).
+- 69shuba anti-bot Referer chain + Playwright stealth (didn't bypass IP
+  rate-limit ultimately; deferred indefinitely).
+- Status callout unification — Pass 7 `_wrap_status_blocks` patterns for
+  broken bold + emoji bridge + 4-line lookahead window.
+- `asyncio.shield(asyncio.to_thread(inject_nav_and_index, ...))` — nav
+  index survives Ctrl+C cancel.
+- Site suffix regex: ScribbleHub (with + without space), FFN literal +
+  fandom descriptor strip, word-count artifact strip.
+- Naming phase visibility log for failures.
+- Phase 0 upfront URL classifier (index/chapter/lang detect).
+
+See git log for details: `git log --oneline 8ef978b..0894af8`.
+
+---
+
 ## [1.0.17] — 2026-05-17
 
 EPUB content truncation — every chapter capped ~8KB regardless of source size. RPO chapter 1 (33KB plain text) → file 8KB (cut mid-sentence at "This was").

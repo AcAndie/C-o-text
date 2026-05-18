@@ -1,16 +1,30 @@
 # v1.1+ Backlog
 
-> Consolidated list of features deferred from v1.0. Each item has a rationale (why not v1.0) and a trigger condition (when to revisit).
+> Consolidated list of features deferred from v1.0 and now v1.1.0. Each item has a rationale (why not now) and a trigger condition (when to revisit).
 >
-> **Source**: CLAUDE.md §3 DEFERRED list + ROADMAP.md Phase 7+ + per-phase retrospective deferrals + v1.0 smoke test bugs.
+> **Source**: CLAUDE.md §3 DEFERRED list + ROADMAP.md Phase 7+ + per-phase retrospective deferrals + v1.0 smoke test bugs + v1.1 session output.
 >
-> **Updated**: 2026-05-17 (v1.0 ship + retrospective)
->
-> **Priority order**: see §0 below.
+> **Updated**: 2026-05-18 (post v1.1.0 ship — see status table below)
 
 ---
 
-## 0. Priority Order (top 5 = v1.1 critical path)
+## Status After v1.1.0 (2026-05-18)
+
+| Item | Status | Notes |
+|---|---|---|
+| P1 Baseline capture infrastructure   | ⏳ deferred | Still blocks behavioral refactors |
+| P2 EPUB Bug 1 (title path fallback)  | ✅ done v1.0.13 | `_title_from_url` rejects file paths |
+| P2 EPUB Bug 2 (image href relative)  | ✅ done v1.0.13 | 4-strategy fallback + basename match |
+| P2 EPUB Bug 3 (over-split)           | ✅ done v1.1.0  | `_merge_dividers` Part/Level/Book |
+| P2 Web --output-dir CLI ignored      | ✅ done v1.1.0  | `_output_dir(url, base=None)` |
+| P3 Multi-key Gemini rotation         | ✅ done v1.1.0  | `ApiKeyPool` + cooldown |
+| P4 FlowSpec orchestrator unify       | ⏳ deferred | Blocked by P1 baseline |
+| P5 Cross-platform smoke              | ⏳ deferred | Windows-only verified so far |
+| 2.2 Calibration phase                | ✅ done v1.1.0  | 3-dim probe post-Master-Synthesis |
+
+---
+
+## 0. Priority Order (top 5 = v1.2 critical path)
 
 | Rank | Item | Section | Rationale |
 |------|------|---------|-----------|
