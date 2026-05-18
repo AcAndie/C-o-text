@@ -77,6 +77,23 @@ SKIP_FILENAME_PATTERNS = (
     "advert", "ads_", "ads_back", "ads_front", "promo", "excerpt",
 )
 
+# v1.0.34: Part/Level/Book/Section dividers — short standalone TOC entries
+# that fragment reading flow. EPUB common pattern: "Level One" (700 bytes)
+# between Chapter 16 and Chapter 17 — pure section header, no real prose.
+# Merge into following chapter so reader sees "Level Two — Chapter 17".
+_DIVIDER_TITLE_RE = re.compile(
+    r"^(part|level|book|section|volume|act)\s+"
+    r"(?:[ivxlcdm]+|\d+|one|two|three|four|five|six|seven|eight|nine|ten)"
+    r"\s*[:.\-—]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _is_divider_title(title: str | None) -> bool:
+    if not title:
+        return False
+    return bool(_DIVIDER_TITLE_RE.match(title.strip()))
+
 
 @dataclass
 class ChapterPlan:
@@ -249,6 +266,9 @@ def build_chapter_plan(book: epub.EpubBook) -> list[ChapterPlan]:
     if current is not None:
         chapters.append(current)
 
+    # v1.0.34: Merge Part/Level dividers into following chapter.
+    chapters = _merge_dividers(chapters)
+
     # Assemble: matter at index 0 (if any), then chapters
     plan: list[ChapterPlan] = []
     if matter_bucket:
@@ -269,6 +289,53 @@ def build_chapter_plan(book: epub.EpubBook) -> list[ChapterPlan]:
     if skip_ids:
         logger.info("[EpubStructure] Skipped docs: %s", skip_ids[:10])
     return plan
+
+
+# ── Divider merge (v1.0.34) ──────────────────────────────────────────────────
+
+def _merge_dividers(chapters: list[ChapterPlan]) -> list[ChapterPlan]:
+    """
+    Merge divider chapters (Part 1 / Level Two / Book III) into following chapter.
+
+    Why: Some EPUBs emit standalone TOC entries for part headers (~700 bytes,
+    no real prose). Treating these as chapters fragments reading flow —
+    reader sees "Level One" file with 1 line then jumps to "Chapter 1" file.
+
+    Merge strategy: divider doc_ids prepend to next chapter, title becomes
+    "Level Two — Chapter 17". Trailing divider (no following chapter) stays
+    standalone. Re-indexes chapters sequentially after merge.
+    """
+    if not chapters:
+        return chapters
+
+    merged: list[ChapterPlan] = []
+    pending: ChapterPlan | None = None
+
+    for ch in chapters:
+        if _is_divider_title(ch.title):
+            if pending is not None:
+                # Two dividers in a row — keep first standalone
+                merged.append(pending)
+            pending = ch
+            continue
+
+        if pending is not None:
+            ch = ChapterPlan(
+                index   = ch.index,
+                kind    = ch.kind,
+                title   = f"{pending.title} — {ch.title}" if ch.title else pending.title,
+                doc_ids = pending.doc_ids + ch.doc_ids,
+            )
+            pending = None
+        merged.append(ch)
+
+    if pending is not None:
+        merged.append(pending)
+
+    # Re-index sequentially after merge
+    for i, ch in enumerate(merged, start=1):
+        ch.index = i
+    return merged
 
 
 # ── AI cache helpers ──────────────────────────────────────────────────────────
@@ -473,6 +540,9 @@ def _apply_decisions(book: epub.EpubBook, decisions: list[dict]) -> list[Chapter
 
     if current is not None:
         chapters.append(current)
+
+    # v1.0.34: Merge Part/Level dividers (AI may pick them as chapters too).
+    chapters = _merge_dividers(chapters)
 
     plan: list[ChapterPlan] = []
     if matter_bucket:
