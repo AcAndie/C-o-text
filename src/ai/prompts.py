@@ -680,13 +680,31 @@ Trả về JSON (CHỈ JSON thuần):
 
     @staticmethod
     def find_first_chapter(candidates: str, base_url: str) -> str:
-        return f"""Đây là các URL candidate cho Chapter 1 của truyện:
+        return f"""Trang nguồn: {base_url}
+
+URL candidates cho Chapter 1 của truyện (extract từ trang TOC):
 {candidates}
 
-Trang nguồn: {base_url}
+NHIỆM VỤ: Chọn URL của CHƯƠNG ĐẦU TIÊN của truyện.
+
+QUY TẮC:
+1. Trang TOC có thể có:
+   - Chapter links (chương 1, 2, 3, ...) — đây là target
+   - About/Reviews/Donate/Comments links — bỏ qua
+   - Author/Series page links — bỏ qua
+2. "Chương đầu" = chương có số NHỎ NHẤT, hoặc:
+   - "Chapter 1", "Ch. 1", "Ch.1"
+   - "Chương 1", "Tập 1", "Phần 1"
+   - "第一章", "第1章", "第一话", "第一節" (Trung)
+   - "第1話", "第一話", "序章", "プロローグ" (Nhật)
+   - "1화", "프롤로그" (Hàn)
+   - "Episode 1", "EP 1"
+   - "Prologue", "Prolog" (nếu là phần MỞ ĐẦU truyện, không phải author note)
+3. Nếu URL có số → chọn URL có số nhỏ nhất
+4. Nếu có "Prologue" / "序章" / "프롤로그" → đó là chương đầu, ưu tiên hơn "Chapter 1"
 
 Trả về JSON (CHỈ JSON thuần):
-{{"first_chapter_url": "URL của Chapter 1 — chương đầu tiên, số nhỏ nhất. null nếu không xác định được."}}
+{{"first_chapter_url": "URL Chapter 1 từ list trên, KHÔNG tự sinh. null nếu candidates không có chương."}}
 """
 
     @staticmethod

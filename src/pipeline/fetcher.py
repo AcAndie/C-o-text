@@ -182,6 +182,12 @@ class HybridFetchBlock(ScraperBlock):
                 status, html = await pool.fetch(ctx.url)
                 if is_cloudflare_challenge(html):
                     raise _CloudflareError()
+                # v1.0.25: 403 = anti-bot outright reject (no challenge body).
+                # 69shuba returns 403 cho curl_cffi → fall back PW (real browser
+                # bypass). Reuse _CloudflareError handling — mark cf_domain để
+                # subsequent fetch skip curl path.
+                if status == 403:
+                    raise _CloudflareError()
                 if is_junk_page(html, status):
                     return self._timed(
                         BlockResult.failed(f"junk_page status={status}"),

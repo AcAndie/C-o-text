@@ -18,6 +18,7 @@ core/chapter_writer.py KEEP cho đến P1.5 — callers cũ chưa migrate.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from pipeline.base       import CleanedChapter
@@ -27,6 +28,61 @@ from core.chapter_writer import format_chapter_filename
 
 # Metadata keys được include trong frontmatter (mặc định)
 _FRONTMATTER_META_KEYS = ("story_name", "language", "author")
+
+# Em-space (U+2003) — visually ~tab width, KHÔNG trigger CommonMark code block
+# rule (4 leading ASCII spaces). Single char giữ semantic cleaner cho copy.
+_PARA_INDENT = " "
+
+# Line patterns mà KHÔNG indent (preserve Markdown semantics).
+_NO_INDENT_RE = re.compile(
+    r"^("
+    r"\s*#"               # heading
+    r"|\s*>"              # blockquote / callout
+    r"|\s*[-*+]\s"        # bullet list
+    r"|\s*\d+\.\s"        # numbered list
+    r"|\s*---\s*$"        # HR
+    r"|\s*\|"             # table row
+    r"|\s*<!--"           # HTML comment (nav marker)
+    r"|\s*!\["            # image-only line
+    r")"
+)
+
+
+def _indent_paragraphs(body: str) -> str:
+    """
+    Prepend em-space vào MỌI content line trong body markdown.
+
+    Lý do indent every line (không chỉ first-after-blank): MarkdownFormatter
+    join consecutive <p> bằng single `\\n` (formatter.py:148), không `\\n\\n`.
+    Vậy mỗi sentence = 1 line, không có "paragraph wrap" thật. Treat each
+    line as separate paragraph → indent toàn bộ.
+
+    Skip: heading, blockquote, list, HR, table, code fence (inside), HTML
+    comment, image-only line.
+    """
+    if not body:
+        return body
+
+    lines   = body.split("\n")
+    in_code = False
+
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+
+        if stripped.startswith("```"):
+            in_code = not in_code
+            continue
+
+        if in_code:
+            continue
+
+        if not line.strip():
+            continue
+
+        if not _NO_INDENT_RE.match(line):
+            lines[i] = _PARA_INDENT + line
+
+    return "\n".join(lines)
 
 
 class ObsidianWriter(ChapterWriter):
@@ -83,7 +139,7 @@ class ObsidianWriter(ChapterWriter):
 
         lines.append("---")
         lines.append("")
-        lines.append(chapter.body_markdown)
+        lines.append(_indent_paragraphs(chapter.body_markdown))
 
         if chapter.source_url and self.run_config.output_mode == "obsidian":
             lines.append("")

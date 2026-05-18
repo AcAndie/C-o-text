@@ -4,6 +4,30 @@ All notable changes to Cào Text. Format based on [Keep a Changelog](https://kee
 
 ---
 
+## [1.0.17] — 2026-05-17
+
+EPUB content truncation — every chapter capped ~8KB regardless of source size. RPO chapter 1 (33KB plain text) → file 8KB (cut mid-sentence at "This was").
+
+### Root cause
+EPUB orchestrator used the web extract chain (`SelectorExtract` → `JsonLdExtract` → `DensityHeuristic` → `FallbackListExtract` → `AIExtract`). For EPUB:
+- DensityHeuristic fails (flat `<body><p>` structure, no candidate divs ≥150c)
+- FallbackList fails (FALLBACK_CONTENT_SELECTORS are web-specific: `#chapter-c`, `article`, ...)
+- AIExtract triggers: `ai_extract_content(html, ...)` internally calls `snippet(html, 8000)` capping HTML at 8000 chars before sending to AI. AI returns ≤8000c. First-wins → chain success → orchestrator uses truncated AI output → never falls through to body fallback.
+
+Result: every EPUB chapter trimmed to ~8KB. 33KB chapter → 8KB → 25% content kept.
+
+### Fix
+- **`src/core/orchestrator.py::_build_chapter_from_epub_doc`**: skip extract chain entirely for EPUB. Direct body fallback — `MarkdownFormatter` on `<body>` returns full content. EPUB structure is already clean (no junk divs to filter), heuristic detection adds zero value + bug surface.
+
+### Verified
+- RPO chapter 1: body 33437 chars (was 8188 — file capped at AI 8K limit).
+- Compile clean.
+
+### Followup needed
+- Re-run RPO EPUB: clean output + re-process. Existing files have wrong content.
+
+---
+
 ## [1.0.16] — 2026-05-17
 
 EPUB analyzer Tier 1 + Tier 2 (config-selectable). Default Tier 2 (AI), fallback Tier 1 on AI failure.

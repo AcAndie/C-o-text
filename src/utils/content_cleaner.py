@@ -377,6 +377,12 @@ _STATUS_LINE_PATTERNS = [
 _MIN_STATUS_CLUSTER  = 3
 _STATUS_LINE_MAX_LEN = 160
 
+# v1.0.22: plain `Label:` line (no bold) — bridge giữa các bold status lines.
+# VD RR chapter có:  **Quest:**  /  **Altitude**: 1m  /  Full Status:  /  **HP:** 22
+# Mid-line `Full Status:` không match bold patterns → cluster break.
+# Bridge cho phép nối nếu line ngắn + ends with colon + surrounded bởi real status.
+_BRIDGE_LABEL_RE = re.compile(r"^\s*[A-Z][A-Za-z 0-9()/\-]{0,40}:\s*$")
+
 
 def _match_status_line(line: str) -> tuple[str, str] | None:
     """Try each pattern. Return (label, value) on match, else None."""
@@ -391,6 +397,11 @@ def _match_status_line(line: str) -> tuple[str, str] | None:
             value = re.sub(r"^\*+|\*+$", "", value).strip()
             return (label, value)
     return None
+
+
+def _is_bridge_label(line: str) -> bool:
+    """v1.0.22: plain `Label:` line — bridge only, not cluster initiator."""
+    return bool(_BRIDGE_LABEL_RE.match(line))
 
 
 def _wrap_status_blocks(text: str) -> str:
@@ -421,6 +432,17 @@ def _wrap_status_blocks(text: str) -> str:
                 and _match_status_line(lines[j + 1]) is not None
             ):
                 cluster.append(None)
+                j += 1
+            elif (
+                _is_bridge_label(line)
+                and cluster
+                and j + 1 < len(lines)
+                and _match_status_line(lines[j + 1]) is not None
+            ):
+                # v1.0.22: plain `Label:` bridge giữa bold status lines.
+                # Emit as bold header trong callout để consistent với cluster
+                # (treat as label-only entry, no value).
+                cluster.append((line.strip().rstrip(":"), ""))
                 j += 1
             else:
                 break

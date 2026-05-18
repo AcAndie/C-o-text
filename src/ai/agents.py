@@ -185,8 +185,11 @@ def _nav_hints(html: str, base_url: str) -> str:
 
 
 _RE_CHAP_LINK = re.compile(
-    r"/(chapter|chuong|chap|/c/|/ch/|episode|ep)[_\-]?\d+"
-    r"|/s/\d+/\d+",
+    r"/(chapter|chuong|chap|/c/|/ch/|episode|ep)[_\-]?\d+"   # /chapter1, /chap-2
+    r"|/(chapter|chuong|chap|episode|ep)/\d+"                # /chapter/1234 (ScribbleHub)
+    r"|/s/\d+/\d+"                                           # FanFiction /s/N/N
+    r"|/txt/\d+/\d+(?:\.html?)?"                             # 69shuba /txt/book/chap.htm
+    r"|/read/\d+",                                           # /read/12345 numeric
     re.IGNORECASE,
 )
 _RE_TOC_PATH = re.compile(
@@ -194,11 +197,37 @@ _RE_TOC_PATH = re.compile(
     re.IGNORECASE,
 )
 
+# v1.0.23: anchor-text patterns — fallback khi URL pattern không match
+# (sites như 69shuba dùng numeric URL không có chapter keyword).
+_RE_ANCHOR_CHAPTER_1 = re.compile(
+    r"^(?:"
+    r"\s*第\s*[一1]\s*[章话話节節回]"           # 第一章, 第1章, 第一话, 第一節
+    r"|\s*(?:chapter|ch\.?)\s*1\b"            # Chapter 1, Ch 1, Ch.1
+    r"|\s*ch[ưu]?[oơ]?ng\s*1\b"               # Chương 1
+    r"|\s*(?:episode|ep\.?)\s*1\b"            # Episode 1
+    r"|\s*1\.?\s+\w"                          # "1. Title" / "1 Title"
+    r"|\s*프롤로그|プロローグ|序章|序"           # KR/JP prologue chars
+    r")",
+    re.IGNORECASE | re.UNICODE,
+)
+
 
 def _chapter_links(html: str, base_url: str) -> list[str]:
+    """
+    Extract chapter URL candidates từ TOC HTML.
+
+    v1.0.23: 2-pass scan:
+      Pass 1: URL pattern match (_RE_CHAP_LINK) — works cho sites có chapter
+              keyword trong URL (RR, FFN, ScribbleHub).
+      Pass 2 (fallback nếu Pass 1 empty): anchor-text scan — works cho sites
+              dùng numeric URL không chapter keyword (69shuba `/txt/N/N.htm`),
+              detect "第一章"/"Chapter 1"/"Chương 1" trong text.
+    """
     soup = BeautifulSoup(html, "html.parser")
     seen: set[str] = set()
     links: list[str] = []
+
+    # Pass 1: URL pattern
     for a in soup.find_all("a", href=True):
         href = a["href"]
         if _RE_TOC_PATH.search(href):
@@ -209,7 +238,28 @@ def _chapter_links(html: str, base_url: str) -> list[str]:
         if full not in seen:
             seen.add(full)
             links.append(full)
-    return links
+
+    if links:
+        return links
+
+    # Pass 2: anchor-text fallback — find link có text match chapter-1 keyword
+    # then collect siblings (chapters thường có cấu trúc <a> consecutive).
+    candidates: list[tuple[int, str]] = []   # (DOM position, url)
+    for i, a in enumerate(soup.find_all("a", href=True)):
+        href = a["href"]
+        if _RE_TOC_PATH.search(href):
+            continue
+        text = a.get_text(strip=True)
+        if not text:
+            continue
+        if _RE_ANCHOR_CHAPTER_1.match(text):
+            full = urljoin(base_url, href)
+            if full not in seen:
+                seen.add(full)
+                candidates.append((i, full))
+
+    candidates.sort()   # earliest DOM position first
+    return [url for _, url in candidates]
 
 
 # ── Conflict resolution ───────────────────────────────────────────────────────

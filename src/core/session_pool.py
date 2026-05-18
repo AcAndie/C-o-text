@@ -38,14 +38,17 @@ class DomainSessionPool:
         self._cf_domains.add(domain)
         logger.debug("[Pool] CF domain flagged: %s", domain)
 
-    async def fetch(self, url: str, timeout: int = REQUEST_TIMEOUT) -> tuple[int, str]:
-        """Fetch URL bằng curl_cffi. Returns (status_code, html)."""
+    async def fetch(
+        self, url: str, timeout: int = REQUEST_TIMEOUT, referer: str | None = None,
+    ) -> tuple[int, str]:
+        """Fetch URL bằng curl_cffi. Returns (status_code, html).
+        v1.0.24: optional referer cho sites yêu cầu (Chinese, Korean)."""
         try:
             from curl_cffi.requests import AsyncSession
 
             domain  = urlparse(url).netloc.lower()
             version = pick_chrome_version()
-            headers = make_headers(version)
+            headers = make_headers(version, referer=referer)
 
             async with self._lock:
                 if domain not in self._sessions:
@@ -151,16 +154,29 @@ class PlaywrightPool:
             logger.error("[PW] Browser launch failed: %s", e)
             raise
 
-    async def fetch(self, url: str, timeout: int = REQUEST_TIMEOUT) -> tuple[int, str]:
-        """Fetch URL bằng Playwright. Returns (status_code, html)."""
+    async def fetch(
+        self, url: str, timeout: int = REQUEST_TIMEOUT, referer: str | None = None,
+    ) -> tuple[int, str]:
+        """Fetch URL bằng Playwright. Returns (status_code, html).
+        v1.0.24: optional referer set qua extra_http_headers.
+        v1.0.25: playwright-stealth wrap để hide webdriver flag,
+        navigator.plugins, automation indicators — bypass anti-bot
+        detection (69shuba, CF Turnstile, ...)."""
         async with self._semaphore:
             browser = await self._get_browser()
             page    = None
             status  = 200
             try:
                 page      = await browser.new_page()
+                # v1.0.25: stealth injection — best-effort, không block fetch
+                # nếu stealth lib lỗi.
+                try:
+                    from playwright_stealth import Stealth
+                    await Stealth().apply_stealth_async(page)
+                except Exception as _e:
+                    logger.debug("[PW] stealth apply failed: %s", _e)
                 version   = pick_chrome_version()
-                headers   = make_headers(version)
+                headers   = make_headers(version, referer=referer)
                 await page.set_extra_http_headers(headers)
 
                 response = await page.goto(

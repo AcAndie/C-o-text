@@ -365,24 +365,20 @@ async def _build_chapter_from_epub_doc(
     if ctx.soup is None:
         return None
 
-    # Extract chain — first-wins từ profile rỗng = heuristics
-    extract_result = await ChainExecutor(runner._extract_blocks(), "extract").run(ctx)
-    if extract_result.ok and extract_result.data:
-        ctx.content       = extract_result.data
-        ctx.selector_used = extract_result.metadata.get("selector")
-    else:
-        # Body fallback — DensityHeuristic fails on flat <body><h1><p>... structure
-        # (EPUB always, TXT short chapters). Format trực tiếp body element qua
-        # MarkdownFormatter.
-        from core.formatter import MarkdownFormatter
-        body_tag = ctx.soup.find("body") or ctx.soup
-        formatter = MarkdownFormatter({})
-        content, images = formatter.format(body_tag, base_url="")
-        if not content.strip():
-            return None
-        ctx.content = content
-        ctx.image_refs.extend(images)
-        ctx.selector_used = "body_fallback"
+    # v1.0.17: EPUB always uses body fallback directly. Extract chain
+    # (DensityHeuristic/AIExtract/...) was designed for web pages where
+    # content sits in specific divs. EPUB body is structured cleanly with
+    # <p> siblings. AIExtract was capping content at 8000 chars (snippet
+    # limit) for every chapter — truncating real prose to ~8KB.
+    from core.formatter import MarkdownFormatter
+    body_tag = ctx.soup.find("body") or ctx.soup
+    formatter = MarkdownFormatter({})
+    content, images = formatter.format(body_tag, base_url="")
+    if not content.strip():
+        return None
+    ctx.content       = content
+    ctx.image_refs.extend(images)
+    ctx.selector_used = "body_fallback"
 
     ctx.content = clean_extracted_content(ctx.content)
 

@@ -88,13 +88,28 @@ def _strip_obfuscated_class_elements(soup: BeautifulSoup) -> int:
         classes = el.get("class") or []
         # Require SOLE class match — strict rule to avoid FP on legit
         # framework class lists that happen to include one long hash.
-        if len(classes) == 1 and _OBFUSCATED_CLASS_RE.match(classes[0]):
-            logger.debug(
-                "[HtmlFilter] Stripped obfuscated-class element: <%s class=%r> text=%r",
-                el.name, classes[0], el.get_text(strip=True)[:60],
-            )
-            el.decompose()
-            stripped += 1
+        if not (len(classes) == 1 and _OBFUSCATED_CLASS_RE.match(classes[0])):
+            continue
+
+        # v1.0.21: RR escalated anti-piracy — wraps EVERY <p> in obfuscated
+        # class to defeat scrapers. Original rule nuked real prose.
+        # Safe-guard: never strip <p> (paragraphs are prose by nature in
+        # chapter pages — watermarks insert as span/div siblings/wrappers).
+        if el.name == "p":
+            continue
+        # Also skip if element holds substantial prose (>40 chars). Real
+        # watermarks are short ("Read on X.com", "Stolen from Y" — typically
+        # <30c). Cross-chapter AdsFilter handles long-form watermark via
+        # frequency learning.
+        if len(el.get_text(strip=True)) > 40:
+            continue
+
+        logger.debug(
+            "[HtmlFilter] Stripped obfuscated-class element: <%s class=%r> text=%r",
+            el.name, classes[0], el.get_text(strip=True)[:60],
+        )
+        el.decompose()
+        stripped += 1
     return stripped
 
 

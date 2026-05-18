@@ -191,6 +191,11 @@ async def _fetch_chapters(
 
     temp_profile: SiteProfile = pm.get(domain)  # type: ignore[assignment]
 
+    # v1.0.24: track previous URL để dùng làm Referer cho fetch tiếp.
+    # Anti-bot sites (69shuba, ...) reject direct chapter access không có
+    # Referer trỏ về TOC hoặc chương trước.
+    referer: str | None = start_url if start_url != current_url else None
+
     for i in range(LEARNING_CHAPTERS):
         if not current_url:
             break
@@ -198,14 +203,17 @@ async def _fetch_chapters(
         print(f"  [{tag}] Fetch Ch.{i+1:>2}/{LEARNING_CHAPTERS} → {current_url[:60]}", flush=True)
 
         try:
+            # v1.0.25: ALL learning chapters via PW (not curl).
+            # Sites như 69shuba serve stripped HTML cho curl (nav buttons
+            # removed) → heuristic nav fail từ Ch.2. Slow (~10 PW fetches)
+            # nhưng reliable. curl_html_ch1 vẫn fetch riêng cho JS-heavy
+            # detection (so sánh curl vs PW len).
+            status, html = await pw_pool.fetch(current_url, referer=referer)
             if i == 0:
-                status, html = await pw_pool.fetch(current_url)
                 try:
-                    _, curl_html_ch1 = await pool.fetch(current_url)
+                    _, curl_html_ch1 = await pool.fetch(current_url, referer=referer)
                 except Exception:
                     curl_html_ch1 = None
-            else:
-                status, html = await fetch_page(current_url, pool, pw_pool)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -237,6 +245,8 @@ async def _fetch_chapters(
                 print(f"  [{tag}] ⚠ Không tìm được next URL sau Ch.{i+1}", flush=True)
                 break
 
+            # v1.0.24: previous chapter URL = Referer cho chapter kế tiếp.
+            referer     = current_url
             current_url = next_url
             await asyncio.sleep(get_delay(current_url))
 

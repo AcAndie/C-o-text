@@ -16,7 +16,9 @@ from config import RE_NEXT_BTN, RE_CHAP_SLUG, RE_FANFIC, RE_CHAP_URL
 
 # Patterns cho index/TOC pages
 _INDEX_PATH_RE = re.compile(
-    r"/(chapters?|table-of-contents?|toc|contents?|index|fiction|novel|works?)"
+    # v1.0.24: drop singular `chapter` — site URL như ScribbleHub
+    # `.../chapter/1539274/` mis-classified as index. Plural `chapters` only.
+    r"/(chapters|chapter-list|table-of-contents?|toc|contents|index|fiction|novel|works?)"
     r"(?:[/?#]|$)",
     re.IGNORECASE,
 )
@@ -81,23 +83,28 @@ def detect_page_type(soup: BeautifulSoup, url: str) -> str:
     Phân loại trang: "chapter", "index", hoặc "other".
 
     Heuristic:
+      - Chapter (specific): URL khớp RE_CHAP_URL — check TRƯỚC index để tránh
+        false positive với site nested `/fiction/{id}/{slug}/chapter/{id}/...`
+        (Royal Road etc) — `/fiction/` matches _INDEX_PATH_RE.
       - Index: path khớp /chapters/, /toc, /fiction/ hoặc title tag có "table of contents"
-      - Chapter: URL khớp RE_CHAP_URL, hoặc có h1/h2 với chương keyword
+      - Chapter (loose): h1/h2 với chương keyword
       - Other: tất cả còn lại
     """
+    # Check chapter URL pattern FIRST — `/chapter/N/` is more specific than
+    # `/fiction/`. Without this order, RR chapter URLs (which contain BOTH
+    # `/fiction/` AND `/chapter/`) get mis-classified as index → scraper
+    # re-runs ai_find_first_chapter and may grab wrong chapter.
+    if RE_CHAP_URL.search(url):
+        return "chapter"
+
     path = urlparse(url).path
 
-    # Check index patterns
     if _INDEX_PATH_RE.search(path):
         return "index"
 
     title_tag = soup.find("title")
     if title_tag and _INDEX_TITLE_RE.search(title_tag.get_text(strip=True)):
         return "index"
-
-    # Check chapter patterns
-    if RE_CHAP_URL.search(url):
-        return "chapter"
 
     # Fallback: look for chapter content signals
     for tag in ("h1", "h2"):

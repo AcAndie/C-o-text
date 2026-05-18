@@ -50,7 +50,7 @@ def _get(section: str, key: str, default):
 
 # ── Project version ───────────────────────────────────────────────────────────
 # Bump on tagged release. See CHANGELOG.md for history.
-VERSION = "1.0.16"
+VERSION = "1.0.25"
 
 
 # ── API ───────────────────────────────────────────────────────────────────────
@@ -131,8 +131,10 @@ CHROME_UA: dict[str, str] = {
 def pick_chrome_version() -> str:
     return random.choice(CHROME_VERSIONS)
 
-def make_headers(version: str) -> dict[str, str]:
-    return {
+def make_headers(version: str, referer: str | None = None) -> dict[str, str]:
+    """v1.0.24: optional referer cho sites reject direct chapter access
+    (Chinese sites như 69shuba thường check Referer)."""
+    h = {
         "User-Agent"               : CHROME_UA.get(version, CHROME_UA["chrome124"]),
         "Accept"                   : "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language"          : "en-US,en;q=0.9",
@@ -140,6 +142,9 @@ def make_headers(version: str) -> dict[str, str]:
         "Connection"               : "keep-alive",
         "Upgrade-Insecure-Requests": "1",
     }
+    if referer:
+        h["Referer"] = referer
+    return h
 
 # ── Delay profiles theo domain ────────────────────────────────────────────────
 _DELAY_PROFILES: dict[str, tuple[float, float]] = {
@@ -197,23 +202,31 @@ KNOWN_NOISE_SELECTORS: list[str] = [
 ]
 # ── Regex compile sẵn ────────────────────────────────────────────────────────
 RE_CHAP_URL = re.compile(
-    r"(?:chapter|chuong|chap)[_-]?\d+"
+    r"(?:chapter|chuong|chap)[_\-/]?\d+"          # /chapter1, /chapter-1, /chapter/1
     r"|/ch?[/_-]\d+"
-    r"|(?:episode|ep|part)[_-]?\d+"
-    r"|/s/\d+/\d+",
+    r"|(?:episode|ep|part)[_\-/]?\d+"
+    r"|/s/\d+/\d+"
+    r"|/txt/\d+/\d+",                             # v1.0.24: 69shuba /txt/N/N.htm
     re.IGNORECASE,
 )
 
 RE_NEXT_BTN = re.compile(
-    r"\b(next|tiếp|sau|next\s*chapter|chương\s*tiếp|siguiente)\b",
+    r"\b(next|tiếp|sau|next\s*chapter|chương\s*tiếp|siguiente)\b"
+    # v1.0.24: CJK + KR awareness — Chinese/Japanese/Korean next-button text
+    r"|下一[章页節话話节回]"        # 下一章 / 下一页 / 下一節 / 下一话 / 下一回
+    r"|下章|下页|下節|下一篇"      # short forms
+    r"|次[へのページ章話]"          # JP: 次へ / 次の / 次ページ / 次章 / 次話
+    r"|次のページ|つぎへ|つぎのページ"  # JP hiragana
+    r"|다음[\s ]*(?:화|장|편|페이지)?",  # KR: 다음 / 다음화 / 다음 화 / 다음장
     re.IGNORECASE | re.UNICODE,
 )
 
 RE_CHAP_HREF = re.compile(
-    r"/(?:chapter|chuong|chap)[_-]?\d+"
+    r"/(?:chapter|chuong|chap)[_\-/]?\d+"         # /chapter1, /chapter/1, /chap-1
     r"|/ch?[/_-]\d+"
-    r"|/(?:episode|ep|part)[_-]?\d+"
-    r"|/s/\d+/\d+/",
+    r"|/(?:episode|ep|part)[_\-/]?\d+"
+    r"|/s/\d+/\d+/"
+    r"|/txt/\d+/\d+",                             # v1.0.24: 69shuba
     re.IGNORECASE,
 )
 

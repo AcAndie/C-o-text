@@ -232,8 +232,12 @@ class MarkdownFormatter:
 
     def _check_special(self, node: Tag) -> str | None:
         """Check system box / hidden text / author note."""
+        # v1.0.22: unify system_box format với Pass 7 (content_cleaner) →
+        # cùng Obsidian callout `> [!info]+ Status` cho mọi nguồn detect.
+        # Trước: DOM-based dùng `> **System:**` blockquote, text-pattern dùng
+        # `> [!info]+ Status` callout → output inconsistent giữa 2 path.
         for key, prefix_default in (
-            ("system_box",  "> **System:**\n> "),
+            ("system_box",  "> [!info]+ Status"),
             ("author_note", "> 📝 "),
         ):
             rule = self.rules.get(key)
