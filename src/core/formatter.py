@@ -44,13 +44,15 @@ _EXTRACT_SKIP_TAGS = frozenset({
 _WS_RE       = re.compile(r"[ \t]+")
 _BLANK_LINES = re.compile(r"\n{3,}")
 
-# v1.0.31: Escape Markdown inline format chars in plain text from source.
+# Escape Markdown inline format chars in plain text from source.
 # Reason: author's literal asterisks (vd webnovel "*****" censor) trigger
-# Obsidian italic/bold render → garbled output. Outer **bold** / *italic*
-# wrappers added by formatter are intentional and not escaped.
-# Scope: only `*` and `` ` ``. Skip `_` because CommonMark needs word-boundary
-# for underscore emphasis, and fiction rarely has standalone `_text_`.
-_MD_ESCAPE_RE = re.compile(r"([\\*`])")
+# Obsidian italic/bold render → garbled output. Same with `[Lv 5]` literal
+# brackets confusing Obsidian's link renderer. Outer **bold** / *italic* /
+# `![](url)` syntax added by formatter is intentional and not escaped (built
+# via separate code paths, no _escape_md call).
+# Scope: `*`, backtick, `[`, `]`, backslash. Skip `_` because CommonMark needs
+# word-boundary for underscore emphasis, and fiction rarely has standalone `_text_`.
+_MD_ESCAPE_RE = re.compile(r"([\\*`\[\]])")
 
 
 def _escape_md(text: str) -> str:
@@ -177,7 +179,10 @@ class MarkdownFormatter:
             if chunk is not None:
                 lines.append(chunk)
 
-        result = "\n".join(lines)
+        # Block separator `\n\n` (was `\n`): creates real paragraph breaks
+        # so ObsidianWriter can indent first line per paragraph (issue #1).
+        # Excess newlines collapse to max 2 via _BLANK_LINES.
+        result = "\n\n".join(lines)
         result = _BLANK_LINES.sub("\n\n", result)
         return result.strip(), list(self._images)
 
@@ -199,7 +204,11 @@ class MarkdownFormatter:
             position_marker = marker,
             source_type     = "web",
         ))
-        return f"![{alt}]({marker})"
+        # Issue #3: center image via HTML wrapper. Obsidian renders MD inside
+        # `<div align="center">`. Blank lines around image syntax let MD parser
+        # recognise it as a block. Inline image (rare in novels) renders less
+        # cleanly but still readable.
+        return f'<div align="center">\n\n![{alt}]({marker})\n\n</div>'
 
     def _process_node(self, node: Any) -> str | None:
         if isinstance(node, NavigableString):
@@ -249,8 +258,17 @@ class MarkdownFormatter:
                 return quoted
             return None
 
-        if tag == "table" and self.rules.get("tables", False):
+        # Issue #2/#4: ALWAYS format <table> regardless of rules.tables flag.
+        # Previously gated on AI-learned `tables: True` → status tables fell
+        # through to _format_block → each <td> on own line → flatten dump.
+        # No downside formatting always: source <table> = real tabular data.
+        if tag == "table":
             return self._format_table(node)
+
+        # Issue #2/#4 bonus: <dl><dt>key</dt><dd>val</dd>...</dl> often used for
+        # status blocks (Attribute | Value layout). Convert → 2-col table.
+        if tag == "dl":
+            return self._format_dl(node)
 
         if tag in ("ul", "ol"):
             items: list[str] = []
@@ -325,6 +343,30 @@ class MarkdownFormatter:
                 else:
                     parts.append(inner)
         return "".join(parts)
+
+    def _format_dl(self, dl: Tag) -> str:
+        """
+        Issue #2/#4: <dl><dt>k</dt><dd>v</dd>...</dl> → 2-col markdown table.
+        Status blocks commonly use <dl> instead of <table>.
+        """
+        rows: list[list[str]] = []
+        current_dt: str | None = None
+        for child in dl.children:
+            if not isinstance(child, Tag):
+                continue
+            ctag = child.name.lower() if child.name else ""
+            if ctag == "dt":
+                current_dt = self._inline(child).strip().replace("|", "\\|")
+            elif ctag == "dd" and current_dt is not None:
+                dd_val = self._inline(child).strip().replace("|", "\\|")
+                rows.append([current_dt, dd_val])
+                current_dt = None
+        if not rows:
+            return extract_plain_text(dl)
+        lines = ["|  |  |", "| --- | --- |"]
+        for k, v in rows:
+            lines.append(f"| {k} | {v} |")
+        return "\n".join(lines)
 
     def _format_table(self, table: Tag) -> str:
         """Convert <table> → Markdown table."""

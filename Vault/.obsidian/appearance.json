@@ -1,3 +1,6 @@
 {
-  "cssTheme": "Blue Topaz"
+  "cssTheme": "",
+  "theme": "obsidian",
+  "showViewHeader": true,
+  "showRibbon": true
 }

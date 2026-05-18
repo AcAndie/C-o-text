@@ -50,37 +50,43 @@ _NO_INDENT_RE = re.compile(
 
 def _indent_paragraphs(body: str) -> str:
     """
-    Prepend em-space vào MỌI content line trong body markdown.
+    Prepend em-space vào FIRST line of each paragraph (issue #1 fix).
 
-    Lý do indent every line (không chỉ first-after-blank): MarkdownFormatter
-    join consecutive <p> bằng single `\\n` (formatter.py:148), không `\\n\\n`.
-    Vậy mỗi sentence = 1 line, không có "paragraph wrap" thật. Treat each
-    line as separate paragraph → indent toàn bộ.
+    v1.1.2+: MarkdownFormatter now joins blocks bằng `\\n\\n` → blank line
+    giữa paragraphs → có thể detect "paragraph start" = line after blank.
 
-    Skip: heading, blockquote, list, HR, table, code fence (inside), HTML
-    comment, image-only line.
+    Trước: indent every line → các dòng giữa paragraph cũng bị tụt → user
+    complain "kí hiệu lùi áp cả những dòng sau".
+
+    Skip indent cho: heading, blockquote, list, HR, table, code fence (inside),
+    HTML comment, image-only line.
     """
     if not body:
         return body
 
-    lines   = body.split("\n")
-    in_code = False
+    lines      = body.split("\n")
+    in_code    = False
+    prev_blank = True   # treat doc start as after-blank → indent first para
 
     for i, line in enumerate(lines):
         stripped = line.lstrip()
 
         if stripped.startswith("```"):
             in_code = not in_code
+            prev_blank = False
             continue
 
         if in_code:
+            prev_blank = False
             continue
 
         if not line.strip():
+            prev_blank = True
             continue
 
-        if not _NO_INDENT_RE.match(line):
+        if prev_blank and not _NO_INDENT_RE.match(line):
             lines[i] = _PARA_INDENT + line
+        prev_blank = False
 
     return "\n".join(lines)
 

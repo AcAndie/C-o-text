@@ -134,7 +134,41 @@ async def find_start_chapter(
         return progress["current_url"], progress  # type: ignore[return-value]
 
     if progress.get("completed"):
-        raise RuntimeError("Truyện đã hoàn thành. Xóa progress file để scrape lại.")
+        # Issue #6: truyện completed → check chương mới (story may have updated).
+        # Visit last known URL, attempt find_next; nếu có new chapter → unset
+        # completed, resume. Else raise.
+        last_url = (
+            progress.get("completed_at_url")
+            or progress.get("last_scraped_url")
+            or progress.get("current_url")
+        )
+        visited = set(progress.get("all_visited_urls") or [])
+        tag     = _dtag(start_url)
+        if last_url:
+            print(f"  [{tag}] 🔍 Story completed — checking for new chapters from {last_url[:55]}", flush=True)
+            try:
+                from core.fetch import fetch_page as _fetch_check
+                status, html = await _fetch_check(last_url, pool, pw_pool)
+                if html and not is_junk_page(html, status):
+                    soup = BeautifulSoup(html, "html.parser")
+                    next_url = find_next_url(soup, last_url, profile)
+                    if not next_url:
+                        try:
+                            ai_result = await ai_classify_and_find(html, last_url, ai_limiter)
+                            if ai_result:
+                                next_url = ai_result.get("next_url")
+                        except Exception as e:
+                            logger.warning("[Resume] AI fallback failed: %s", e)
+                    if next_url and next_url not in visited and story_id_ok(next_url, progress):
+                        print(f"  [{tag}] 🆕 New chapter found → {next_url[:55]}", flush=True)
+                        progress["completed"]        = False
+                        progress["completed_at_url"] = None
+                        progress["current_url"]      = next_url
+                        await save_progress(progress_path, progress)
+                        return next_url, progress
+            except Exception as e:
+                logger.warning("[Resume] Check new chapter failed: %s", e)
+        raise RuntimeError("Truyện đã hoàn thành — không có chương mới.")
 
     from core.fetch import fetch_page
     status, html = await fetch_page(start_url, pool, pw_pool)
@@ -268,6 +302,7 @@ async def scrape_one_chapter(
             print(f"  [{tag}] ⛔ INDEX page guard — dừng", flush=True)
             progress["completed"]        = True
             progress["completed_at_url"] = url
+            progress["current_url"]      = None
             await save_progress(progress_path, progress)
             return None
 
@@ -377,6 +412,7 @@ async def scrape_one_chapter(
         issue_reporter.report("NEXT_URL_MISSING", url, detail="Pipeline + heuristic + AI all failed", chapter_num=chapter_num)
         progress["completed"]        = True
         progress["completed_at_url"] = url
+        progress["current_url"]      = None
         await save_progress(progress_path, progress)
         print(f"  [{tag}] 🏁 Hết truyện", flush=True)
         return None
