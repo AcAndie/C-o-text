@@ -34,14 +34,24 @@ _RETRY_BACKOFF = [30, 60, 120, 240]
 
 
 def _is_retriable(e: Exception) -> bool:
-    """P1-D: retry cho rate limit + network errors."""
+    """P1-D: retry cho rate limit + network errors.
+
+    v1.0.33: Fix ConnectError('') silent skip. Class name `ConnectError`
+    (lowercase `connecterror`) doesn't contain `connection`. Empty-string
+    message → `str(e) == ''` → fallback to repr = `ConnectError('')` still
+    no `connection` match. → retry skipped → fail immediately.
+    Fix: keyword `connect` (catches Connect*, ConnectError, ConnectTimeout)
+    + include class name in haystack.
+    """
     code = getattr(e, "status_code", None) or getattr(e, "code", None)
     if code in (429, 503):
         return True
-    msg = (str(e) or repr(e)).lower()
-    return any(kw in msg for kw in (
+    msg      = (str(e) or repr(e)).lower()
+    cls      = type(e).__name__.lower()
+    haystack = f"{cls} {msg}"
+    return any(kw in haystack for kw in (
         "429", "503", "quota", "resource_exhausted", "unavailable",
-        "connection", "timeout", "network", "reset", "refused", "broken pipe",
+        "connect", "timeout", "network", "reset", "refused", "broken pipe",
     ))
 
 
