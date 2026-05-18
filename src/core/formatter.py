@@ -44,6 +44,18 @@ _EXTRACT_SKIP_TAGS = frozenset({
 _WS_RE       = re.compile(r"[ \t]+")
 _BLANK_LINES = re.compile(r"\n{3,}")
 
+# v1.0.31: Escape Markdown inline format chars in plain text from source.
+# Reason: author's literal asterisks (vd webnovel "*****" censor) trigger
+# Obsidian italic/bold render → garbled output. Outer **bold** / *italic*
+# wrappers added by formatter are intentional and not escaped.
+# Scope: only `*` and `` ` ``. Skip `_` because CommonMark needs word-boundary
+# for underscore emphasis, and fiction rarely has standalone `_text_`.
+_MD_ESCAPE_RE = re.compile(r"([\\*`])")
+
+
+def _escape_md(text: str) -> str:
+    return _MD_ESCAPE_RE.sub(r"\\\1", text)
+
 
 def extract_plain_text(el: Tag) -> str:
     """
@@ -172,7 +184,7 @@ class MarkdownFormatter:
     def _process_node(self, node: Any) -> str | None:
         if isinstance(node, NavigableString):
             text = str(node).strip()
-            return text if text else None
+            return _escape_md(text) if text else None
 
         if not isinstance(node, Tag):
             return None
@@ -269,7 +281,7 @@ class MarkdownFormatter:
         parts: list[str] = []
         for child in node.children:
             if isinstance(child, NavigableString):
-                parts.append(str(child))
+                parts.append(_escape_md(str(child)))
             elif isinstance(child, Tag):
                 ctag = child.name.lower() if child.name else ""
                 if ctag in _EXTRACT_SKIP_TAGS:
