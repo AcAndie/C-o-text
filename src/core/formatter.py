@@ -57,6 +57,26 @@ def _escape_md(text: str) -> str:
     return _MD_ESCAPE_RE.sub(r"\\\1", text)
 
 
+def _wrap_emphasis(marker: str, inner: str) -> str:
+    """Wrap inner with marker (* or **). v1.1.2: push leading/trailing
+    whitespace outside marker so CommonMark sees proper boundary.
+
+    Source `<em>three </em>` was emitted as `*three *` — CommonMark
+    requires non-whitespace adjacent to closing `*` → didn't close →
+    italic cascaded across following prose. Same issue for `<strong>X </strong>`.
+
+    Empty / whitespace-only inner → return inner unchanged (no markup).
+    """
+    if not inner:
+        return ""
+    core = inner.strip()
+    if not core:
+        return inner
+    lead  = inner[:len(inner) - len(inner.lstrip())]
+    trail = inner[len(inner.rstrip()):]
+    return f"{lead}{marker}{core}{marker}{trail}"
+
+
 def extract_plain_text(el: Tag) -> str:
     """
     Extract plain text từ BeautifulSoup element.
@@ -214,11 +234,13 @@ class MarkdownFormatter:
 
         if tag in ("b", "strong") and self.rules.get("bold_italic", True):
             inner = self._inline(node)
-            return f"**{inner.strip()}**" if inner.strip() else None
+            wrapped = _wrap_emphasis("**", inner)
+            return wrapped if wrapped.strip() else None
 
         if tag in ("i", "em") and self.rules.get("bold_italic", True):
             inner = self._inline(node)
-            return f"*{inner.strip()}*" if inner.strip() else None
+            wrapped = _wrap_emphasis("*", inner)
+            return wrapped if wrapped.strip() else None
 
         if tag == "blockquote":
             inner = self._inline(node)
@@ -293,9 +315,9 @@ class MarkdownFormatter:
                     continue
                 inner = self._inline(child)
                 if ctag in ("b", "strong") and self.rules.get("bold_italic", True):
-                    parts.append(f"**{inner}**")
+                    parts.append(_wrap_emphasis("**", inner))
                 elif ctag in ("i", "em") and self.rules.get("bold_italic", True):
-                    parts.append(f"*{inner}*")
+                    parts.append(_wrap_emphasis("*", inner))
                 elif ctag == "br":
                     parts.append("\n")
                 elif ctag == "a":

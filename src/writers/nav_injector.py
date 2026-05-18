@@ -104,55 +104,47 @@ def _read_frontmatter(path: Path) -> dict:
 
 # ── Nav line build ─────────────────────────────────────────────────────────────
 
-def _nav_line(prev: Path | None, nxt: Path | None) -> str:
-    """Build `[← Prev] | [🏠 Index] | [Next →]` line. Skip None sides."""
-    parts: list[str] = []
+def _nav_block(prev: Path | None, nxt: Path | None) -> str:
+    """v1.1.2: Build 3-line nav stack (prev / index / next). Skip None sides.
+    Each line standalone Markdown line — trailing 2 spaces force line break
+    in Obsidian render so the 3 links stack vertically instead of word-wrap.
+    """
+    lines: list[str] = []
     if prev:
-        parts.append(f"[← {prev.stem}]({prev.name})")
-    parts.append(f"[🏠 Index]({INDEX_FILENAME})")
+        lines.append(f"[← {prev.stem}]({prev.name})")
+    lines.append(f"[🏠 Index]({INDEX_FILENAME})")
     if nxt:
-        parts.append(f"[{nxt.stem} →]({nxt.name})")
-    return " | ".join(parts)
-
-
-def _build_top_block(nav: str) -> str:
-    return f"{_NAV_TOP_BEGIN}\n{nav}\n{_NAV_TOP_END}\n\n"
-
-
-def _build_bottom_block(nav: str, body: str) -> str:
-    """Append bottom nav. Skip leading `---` if body already ends with HR."""
-    sep = "" if body.rstrip().endswith("---") else "\n\n---\n"
-    if not sep:
-        sep = "\n\n"   # already has HR, just newlines before marker
-    return f"{sep}{_NAV_BOT_BEGIN}\n{nav}\n{_NAV_BOT_END}\n"
+        lines.append(f"[{nxt.stem} →]({nxt.name})")
+    # Trailing `  ` (2 spaces) = Markdown hard line break. Last line no break.
+    return "  \n".join(lines)
 
 
 # ── Chapter inject ─────────────────────────────────────────────────────────────
 
 def _inject_chapter_nav(content: str, prev: Path | None, nxt: Path | None) -> str:
     """
+    v1.1.2 redesign: bottom-only nav, 3-line stack format. No nav-top.
+
     Deterministic re-assembly:
       1. Strip all nav blocks (top + bottom + legacy v1.0.11) wherever they sit
       2. Extract frontmatter (if any) and remaining body
-      3. Reassemble: FM + '\\n\\n' + top_nav + '\\n\\n' + body + '\\n\\n---\\n' + bottom_nav
+      3. Reassemble: FM + body + '---' + bottom_nav (no top nav)
 
-    Recovers from corrupt prior states (missing newlines, nav at wrong position).
+    Recovers from corrupt prior states.
     """
-    nav = _nav_line(prev, nxt)
+    nav = _nav_block(prev, nxt)
 
-    # 1. Strip all nav blocks (anywhere)
+    # 1. Strip all nav blocks (anywhere) — also strips v1.1.1 top nav from
+    # existing files so re-run cleans them up.
     stripped = _NAV_TOP_RE.sub("", content)
     stripped = _NAV_BOT_RE.sub("", stripped)
     stripped = _LEGACY_NAV_RE.sub("", stripped)
 
-    # 2. Extract frontmatter. Try strict format first; fallback to looser detect
-    # (handles corrupt prior state where `---` directly touches heading).
+    # 2. Extract frontmatter. Strict first, looser fallback for corrupt state.
     fm_text  : str = ""
     body_text: str = stripped.lstrip()
     fm_match = _FRONTMATTER_RE.match(body_text)
     if not fm_match:
-        # Looser: match `^---\n.*?\n---` (no trailing \n requirement) to recover
-        # broken state like `---# Chapter` (heading joined to FM close).
         loose = re.match(r"^---\n(.*?)\n---", body_text, re.DOTALL)
         if loose:
             fm_text   = body_text[:loose.end()]
@@ -161,15 +153,11 @@ def _inject_chapter_nav(content: str, prev: Path | None, nxt: Path | None) -> st
         fm_text   = body_text[:fm_match.end()].rstrip()
         body_text = body_text[fm_match.end():].lstrip()
 
-    # 3. Reassemble deterministic
+    # 3. Reassemble deterministic — NO top nav, only bottom
     parts: list[str] = []
     if fm_text:
         parts.append(fm_text.rstrip())
-        parts.append("")   # blank line after FM
-    parts.append(_NAV_TOP_BEGIN)
-    parts.append(nav)
-    parts.append(_NAV_TOP_END)
-    parts.append("")
+        parts.append("")
     parts.append(body_text.rstrip())
     parts.append("")
     parts.append("---")

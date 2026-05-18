@@ -51,7 +51,11 @@ FRONT_MATTER_KEYWORDS = frozenset({
 })
 
 BACK_MATTER_KEYWORDS = frozenset({
-    "acknowledg", "copyright", "appendix", "afterword",
+    # v1.1.2: Full word forms (was stem "acknowledg"). Word-boundary regex
+    # in _is_matter_title needs exact terminal — stem doesn't match
+    # "acknowledgments" or "acknowledgement".
+    "acknowledgments", "acknowledgement", "acknowledgements",
+    "copyright", "appendix", "afterword",
     "back matter", "reading group", "discussion question",
     "newsletter", "about the author",
 })
@@ -136,24 +140,41 @@ def _normalize_href(href: str) -> str:
     return href
 
 
+# v1.1.2: Word-boundary regex to avoid substring false positives.
+# Bug: "Chapter 11: Turn Back Suddenly, And Discover..." matched `cover`
+# substring inside `discover` → marked as front matter → Ch.11 lost.
+# Same risk: `title` inside `subtitle/entitled/title-page`, `author` inside
+# `author-ity`, etc. Word boundary fixes all such cases.
+_FRONT_MATTER_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(k) for k in FRONT_MATTER_KEYWORDS) + r")\b",
+    re.IGNORECASE,
+)
+_BACK_MATTER_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(k) for k in BACK_MATTER_KEYWORDS) + r")\b",
+    re.IGNORECASE,
+)
+_SKIP_TITLE_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(k) for k in SKIP_KEYWORDS) + r")\b",
+    re.IGNORECASE,
+)
+
+
 def _is_matter_title(title: str) -> bool:
-    lo = title.lower()
-    if any(kw in lo for kw in FRONT_MATTER_KEYWORDS):
-        return True
-    if any(kw in lo for kw in BACK_MATTER_KEYWORDS):
-        return True
-    return False
+    """Word-boundary match. Avoids cover→discover, title→subtitle false hits."""
+    return bool(_FRONT_MATTER_RE.search(title) or _BACK_MATTER_RE.search(title))
 
 
 def _is_matter_filename(filename: str) -> bool:
+    """Filename uses substring match — filenames usually short structural names
+    (Section0011.xhtml, cover.html). False positive risk lower than title text.
+    Kept as substring for back-compat with EPUB tooling conventions."""
     lo = (filename or "").lower()
     return any(p in lo for p in MATTER_FILENAME_PATTERNS)
 
 
 def _is_skip_title(title: str) -> bool:
-    """Promo/excerpt cho truyện khác — skip không ghi file."""
-    lo = title.lower()
-    return any(kw in lo for kw in SKIP_KEYWORDS)
+    """Promo/excerpt cho truyện khác — skip không ghi file. Word boundary fix."""
+    return bool(_SKIP_TITLE_RE.search(title))
 
 
 def _is_skip_filename(filename: str) -> bool:

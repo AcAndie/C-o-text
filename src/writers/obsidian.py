@@ -141,8 +141,7 @@ class ObsidianWriter(ChapterWriter):
         lines.append("")
         lines.append(_indent_paragraphs(chapter.body_markdown))
 
-        if chapter.source_url and self.run_config.output_mode == "obsidian":
-            lines.append("")
-            lines.append(f"> Source: {chapter.source_url}")
+        # v1.1.2: Removed trailing `> Source: URL` — duplicate of frontmatter
+        # `source_url` field. User reported visual noise + redundancy.
 
         return "\n".join(lines)

@@ -135,6 +135,18 @@ Vault/                              ← bạn đang ở đây
 
 ---
 
+## 👁 Ẩn Properties (Frontmatter) Trong Obsidian
+
+Frontmatter (`title`, `chapter_index`, `source_url`, `story_name`) hiện lên đầu mỗi chương dưới dạng Properties panel. Nếu muốn ẩn để chỉ thấy nội dung:
+
+1. Obsidian → Settings → **Editor**
+2. Tìm **"Properties in document"**
+3. Đổi sang **"Hidden"** (or **"Source"** nếu vẫn muốn xem dạng YAML raw)
+
+Frontmatter vẫn ghi vào file → search/sort/dataview vẫn work, chỉ không hiển thị trong view.
+
+---
+
 ## ⚙️ Tinh Chỉnh (Optional)
 
 Mở `Cào text/config.toml` để chỉnh:

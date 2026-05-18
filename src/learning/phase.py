@@ -99,14 +99,23 @@ async def run_learning_phase(
     # ── 4. Build final profile ────────────────────────────────────────────────
     profile = _build_final_profile(domain, ai_profile, requires_pw, n, chapters)
 
-    # v1.0.32 + v1.0.36: Calibration phase — verify learned profile end-to-end
-    # before commit. Two checks: content_selector matches samples (M0), title
-    # selector returns real titles (M1), remove_selectors don't strip too much
-    # (M2). Any failure caps confidence so downstream sees low conf score.
+    # v1.0.32 + v1.0.36 + v1.1.2: Calibration phase — verify learned profile
+    # end-to-end before commit.
+    # M0 content_selector hard-fail: CLEAR the selector (set to ''). Pipeline
+    # falls to DensityHeuristic/FallbackList/AIExtract chain — those usually
+    # work. Without clearing, bad selector "wins" first chain → tiny snippets
+    # via heuristic on empty body.
     cal = _calibrate_profile(profile, chapters)
     _print_calibration(tag, domain, cal)
     if not cal["pass"]:
+        bad_sel = profile.get("content_selector", "")
+        profile["content_selector"] = ""
         profile["confidence"] = min(profile.get("confidence", 0.5), 0.3)
+        print(
+            f"  [{tag}] 🛠 content_selector={bad_sel!r} CLEARED (M0 fail) — "
+            f"pipeline sẽ dùng heuristic chain fallback.",
+            flush=True,
+        )
 
     await pm.save_profile(domain, profile)
 
