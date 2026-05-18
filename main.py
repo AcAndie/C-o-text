@@ -29,7 +29,7 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="repla
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
 import config as _cfg   # import trước để có thể override constants
-from config import INIT_STAGGER, AI_MAX_RPM, OUTPUT_DIR, PROGRESS_DIR, VERSION
+from config import INIT_STAGGER, AI_MAX_RPM, OUTPUT_DIR, PROGRESS_DIR, VERSION, LINKS_FILE
 from ai.client                import AIRateLimiter
 from core.session_pool        import DomainSessionPool, PlaywrightPool
 from core.scraper             import run_novel_task
@@ -174,8 +174,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "links_file",
         nargs   = "?",
-        default = os.path.join("input", "links.txt"),
-        help    = "File chứa URLs cần cào (default: input/links.txt)",
+        default = LINKS_FILE,
+        help    = f"File chứa URLs cần cào (default: {LINKS_FILE})",
     )
     parser.add_argument(
         "--max-pw-instances",

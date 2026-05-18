@@ -1,0 +1,9 @@
+# Obsidian ignore — hide non-content folders from vault indexing
+# Note: standard Obsidian ignores `.`-prefixed folders automatically. This file
+# is for user reference + future plugins that respect it.
+
+.data/
+.venv/
+__pycache__/
+*.tmp
+*.pyc

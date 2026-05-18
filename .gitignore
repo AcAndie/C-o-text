@@ -28,6 +28,16 @@ input/
 # v1.0.7: User config — copy from config.toml.example, per-user
 config.toml
 
+# v1.0.29: in-repo Obsidian vault — runtime content + per-machine state.
+# Commit kept: Vault/.obsidian/{core-plugins,appearance,graph}.json,
+# Vault/_Scraper/README.md, Vault/.obsidianignore.
+Vault/Novels/
+Vault/_Scraper/issues.md
+Vault/_Scraper/links.md
+Vault/_Scraper/epub_inbox/
+Vault/.obsidian/workspace*
+Vault/.obsidian/cache
+
 # Python
 __pycache__/
 *.py[cod]

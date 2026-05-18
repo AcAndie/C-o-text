@@ -13,9 +13,11 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
+from config import ISSUES_FILE
+
 logger = logging.getLogger(__name__)
 
-_ISSUES_FILE = "issues.md"
+_ISSUES_FILE = ISSUES_FILE
 
 # Issue types
 ISSUE_TYPES = {

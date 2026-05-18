@@ -32,11 +32,11 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config import DATA_DIR
+from config import DATA_DIR, EPUB_INBOX_DIR
 
 logger = logging.getLogger(__name__)
 
-INBOX_DIR     = os.path.join("input", "epub")   # v1.0.10: nested under input/
+INBOX_DIR     = EPUB_INBOX_DIR   # v1.0.29: configurable via [paths] epub_inbox_dir
 MANIFEST_FILE = os.path.join(DATA_DIR, "processed_epubs.json")
 _LOCK         = threading.Lock()
 

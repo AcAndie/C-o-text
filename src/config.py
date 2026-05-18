@@ -85,6 +85,12 @@ PROGRESS_DIR  = _get("paths", "progress_dir", "progress")
 PROFILES_FILE = os.path.join(DATA_DIR, "site_profiles.json")
 ADS_DB_FILE   = os.path.join(DATA_DIR, "ads_keywords.json")
 
+# v1.0.29: Issue log + default links file. Relocate to Obsidian vault via
+# [paths] issues_file / links_file in config.toml. Default = project-root.
+ISSUES_FILE     = _get("paths", "issues_file",     "issues.md")
+LINKS_FILE      = _get("paths", "links_file",      os.path.join("input", "links.txt"))
+EPUB_INBOX_DIR  = _get("paths", "epub_inbox_dir",  os.path.join("input", "epub"))
+
 # ── Learning phase ────────────────────────────────────────────────────────────
 LEARNING_CHAPTERS           = _get("learning", "chapters",            10)
 LEARNING_MIN_CONTENT        = _get("learning", "min_content",         300)
