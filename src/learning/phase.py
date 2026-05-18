@@ -99,18 +99,13 @@ async def run_learning_phase(
     # ── 4. Build final profile ────────────────────────────────────────────────
     profile = _build_final_profile(domain, ai_profile, requires_pw, n, chapters)
 
-    # v1.0.32: Validation guard — verify learned content_selector actually
-    # matches sample HTMLs. AI sometimes hallucinates plausible-but-wrong
-    # class names (vd webnovel `div.cha-p` doesn't exist; real is `div.cha-content`).
-    # Without guard, scraper falls to DensityHeuristic giving ~300c stubs.
-    ok, msg = _validate_content_selector(profile.get("content_selector", ""), chapters)
-    if not ok:
-        print(
-            f"  [{tag}] ⚠ Selector validation FAIL: {msg}\n"
-            f"  [{tag}]    AI có thể hallucinated selector. Profile vẫn lưu nhưng confidence hạ.\n"
-            f"  [{tag}]    Fix: `!relearn {domain}` retry, hoặc sửa thủ công trong data/site_profiles.json.",
-            flush=True,
-        )
+    # v1.0.32 + v1.0.36: Calibration phase — verify learned profile end-to-end
+    # before commit. Two checks: content_selector matches samples (M0), title
+    # selector returns real titles (M1), remove_selectors don't strip too much
+    # (M2). Any failure caps confidence so downstream sees low conf score.
+    cal = _calibrate_profile(profile, chapters)
+    _print_calibration(tag, domain, cal)
+    if not cal["pass"]:
         profile["confidence"] = min(profile.get("confidence", 0.5), 0.3)
 
     await pm.save_profile(domain, profile)
@@ -123,6 +118,147 @@ async def run_learning_phase(
     ]
 
     return profile, sample_titles, chapters
+
+
+# ── Calibration phase (v1.0.36) ──────────────────────────────────────────────
+
+def _calibrate_profile(
+    profile  : SiteProfile,
+    chapters : list[tuple[str, str]],
+) -> dict:
+    """
+    Post-learning calibration. Tests 3 dimensions on 5 samples:
+
+      M0 content_selector: ≥3/5 samples match ≥300 chars
+      M1 title_selector  : ≥3/5 samples return non-empty title 3-200 chars
+      M2 remove_selectors: don't strip >60% of content (DOS check)
+
+    Returns {pass: bool, m0/m1/m2: (ok, msg)}. M0+M1 hard fail → pass=False.
+    M2 soft warn (caller can still ship profile, runtime has MAX_STRIP_RATIO
+    safety cap anyway).
+    """
+    samples = chapters[:5]
+    cont_sel  = profile.get("content_selector", "")
+    title_sel = profile.get("title_selector", "")
+    remove    = profile.get("remove_selectors") or []
+
+    m0_ok, m0_msg = _validate_content_selector(cont_sel, samples)
+    m1_ok, m1_msg = _validate_title_selector(title_sel, samples)
+    m2_ok, m2_msg = _validate_remove_selectors(cont_sel, remove, samples)
+
+    return {
+        # Only M0 (content) is catastrophic — M1 (title) has h1/og/slug
+        # fallback chain, M2 (remove) has runtime MAX_STRIP_RATIO guard.
+        "pass": m0_ok,
+        "m0": (m0_ok, m0_msg),
+        "m1": (m1_ok, m1_msg),
+        "m2": (m2_ok, m2_msg),
+    }
+
+
+def _validate_title_selector(
+    selector    : str,
+    samples     : list[tuple[str, str]],
+    min_matches : int = 3,
+) -> tuple[bool, str]:
+    """Title selector returns 3-200 char text in ≥min_matches samples.
+
+    Empty selector OK — title chain has fallbacks (h1, og:title, url_slug).
+    Returns (True, "no selector — fallback chain active") if empty.
+    """
+    if not selector:
+        return True, "no title_selector — chain fallback active"
+    hits = 0
+    for _url, html in samples:
+        try:
+            soup = BeautifulSoup(html, "lxml")
+            el   = soup.select_one(selector)
+            if el:
+                text = el.get_text(strip=True)
+                if 3 <= len(text) <= 200:
+                    hits += 1
+        except Exception:
+            continue
+    if hits >= min_matches:
+        return True, f"{hits}/{len(samples)} samples produce 3-200 char title"
+    return False, (
+        f"only {hits}/{len(samples)} title hits via {selector!r} "
+        f"(min {min_matches})"
+    )
+
+
+def _validate_remove_selectors(
+    content_selector : str,
+    remove_selectors : list,
+    samples          : list[tuple[str, str]],
+    max_strip_ratio  : float = 0.60,
+) -> tuple[bool, str]:
+    """Verify remove_selectors don't nuke >60% of content_selector text.
+
+    Catches over-aggressive learned removals (vd selector `.chapter` removes
+    chapter wrapper itself). Runtime html_filter has same safety cap, but
+    pre-flighting here flags profile-level issues before scrape starts.
+    """
+    if not content_selector or not remove_selectors:
+        return True, "no remove_selectors or no content_selector"
+    over_strip = 0
+    tested = 0
+    for _url, html in samples[:3]:
+        try:
+            soup_orig    = BeautifulSoup(html, "lxml")
+            orig_el      = soup_orig.select_one(content_selector)
+            if not orig_el:
+                continue
+            orig_len = len(orig_el.get_text(strip=True))
+            if orig_len == 0:
+                continue
+            tested += 1
+            # Apply remove on a fresh soup copy
+            soup_strip = BeautifulSoup(html, "lxml")
+            strip_el   = soup_strip.select_one(content_selector)
+            if not strip_el:
+                continue
+            for sel in remove_selectors:
+                if not isinstance(sel, str) or not sel.strip():
+                    continue
+                try:
+                    for victim in strip_el.select(sel):
+                        victim.decompose()
+                except Exception:
+                    continue
+            stripped_len = len(strip_el.get_text(strip=True))
+            kept_ratio   = stripped_len / orig_len
+            if kept_ratio < (1.0 - max_strip_ratio):
+                over_strip += 1
+        except Exception:
+            continue
+    if over_strip == 0:
+        return True, f"{tested} samples within strip threshold"
+    return False, (
+        f"{over_strip}/{tested} samples stripped >{int(max_strip_ratio*100)}% "
+        f"of content — remove_selectors may be over-aggressive"
+    )
+
+
+def _print_calibration(tag: str, domain: str, cal: dict) -> None:
+    """Pretty-print calibration result. M0/M1 fail = ⚠, M2 fail = ℹ (soft)."""
+    icons = {"m0": "⚠" if not cal["m0"][0] else "✓",
+             "m1": "⚠" if not cal["m1"][0] else "✓",
+             "m2": "ℹ" if not cal["m2"][0] else "✓"}
+    overall = "✓ PASS" if cal["pass"] else "⚠ FAIL"
+    print(
+        f"  [{tag}] 🔬 Calibration {overall}:\n"
+        f"  [{tag}]    {icons['m0']} content: {cal['m0'][1]}\n"
+        f"  [{tag}]    {icons['m1']} title:   {cal['m1'][1]}\n"
+        f"  [{tag}]    {icons['m2']} remove:  {cal['m2'][1]}",
+        flush=True,
+    )
+    if not cal["pass"]:
+        print(
+            f"  [{tag}]    → Confidence capped at 0.3. Fix: `!relearn {domain}` "
+            f"hoặc sửa data/site_profiles.json thủ công.",
+            flush=True,
+        )
 
 
 # ── Content selector validation (v1.0.32) ────────────────────────────────────
