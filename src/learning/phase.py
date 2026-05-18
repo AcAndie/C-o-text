@@ -98,6 +98,21 @@ async def run_learning_phase(
 
     # ── 4. Build final profile ────────────────────────────────────────────────
     profile = _build_final_profile(domain, ai_profile, requires_pw, n, chapters)
+
+    # v1.0.32: Validation guard — verify learned content_selector actually
+    # matches sample HTMLs. AI sometimes hallucinates plausible-but-wrong
+    # class names (vd webnovel `div.cha-p` doesn't exist; real is `div.cha-content`).
+    # Without guard, scraper falls to DensityHeuristic giving ~300c stubs.
+    ok, msg = _validate_content_selector(profile.get("content_selector", ""), chapters)
+    if not ok:
+        print(
+            f"  [{tag}] ⚠ Selector validation FAIL: {msg}\n"
+            f"  [{tag}]    AI có thể hallucinated selector. Profile vẫn lưu nhưng confidence hạ.\n"
+            f"  [{tag}]    Fix: `!relearn {domain}` retry, hoặc sửa thủ công trong data/site_profiles.json.",
+            flush=True,
+        )
+        profile["confidence"] = min(profile.get("confidence", 0.5), 0.3)
+
     await pm.save_profile(domain, profile)
 
     _print_summary(tag, profile)
@@ -108,6 +123,44 @@ async def run_learning_phase(
     ]
 
     return profile, sample_titles, chapters
+
+
+# ── Content selector validation (v1.0.32) ────────────────────────────────────
+
+def _validate_content_selector(
+    selector    : str,
+    chapters    : list[tuple[str, str]],
+    min_chars   : int = 300,
+    min_matches : int = 3,
+    sample_size : int = 5,
+) -> tuple[bool, str]:
+    """
+    Verify content_selector returns substantial text on sample HTMLs.
+
+    AI sometimes hallucinates selectors that don't exist (vd substring-match
+    `cha-p` from `cha-page`/`cha-poster` classes → `div.cha-p` selector matches 0
+    elements). Caller uses result to lower confidence + log warning.
+
+    Returns (ok, message). ok=True if ≥min_matches samples yield ≥min_chars text.
+    """
+    if not selector:
+        return False, "empty content_selector"
+    hits = 0
+    tested = 0
+    for _url, html in chapters[:sample_size]:
+        try:
+            soup = BeautifulSoup(html, "lxml")
+            els  = soup.select(selector)
+            tested += 1
+            if els and sum(len(e.get_text(strip=True)) for e in els) >= min_chars:
+                hits += 1
+        except Exception:
+            continue
+    if hits >= min_matches:
+        return True, f"{hits}/{tested} samples match ≥{min_chars} chars"
+    return False, (
+        f"only {hits}/{tested} samples match ≥{min_chars} chars via {selector!r}"
+    )
 
 
 # ── JS-heavy detection ────────────────────────────────────────────────────────
