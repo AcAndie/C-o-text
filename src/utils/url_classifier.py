@@ -31,9 +31,11 @@ import asyncio
 import json
 import logging
 import os
+import re
 import threading
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 from config import DATA_DIR
 
@@ -47,6 +49,11 @@ logger = logging.getLogger(__name__)
 _CACHE_FILE = os.path.join(DATA_DIR, "url_classifications.json")
 _CACHE_LOCK = threading.Lock()
 _MIN_CACHE_CONFIDENCE = 0.7
+
+# v1.0.30: Webnovel.com fast-path. Chapter IDs are sortable integers — smallest
+# ID = chapter 1. Confirmed via probe of 2 books (chapter 1 to 86 / 1 to 49).
+# Skips AI classify (which picked mid-story chapters as "chapter 1").
+_WEBNOVEL_BOOK_RE = re.compile(r"^/book/(\d{10,})(?:/(\d{10,}))?/?$")
 
 
 def _load_cache() -> dict:
@@ -70,6 +77,55 @@ def _save_cache(data: dict) -> None:
             os.replace(tmp, _CACHE_FILE)
         except OSError as e:
             logger.warning("[URLClassifier] cache save failed: %s", e)
+
+
+async def _resolve_webnovel(
+    url  : str,
+    pool : "DomainSessionPool",
+) -> dict | None:
+    """
+    Webnovel.com fast-path: smallest numeric chapter ID = chapter 1.
+
+    Works for both book root URL (`/book/N`) and any chapter URL (`/book/N/M`)
+    — extracts book_id, fetches book index, picks chapter URL with smallest ID.
+
+    Returns classify-compatible dict or None if URL not webnovel or fetch fails.
+    """
+    parsed = urlparse(url)
+    if "webnovel.com" not in parsed.netloc.lower():
+        return None
+    m = _WEBNOVEL_BOOK_RE.match(parsed.path)
+    if not m:
+        return None
+    book_id = m.group(1)
+
+    from core.fetch import fetch_page
+    book_url = f"https://www.webnovel.com/book/{book_id}"
+    try:
+        status, html = await fetch_page(book_url, pool, None, profile=None)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning("[Webnovel] fetch %s failed: %s", book_url, e)
+        return None
+    if status >= 400 or not html:
+        return None
+
+    ids = re.findall(rf"/book/{book_id}/(\d{{10,}})", html)
+    if not ids:
+        logger.warning("[Webnovel] no chapter IDs found at %s", book_url)
+        return None
+    smallest = min(int(x) for x in ids)
+    first_chapter_url = f"https://www.webnovel.com/book/{book_id}/{smallest}"
+
+    return {
+        "page_type"         : "index",
+        "language"          : "en",
+        "chapter_keyword"   : "Chapter",
+        "first_chapter_url" : first_chapter_url,
+        "confidence"        : 0.99,
+        "source"            : "webnovel_id_sort",
+    }
 
 
 async def classify_url(
@@ -99,6 +155,18 @@ async def classify_url(
             url[:60], cached.get("page_type"), cached.get("language"),
         )
         return cached
+
+    # v1.0.30: Webnovel.com fast-path — skip AI, use ID-sort heuristic.
+    webnovel_result = await _resolve_webnovel(url, pool)
+    if webnovel_result is not None:
+        webnovel_result["classified_at"] = datetime.now(timezone.utc).isoformat()
+        cache[url] = webnovel_result
+        _save_cache(cache)
+        logger.info(
+            "[URLClassifier] webnovel fast-path → %s",
+            webnovel_result["first_chapter_url"][:70],
+        )
+        return webnovel_result
 
     # Fetch HTML for classification
     from core.fetch import fetch_page
