@@ -151,7 +151,7 @@ async def run_epub_flow(
     n_ok      = 0
     n_skipped = 0
 
-    async for doc in ingest_epub(input_path, plan=plan):
+    async for doc in ingest_epub(input_path, plan=plan, ai_limiter=ai_limiter):
         try:
             chapter = await _build_chapter_from_epub_doc(
                 doc        = doc,
