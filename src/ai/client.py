@@ -44,6 +44,13 @@ class ApiKeyPool:
     def size(self) -> int:
         return self._n
 
+    def has_active_key(self) -> bool:
+        """Return True if at least one key is not cooling. Used by retry loop
+        to skip backoff wait when alternate key available — v1.1.1 multi-key
+        503 instant rotation."""
+        now = time.monotonic()
+        return any(cool <= now for cool in self._cooldown)
+
     async def get_client(self) -> genai.Client:
         """Return active (non-cooling) client. Wait if ALL keys cooling."""
         async with self._lock:

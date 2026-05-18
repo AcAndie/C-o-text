@@ -108,19 +108,28 @@ async def _call(
                 # quota separate from client transient blip).
                 code = getattr(e, "status_code", None) or getattr(e, "code", None)
                 msg_lower = _fmt(e).lower()
-                if code in (429, 503) or any(kw in msg_lower for kw in (
+                is_quota = code in (429, 503) or any(kw in msg_lower for kw in (
                     "429", "503", "quota", "resource_exhausted", "unavailable",
-                )):
+                ))
+                if is_quota:
                     await ai_pool.mark_rate_limited()
                 if not is_last:
-                    wait = _RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)]
+                    # v1.1.1: skip backoff if another key is active. Single-key
+                    # setup or all-keys-cooling still waits — quota window can't
+                    # be bypassed without a fresh key.
+                    if is_quota and ai_pool.has_active_key():
+                        wait = 0
+                    else:
+                        wait = _RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)]
                     suffix = f" [{model}]" if _use_fallback else ""
+                    rotation_note = " (key rotated)" if is_quota and wait == 0 else ""
                     print(
                         f"  [AI] ⚠ Retriable error (lần {attempt+1}/{_MAX_RETRIES}){suffix},"
-                        f" thử lại sau {wait}s: {_fmt(e)[:80]}",
+                        f" thử lại sau {wait}s{rotation_note}: {_fmt(e)[:80]}",
                         flush=True,
                     )
-                    await asyncio.sleep(wait)
+                    if wait > 0:
+                        await asyncio.sleep(wait)
             else:
                 raise
 
