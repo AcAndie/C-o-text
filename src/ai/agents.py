@@ -23,7 +23,7 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
 from config import GEMINI_MODEL, GEMINI_FALLBACK_MODEL, RE_NEXT_BTN
-from ai.client  import ai_client, AIRateLimiter
+from ai.client  import ai_pool, AIRateLimiter
 from ai.prompts import Prompts
 
 
@@ -72,17 +72,18 @@ async def _call(
 
     for attempt in range(_MAX_RETRIES):
         try:
+            client = await ai_pool.get_client()
             if schema:
                 from google.genai import types as T
                 config = T.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=schema,
                 )
-                resp = await ai_client.aio.models.generate_content(
+                resp = await client.aio.models.generate_content(
                     model=model, contents=prompt, config=config,
                 )
             else:
-                resp = await ai_client.aio.models.generate_content(
+                resp = await client.aio.models.generate_content(
                     model=model, contents=prompt,
                 )
             return resp.text
@@ -93,7 +94,8 @@ async def _call(
             err_str  = _fmt(e).lower()
             if schema and ("response_schema" in err_str or "mime_type" in err_str):
                 try:
-                    resp = await ai_client.aio.models.generate_content(
+                    fallback_client = await ai_pool.get_client()
+                    resp = await fallback_client.aio.models.generate_content(
                         model=model, contents=prompt,
                     )
                     return resp.text
@@ -101,6 +103,15 @@ async def _call(
                     return None
             if _is_retriable(e):
                 last_retriable_err = e
+                # v1.0.35: rotate to next key on 429/503 — current key cooling.
+                # Network errors (timeout/connect) don't cool key (server-side
+                # quota separate from client transient blip).
+                code = getattr(e, "status_code", None) or getattr(e, "code", None)
+                msg_lower = _fmt(e).lower()
+                if code in (429, 503) or any(kw in msg_lower for kw in (
+                    "429", "503", "quota", "resource_exhausted", "unavailable",
+                )):
+                    await ai_pool.mark_rate_limited()
                 if not is_last:
                     wait = _RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)]
                     suffix = f" [{model}]" if _use_fallback else ""

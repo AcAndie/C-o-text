@@ -54,9 +54,18 @@ VERSION = "1.0.28"
 
 
 # ── API ───────────────────────────────────────────────────────────────────────
-GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+# v1.0.35: Multi-key support. Reads GEMINI_API_KEY (primary) + GEMINI_API_KEY_N
+# (N=1..) via strict regex — KHÔNG startswith match để tránh nhặt
+# GEMINI_API_KEY_DEV, _OLD, _BACKUP, _KEYS_LIST...
+_GEMINI_KEY_PATTERN = re.compile(r"^GEMINI_API_KEY(?:_\d+)?$")
+ALL_GEMINI_KEYS: list[str] = sorted(
+    {v for k, v in os.environ.items() if _GEMINI_KEY_PATTERN.match(k) and v.strip()}
+)
+GEMINI_API_KEY: str = ALL_GEMINI_KEYS[0] if ALL_GEMINI_KEYS else ""
 if not GEMINI_API_KEY:
-    raise SystemExit("[ERR] Không tìm thấy GEMINI_API_KEY trong .env")
+    raise SystemExit(
+        "[ERR] Không tìm thấy GEMINI_API_KEY (hoặc GEMINI_API_KEY_1, _2...) trong .env"
+    )
 
 GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
