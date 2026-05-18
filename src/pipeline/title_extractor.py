@@ -37,6 +37,40 @@ _MAX_TITLE_LEN = 200
 # Drop selector candidate at execute-time even if AI/profile chose them.
 _FORBIDDEN_TITLE_TAGS = {"select", "option", "nav", "ul", "ol", "table", "tbody"}
 
+# v1.0.26 (TITLE-E): h1/h2 nằm trong ancestor có class/id chứa keyword
+# này → KHÔNG phải chapter title. ScribbleHub có
+# `<h2 class='comments-title chapters'>Comments (8)Login to Post</h2>` →
+# H1TitleBlock cũ grab nó → write "Comments..." vào file title.
+_TITLE_EXCLUDE_ANCESTOR_KEYWORDS = frozenset({
+    "comment", "comments", "review", "reviews", "rating", "ratings",
+    "sidebar", "footer", "related", "recommendation", "recommendations",
+    "discussion", "feedback", "social", "share", "ads", "advert",
+})
+
+
+def _has_excluded_ancestor(el) -> bool:
+    """v1.0.26: check ancestor chain cho keyword class/id loại trừ title.
+    True nếu el nằm trong comment/sidebar/footer/etc → skip làm title."""
+    cur = el
+    depth = 0
+    while cur is not None and depth < 10:
+        depth += 1
+        if not hasattr(cur, "get"):
+            cur = getattr(cur, "parent", None)
+            continue
+        classes = cur.get("class") or []
+        id_val  = (cur.get("id") or "").lower()
+        for c in classes:
+            cl = c.lower()
+            for kw in _TITLE_EXCLUDE_ANCESTOR_KEYWORDS:
+                if kw in cl:
+                    return True
+        for kw in _TITLE_EXCLUDE_ANCESTOR_KEYWORDS:
+            if kw in id_val:
+                return True
+        cur = getattr(cur, "parent", None)
+    return False
+
 # URL slug → title helper (inlined from former core/extractor.py in Phase 6).
 _SLUG_CLEAN_RE   = re.compile(r"[-_]+")
 _SLUG_CHAPTER_RE = re.compile(
@@ -180,8 +214,13 @@ class H1TitleBlock(ScraperBlock):
                 return self._timed(BlockResult.skipped("no soup"), start)
 
             for tag in ("h1", "h2"):
-                el = soup.find(tag)
-                if el:
+                # v1.0.26 (TITLE-E): iterate all matches, skip ones in
+                # comment/sidebar/footer ancestor. ScribbleHub fix:
+                # `<h2 class='comments-title'>Comments (8)Login...</h2>`
+                # used to win over real title in <title> tag.
+                for el in soup.find_all(tag):
+                    if _has_excluded_ancestor(el):
+                        continue
                     # Fix TITLE-B: Apply strip_site_suffix() để strip
                     # "[ ... words ]" và các artifacts trước normalize.
                     raw  = strip_site_suffix(el.get_text(strip=True))

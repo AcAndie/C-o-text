@@ -48,7 +48,7 @@ def domain_tag(url_or_domain: str) -> str:
 _SITE_SUFFIX = re.compile(
     r"\s*[\|–—\-]\s*(?:"
     r"royal\s*road"
-    r"|scribblehub"
+    r"|scribble\s*hub"                  # v1.0.27: match "Scribble Hub" + "ScribbleHub"
     r"|wattpad"
     r"|fanfiction(?:\.net)?"            # Fix TITLE-1: match "FanFiction" AND "fanfiction.net"
     r"|archiveofourown(?:\.org)?"

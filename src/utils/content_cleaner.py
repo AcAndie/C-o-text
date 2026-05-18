@@ -371,6 +371,10 @@ def _strip_ui_navigation_text(text: str) -> str:
 _STATUS_LINE_PATTERNS = [
     re.compile(r"^\s*\*\*([^*\n]+?):\*\*\s*(.*?)\s*$"),         # **X:** value  (colon inside)
     re.compile(r"^\s*\*\*([^*\n]+?)\*\*\s*[:=]\s*(.+?)\s*$"),   # **X**: value  (colon outside)
+    # v1.0.28: broken bold variant — **X**Y (text after closing `**`).
+    # Source: `<strong>Core Temp (T): 4000</strong>K` typo from RR author.
+    # Treat content trong `**...**` là label, suffix là value.
+    re.compile(r"^\s*\*\*([^*\n]+?)\*\*\s*([^\s*][^*\n]*)\s*$"),
     re.compile(r"^\s*\*\*([^*\n]+?)\*\*\s*$"),                  # **X**         (label only)
 ]
 
@@ -382,6 +386,11 @@ _STATUS_LINE_MAX_LEN = 160
 # Mid-line `Full Status:` không match bold patterns → cluster break.
 # Bridge cho phép nối nếu line ngắn + ends with colon + surrounded bởi real status.
 _BRIDGE_LABEL_RE = re.compile(r"^\s*[A-Z][A-Za-z 0-9()/\-]{0,40}:\s*$")
+
+# v1.0.28: emoji/decoration-only line bridge.
+# Sites embed 🗿 / ⚔️ / ✨ giữa status panels — short visual separator. Cũ
+# break cluster. Bridge nếu line ngắn (<10 chars) + không có alphanumeric.
+_BRIDGE_DECORATION_RE = re.compile(r"^[^\w\n]{1,10}$", re.UNICODE)
 
 
 def _match_status_line(line: str) -> tuple[str, str] | None:
@@ -402,6 +411,29 @@ def _match_status_line(line: str) -> tuple[str, str] | None:
 def _is_bridge_label(line: str) -> bool:
     """v1.0.22: plain `Label:` line — bridge only, not cluster initiator."""
     return bool(_BRIDGE_LABEL_RE.match(line))
+
+
+def _is_bridge_decoration(line: str) -> bool:
+    """v1.0.28: emoji/symbol-only short line — bridge across status callouts."""
+    s = line.strip()
+    return bool(s) and bool(_BRIDGE_DECORATION_RE.match(s))
+
+
+def _next_status_within(lines: list[str], start: int, window: int) -> bool:
+    """v1.0.28: True nếu có status line trong [start, start+window) lines,
+    bỏ qua blank + decoration line. Used by bridge logic."""
+    for k in range(start, min(start + window, len(lines))):
+        if _match_status_line(lines[k]) is not None:
+            return True
+        # Skip blank + decoration lines (not stop)
+        s = lines[k].strip()
+        if s == "":
+            continue
+        if _is_bridge_decoration(s):
+            continue
+        # Hit non-status non-bridge line → stop
+        return False
+    return False
 
 
 def _wrap_status_blocks(text: str) -> str:
@@ -428,8 +460,9 @@ def _wrap_status_blocks(text: str) -> str:
             elif (
                 line.strip() == ""
                 and cluster
-                and j + 1 < len(lines)
-                and _match_status_line(lines[j + 1]) is not None
+                # v1.0.28: blank bridge — accept nếu status line xuất hiện
+                # trong 4 line tiếp theo (skip blank/decoration interleave).
+                and _next_status_within(lines, j + 1, 4)
             ):
                 cluster.append(None)
                 j += 1
@@ -443,6 +476,16 @@ def _wrap_status_blocks(text: str) -> str:
                 # Emit as bold header trong callout để consistent với cluster
                 # (treat as label-only entry, no value).
                 cluster.append((line.strip().rstrip(":"), ""))
+                j += 1
+            elif (
+                _is_bridge_decoration(line)
+                and cluster
+                # v1.0.28: lookahead 4 lines — skip blanks/decoration interleave
+                and _next_status_within(lines, j + 1, 4)
+            ):
+                # v1.0.28: emoji/decoration short line — bridge across panels.
+                # 🗿 separator giữa Quest panel + Full Status panel của RR.
+                # Skip silently (no entry — chỉ bridge cluster scan).
                 j += 1
             else:
                 break

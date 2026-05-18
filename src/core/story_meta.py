@@ -83,6 +83,10 @@ def build_story_id_regex(url: str) -> str | None:
 
         build_story_id_regex("https://royalroad.com/fiction/55418/the-wandering-inn")
         → r"/fiction/55418/"
+
+        v1.0.26: ScribbleHub-style `/read/{id}-{slug}/chapter/{ch_id}/`
+        build_story_id_regex(".../read/1539267-the-quantum-wanderer/chapter/1539274/")
+        → r"/read/1539267"   (was: full path → guard fired on Ch.2+)
     """
     try:
         path     = urlparse(url).path
@@ -92,9 +96,24 @@ def build_story_id_regex(url: str) -> str | None:
         if len(segments) >= 3 and segments[0] == "s" and segments[1].isdigit():
             return re.escape(f"/s/{segments[1]}/")
 
-        # Generic: đường dẫn tới segment số đầu tiên
+        # Generic: find FIRST story-id signal.
+        # Priority order (specific → general):
+        #   1. Segment `\d+-{slug}` (ScribbleHub `1539267-the-quantum-wanderer`)
+        #      → lock to `/prefix/{leading-number}` (drop slug — may change)
+        #   2. Pure digit segment (`55418`, `12345`)
+        #      → lock to `/prefix/{number}/`
         for i, seg in enumerate(segments):
-            if seg.isdigit() and i > 0:
+            if i == 0:
+                continue   # skip root segment (`s`, `read`, `fiction`, ...)
+
+            # Priority 1: numeric-prefix-with-dash (id-then-slug pattern)
+            m = re.match(r"^(\d+)-", seg)
+            if m:
+                story_path = "/" + "/".join(segments[:i]) + "/" + m.group(1)
+                return re.escape(story_path)
+
+            # Priority 2: all-digit segment
+            if seg.isdigit():
                 story_path = "/" + "/".join(segments[:i+1]) + "/"
                 return re.escape(story_path)
     except Exception:

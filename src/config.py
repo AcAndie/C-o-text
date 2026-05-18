@@ -50,7 +50,7 @@ def _get(section: str, key: str, default):
 
 # ── Project version ───────────────────────────────────────────────────────────
 # Bump on tagged release. See CHANGELOG.md for history.
-VERSION = "1.0.25"
+VERSION = "1.0.28"
 
 
 # ── API ───────────────────────────────────────────────────────────────────────
@@ -158,6 +158,9 @@ _DELAY_PROFILES: dict[str, tuple[float, float]] = {
     "www.fanfiction.net"  : (2.0,  6.0),
     "archiveofourown.org" : (2.0,  5.0),
     "www.webnovel.com"    : (3.0,  7.0),
+    # v1.0.26: Chinese sites — aggressive IP rate-limit, need longer pause.
+    "69shuba.com"         : (12.0, 25.0),
+    "www.69shuba.com"     : (12.0, 25.0),
 }
 _DEFAULT_DELAY = (1.0, 3.0)
 

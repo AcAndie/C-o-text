@@ -137,12 +137,23 @@ async def _fetch_titles(
     titles  : list[str] = []
     current : str | None = chapter1_url
 
+    # v1.0.26: thêm visible log khi fetch fail / nav fail trong naming,
+    # tránh silent fallback sang domain-slug output_dir.
+    from utils.string_helpers import domain_tag as _dtag
+    from urllib.parse import urlparse
+    tag = _dtag(urlparse(chapter1_url).netloc)
+
     for i in range(n):
         if not current:
             break
         try:
             status, html = await fetch_page(current, pool, pw_pool)
             if is_junk_page(html, status):
+                print(
+                    f"  [{tag}] ⚠ Naming Ch.{i+1} junk page (status={status})"
+                    f" — dừng naming, dùng domain-slug fallback",
+                    flush=True,
+                )
                 break
 
             title = _get_title_tag(html)
@@ -153,6 +164,11 @@ async def _fetch_titles(
                 soup     = BeautifulSoup(html, "html.parser")
                 next_url = find_next_url(soup, current, profile)
                 if not next_url or next_url == current:
+                    print(
+                        f"  [{tag}] ⚠ Naming Ch.{i+1}: không tìm next URL"
+                        f" — dùng {len(titles)} titles đã có",
+                        flush=True,
+                    )
                     break
                 current = next_url
                 await asyncio.sleep(get_delay(current))
@@ -160,7 +176,10 @@ async def _fetch_titles(
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.warning("[Naming] Fetch chapter %d thất bại: %s", i + 1, e)
+            print(
+                f"  [{tag}] ⚠ Naming Ch.{i+1} fetch fail: {e}",
+                flush=True,
+            )
             break
 
     return titles

@@ -960,13 +960,16 @@ async def run_novel_task(
         await _run_protected(pm.flush(), timeout=_FLUSH_TIMEOUT_SEC, label="pm.flush")
 
         # v1.0.12: Index TOC + top/bottom nav for Obsidian readers (.md only).
+        # v1.0.28: wrap in asyncio.shield() để hoàn thành cả khi parent cancelled.
+        # Trước: Ctrl+C giữa scrape → CancelledError propagate ngay → nav_injector
+        # thread bị bỏ dở → no Index. Shield giữ task chạy đến khi xong.
         if writer.__class__.__name__ == "ObsidianWriter":
             try:
                 from writers.nav_injector import inject_nav_and_index
                 story_display = progress.get("story_name_clean") or story_label
-                n_nav, idx_written = await asyncio.to_thread(
+                n_nav, idx_written = await asyncio.shield(asyncio.to_thread(
                     inject_nav_and_index, actual_output_dir, story_display,
-                )
+                ))
                 idx_msg = " + index" if idx_written else ""
                 if n_nav or idx_written:
                     print(
