@@ -1,6 +1,6 @@
-# Troubleshooting — Cào Text v1.0
+# Troubleshooting — Cào Text v1.2.0
 
-> 10 most common issues + concrete fix. Ordered by likelihood, not severity.
+> 11 most common issues + concrete fix. Ordered by likelihood, not severity.
 >
 > If your issue isn't listed: check `issues.md` (per-session log), then `progress/{...}.json` (per-story state), then re-run with `--no-validation --fast-learning` to isolate.
 
@@ -216,6 +216,36 @@ Windows-specific: harmless "I/O operation on closed pipe" messages during exit a
 **Nuclear option** — disable AdsFilter for a domain:
 - Set `ads_keywords_learned: []` in `data/site_profiles.json` for that domain
 - Delete domain entry in `data/ads_keywords.json`
+
+---
+
+## 11. HTTP 503 / IP ban / rate-limit từ site
+
+**Symptom**: Same domain → consecutive 503, 429, hoặc connection reset. Site bình thường truy cập browser OK.
+
+**Cause**: Default `PER_HOST_MAX_CONCURRENCY=3` (v1.2.0+) — 3 concurrent request per host. Một số site nhạy cảm (royalroad, fanfiction limits aggressive) ban IP với burst >1 concurrent.
+
+**Fix**:
+```bash
+# Giảm xuống 1 = sequential per host (chậm hơn nhưng an toàn)
+python main.py --per-host-concurrency 1 links.txt
+
+# Hoặc set env permanent
+export PER_HOST_MAX_CONCURRENCY=1   # Linux/macOS
+$env:PER_HOST_MAX_CONCURRENCY=1     # PowerShell
+set PER_HOST_MAX_CONCURRENCY=1      # cmd.exe
+
+# Hoặc trong config.toml
+[scraper]
+per_host_concurrency = 1
+```
+
+**Prevention**:
+- Default `3` chọn conservative cho learning phase (8 AI calls + 10 chapter fetch). Vẫn bị ban → giảm xuống 1.
+- Tăng `--per-host-concurrency 10` chỉ khi site chứng minh tolerant (vd self-hosted).
+- Nếu đã bị ban: đợi 24-72h cho IP cool, sau đó re-run với `--per-host-concurrency 1`.
+
+**Note**: Cap apply cho cả `fetch()` (chapter HTML) và `fetch_bytes()` (image). Single semaphore per domain — share scope.
 
 ---
 

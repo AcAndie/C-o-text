@@ -4,7 +4,7 @@
 >
 > Site mới chỉ cần học **1 lần** (~8 AI calls), lần sau xài lại profile đã lưu — free khi không cần re-learn.
 
-**Version**: v1.0 (2026-05-17) — [CHANGELOG](CHANGELOG.md)
+**Version**: v1.2.0 (2026-05-19) — [CHANGELOG](CHANGELOG.md)
 **License**: Personal use
 **Platform**: Windows 10/11 (tested), Linux/macOS (should work)
 **Runtime**: Python 3.11+
@@ -112,6 +112,7 @@ python main.py [OPTIONS] INPUT
 | `--output-mode {obsidian,translate,raw}` | `obsidian` | Output format |
 | `--output-dir DIR` | `output/` | Base directory |
 | `--max-pw-instances N` | `2` | Số Playwright concurrent (CF sites) |
+| `--per-host-concurrency N` | `3` | Cap concurrent curl_cffi request per host (safety, tránh IP ban) |
 | `--fast-learning` | off | Skip ProseRichness validation trong learning (~20% faster) |
 | `--no-validation` | off | Bỏ qua ProseRichnessBlock toàn bộ (ít filter, nhanh nhẹ) |
 | `--bulk-relearn` | off | Bulk delete profile (mặc định dry-run) |
@@ -177,6 +178,7 @@ Quick triage:
 - **HTTP 429 rate limit** → Code tự backoff theo Gemini `retry_delay`, đợi
 - **Story stops after 5 errors** → Site có thể đã đổi cấu trúc → `!relearn`
 - **Cloudflare challenge** → Cài Playwright (`pip install playwright && playwright install chromium`)
+- **HTTP 503 / IP ban** → Giảm `--per-host-concurrency 1` (default 3 → 1 = sequential per host)
 - **Unicode error on TXT** → File phải UTF-8, convert qua `iconv -f cp1252 -t utf-8 file.txt`
 
 ---

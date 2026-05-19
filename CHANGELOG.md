@@ -4,6 +4,48 @@ All notable changes to Cào Text. Format based on [Keep a Changelog](https://kee
 
 ---
 
+## [1.2.0] — 2026-05-19
+
+Safety-by-default release. Surfaces from V1.1 test audit: dangerous default
+in `DomainSessionPool` (no per-host concurrency cap → IP ban risk). Promoted
+from §7.2 perf-deferred → §0.6 P6 critical path after recognition that
+reactive trigger (wait-for-ban) is too late.
+
+### Added
+
+- **DomainSessionPool per-host concurrency cap** (`c54ed58`) — lazy
+  `asyncio.Semaphore(PER_HOST_MAX_CONCURRENCY=3)` per domain. Both
+  `fetch()` and `fetch_bytes()` share semaphore. Override via env
+  `PER_HOST_MAX_CONCURRENCY`, config.toml `[scraper] per_host_concurrency`,
+  or CLI `--per-host-concurrency N`. Decision Log #57.
+
+### Changed
+
+- `docs/V1_1_BACKLOG.md` §7 restructured: 3 speculative items demoted to
+  §7.99 with measurement gate ("NOT 'user has N'", but real metric
+  breach). User audit principle: theoretical concern alone ≠ backlog
+  entry. Anti-pattern #11 (premature optimization) reminder.
+
+### Security / Privacy
+
+- **Scrubbed Windows username** (`7ec1413`) from 5 tracked docs:
+  CLAUDE.md, CHANGELOG.md, docs/V1_1_BACKLOG.md,
+  docs/ROADMAP_VIBE_CODER.md, docs/PROJECT_RETROSPECTIVE.md. Replaced
+  with `<user>` placeholder. **Caveat**: old commits still contain the
+  original username in history. Full scrub requires `git filter-repo`
+  + force-push (destructive, defer until explicit user request).
+
+### Test
+
+- Hot-path benchmark: `make_fingerprint` p50 9ms @180KB (negligible vs
+  HTTP cost). `nav_injector` linear O(N), 3.6s @1349 chapters
+  (acceptable end-of-session). Pyflakes: 2 minor warnings non-bug
+  (`learning/phase.py:29` unused import, `ai/agents.py:1183` f-string
+  no placeholder). Functional test: Semaphore cap enforced, 10-task
+  burst capped at N concurrent.
+
+---
+
 ## [1.1.0] — 2026-05-18
 
 Stability + multi-site hardening release. Adds Obsidian vault in-repo layout,
