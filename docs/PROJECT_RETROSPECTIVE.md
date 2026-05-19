@@ -57,7 +57,7 @@ Ready Player One EPUB → 52 chapters extracted across 3 modes, exit 0 every tim
 `data/baselines/` shipped empty. Plan said capture per-phase, reality said "needs live API + scrape time, defer". Result: Phase 6 Batch C had to limit to pure-deletion items (0.6% LOC vs 5-10% target). FlowSpec + image stage extract blocked.
 
 ### 3.2 EPUB title extraction fallback bug
-Some chapters got source path as title (`0004_UsersFpt_Mong_CaiDesktopSmall_Project...md`). Title chain fell through to `_title_from_url` which fed a file path → garbled. Body content intact, just filename ugly. Surfaced in P6.4 smoke. **Tech debt → v1.1**.
+Some chapters got source path as title (`0004_Users<user>DesktopSmall_Project...md`). Title chain fell through to `_title_from_url` which fed a file path → garbled. Body content intact, just filename ugly. Surfaced in P6.4 smoke. **Tech debt → v1.1**.
 
 ### 3.3 EPUB image href resolution gap
 `EpubImageExtractor` failed on `../images/imgN.jpg` relative paths inside chapter HTML. Logged but skipped — body falls back to external link. Some EPUBs use absolute paths, some relative, some `OEBPS/images/...`. Need path resolution layer. **Tech debt → v1.1**.

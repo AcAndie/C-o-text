@@ -31,7 +31,7 @@ Mỗi session mới, Claude Code:
 | **Stage** | **v0.x consolidation** — ~7,240 dòng, kiến trúc ổn, đang ở giai đoạn reduction (Batch A/B/C) trước khi mở rộng |
 | **Owner** | Solo dev — vibe coder, không rành code chi tiết, dùng Claude Code, giao tiếp tiếng Việt |
 | **Inspiration** | FanFicFare (scope rộng + maintenance lâu năm), gallery-dl (extractor plugin pattern), Trafilatura (extraction heuristics), QuickTranslator (consistency through dictionary layer) |
-| **Platform** | Windows desktop (`C:\Users\FPT MONG CAI\Desktop\Small Project\Cào text`) |
+| **Platform** | Windows desktop (`C:\Users\<user>\Desktop\Small Project\Cào text`) |
 | **Runtime** | Python 3.11+ async (`asyncio`) |
 
 ---

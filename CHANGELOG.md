@@ -279,7 +279,7 @@ output/Ready_Player_One/
 EPUB scrape — 3 critical bugs fixed.
 
 ### Bug 1: Title = full Windows file path
-**Symptom**: EPUB chapter file `0005_UsersFpt_Mong_CaiDesktopSmall_ProjectCào_TextInputEpubReady_Player_One.Epub.md` — title was full file path slugified.
+**Symptom**: EPUB chapter file `0005_Users<user>DesktopSmall_ProjectCào_TextInputEpubReady_Player_One.Epub.md` — title was full file path slugified.
 **Cause**: orchestrator sets `ctx.url = doc.source_path` (file path). Title chain falls through all blocks. `UrlSlugTitleBlock._title_from_url()` doesn't validate URL scheme → treats Windows path as URL → extracts whole path as title.
 **Fix**: `src/pipeline/title_extractor.py::_title_from_url` validates `urlparse(url).scheme in ("http", "https")` — returns None for file paths. Title chain falls through to orchestrator's `f"Chapter {doc.chapter_index}"` default.
 

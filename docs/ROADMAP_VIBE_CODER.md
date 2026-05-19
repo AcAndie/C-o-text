@@ -30,7 +30,7 @@
 
 ## 📋 Pre-flight Checklist (1 lần, trước Phase 0)
 
-- [ ] Có folder Cào Text local (ví dụ `C:\Users\FPT MONG CAI\Desktop\Small Project\Cào text`)
+- [ ] Có folder Cào Text local (ví dụ `C:\Users\<user>\Desktop\Small Project\Cào text`)
 - [ ] `cd "Cào text"` thấy `main.py`, `pipeline/`, `learning/`, `core/`, `data/`
 - [ ] `python main.py links.txt` smoke test 1 URL ngắn PASS — baseline trước khi đụng vào
 - [ ] Git working tree clean (`git status` không có thay đổi pending)

@@ -65,7 +65,7 @@ Everything below P6 is "nice to have when motivated" — none blocking.
 **Why**: Live smoke (Ready Player One.epub) surfaced 3 bugs:
 
 **Bug 1 — Title fallback returns source path**:
-- Symptom: `0004_UsersFpt_Mong_CaiDesktopSmall_ProjectCào_TextReady_Player_One_(Ernest_Cline)1_(Z.md`
+- Symptom: `0004_Users<user>DesktopSmall_ProjectCào_TextReady_Player_One_(Ernest_Cline)1_(Z.md`
 - Cause: Title chain falls through to `_title_from_url` which treats file path like URL
 - Fix: Skip `_title_from_url` if input is local file path (no `://` scheme)
 
