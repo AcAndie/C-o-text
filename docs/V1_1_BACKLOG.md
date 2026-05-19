@@ -327,6 +327,86 @@ async def _run_file_flow(spec: FlowSpec, run_config, ai_limiter): ...
 
 ---
 
+## 7. Performance / Test Findings (2026-05-19)
+
+> Test session: syntax + import sanity + hot-path benchmark + nav_injector scaling + pyflakes lint.
+> Result: code healthy. Hot paths sub-millisecond. nav_injector linear O(N). No critical bug surfaced.
+
+### 7.1 ProfileManager per-domain shard
+
+**Source**: V1.1 test session 2026-05-19 — integration test design.
+
+**Symptom**: `ProfileManager.flush()` rewrites entire `data/site_profiles.json` even if only 1 domain dirty. For 100 domains → 100KB rewrite per flush.
+
+**Spec**: Per-domain shard `data/profiles/{domain}.json`. ProfileManager tracks per-shard dirty flag. `flush()` only rewrites dirty shards.
+
+**Trigger**: User has 50+ committed profiles in `site_profiles.json` AND observes noticeable flush latency.
+
+**Effort**: 1 day (migration script for existing monolith → shards).
+
+### 7.2 DomainSessionPool per-host concurrency cap
+
+**Source**: V1.1 test session 2026-05-19 — integration test design.
+
+**Symptom**: `curl_cffi` session reuse OK but no semaphore limiting concurrent requests per host. Burst 100 concurrent → DDOS-mode → site rate-limit / ban.
+
+**Spec**: `DomainSessionPool.acquire(domain)` wraps `asyncio.Semaphore(N=3)` per-domain. Config `PER_HOST_MAX_CONCURRENCY=3`.
+
+**Trigger**: User reports IP ban from heavily-scraped site OR adds `--concurrency` flag >5.
+
+**Effort**: 2 hours.
+
+### 7.3 IssueReporter stream-write
+
+**Source**: V1.1 test session 2026-05-19 — system test 24h stability design.
+
+**Symptom**: `IssueReporter` accumulates report entries in RAM until end-of-session flush to `issues.md`. 24h+ run → OOM risk for chatty errors.
+
+**Spec**: Append-on-report (1 line/issue) to `.issues.tmp`. End-of-session: rename + write summary header. Backward-compat: same final `issues.md` schema.
+
+**Trigger**: User runs scrape >12h continuously OR reports OOM in long session.
+
+**Effort**: 3 hours.
+
+### 7.4 Branch 136 — `--check-new` flag + age skip
+
+**Source**: V1.1 test session 2026-05-19 — observed cost of branch 136 (just fixed).
+
+**Symptom**: Every run re-verifies completed stories — 1 HTTP request per completed story even if site dead 2 years. Batch with 100 completed stories → 100 HTTP startup cost.
+
+**Spec**:
+- `--check-new` CLI flag (default ON) — toggle re-verify completed
+- `--skip-check-after-days N` (default 90) — skip re-verify if `completed_at` older than N days
+- Manual override `!recheck domain.com` in `links.txt`
+
+**Trigger**: User has 50+ completed stories AND batch run feels sluggish at startup.
+
+**Effort**: 4 hours.
+
+### 7.5 nav_injector JSON sidecar cache
+
+**Source**: V1.1 test session 2026-05-19 — measured 3.6s for 1349-chapter rebuild.
+
+**Symptom**: `inject_nav_and_index` re-reads N file frontmatter every call. End-of-session only → acceptable. Linear O(N) — 5000 cap = ~13s.
+
+**Spec**: Sidecar `0000_index.json` cache `{chapter_num: {title, mtime}}`. Skip frontmatter parse if `mtime` unchanged. Render `0000_Index.md` from cache.
+
+**Trigger**: User wants per-chapter nav refresh (currently end-of-session only) OR scrape story >3000 chapters AND complains about session-end pause.
+
+**Effort**: 4 hours.
+
+### 7.6 Linting cleanup (pyflakes findings)
+
+**Source**: V1.1 test session 2026-05-19 — pyflakes 3.4.0 scan.
+
+**Items**:
+- `learning/phase.py:29` — `fetch_page` import unused
+- `ai/agents.py:1183` — f-string missing placeholders
+
+**Effort**: 5 minutes. Bundle with next routine cleanup commit.
+
+---
+
 ## Summary Table
 
 | # | Item | Category | Trigger |
@@ -349,3 +429,9 @@ async def _run_file_flow(spec: FlowSpec, run_config, ai_limiter): ...
 | 5.7 | Lint toolchain | Infra | Multiple contributors |
 | 6.1 | Web UI / API | Infra | Multi-user scenario |
 | 6.2 | Database | Infra | Multi-process concurrent write |
+| 7.1 | ProfileManager per-domain shard | Perf | 50+ profiles + flush latency |
+| 7.2 | DomainSessionPool per-host cap | Perf | IP ban or `--concurrency` >5 |
+| 7.3 | IssueReporter stream-write | Perf | 12h+ run / OOM report |
+| 7.4 | Branch 136 `--check-new` flag + age skip | Perf | 50+ completed stories sluggish startup |
+| 7.5 | nav_injector JSON sidecar cache | Perf | Story >3000 ch with session-end pause |
+| 7.6 | Pyflakes cleanup | Code health | Bundle with next routine commit |
