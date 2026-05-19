@@ -104,6 +104,14 @@ def _read_frontmatter(path: Path) -> dict:
 
 # ── Nav line build ─────────────────────────────────────────────────────────────
 
+def _md_link(label: str, target: str) -> str:
+    """INDEX-LINK-SAFE: escape `[` `]` `\\` in label, wrap target in `<...>` để
+    chấp nhận special chars (`[`, `]`, space, parentheses)."""
+    safe_label = label.replace("\\", r"\\").replace("[", r"\[").replace("]", r"\]")
+    safe_target = target.replace("<", "%3C").replace(">", "%3E")
+    return f"[{safe_label}](<{safe_target}>)"
+
+
 def _nav_block(prev: Path | None, nxt: Path | None) -> str:
     """v1.1.2: Build 3-line nav stack (prev / index / next). Skip None sides.
     Each line standalone Markdown line — trailing 2 spaces force line break
@@ -111,10 +119,10 @@ def _nav_block(prev: Path | None, nxt: Path | None) -> str:
     """
     lines: list[str] = []
     if prev:
-        lines.append(f"[← {prev.stem}]({prev.name})")
-    lines.append(f"[🏠 Index]({INDEX_FILENAME})")
+        lines.append(_md_link(f"← {prev.stem}", prev.name))
+    lines.append(_md_link("🏠 Index", INDEX_FILENAME))
     if nxt:
-        lines.append(f"[{nxt.stem} →]({nxt.name})")
+        lines.append(_md_link(f"{nxt.stem} →", nxt.name))
     # Trailing `  ` (2 spaces) = Markdown hard line break. Last line no break.
     return "  \n".join(lines)
 
@@ -189,9 +197,7 @@ def _build_index_content(
     parts.append("## Chapters")
     parts.append("")
     for i, (path, title) in enumerate(chapters, 1):
-        # Escape `]` in title to avoid breaking link label
-        safe_title = title.replace("]", r"\]")
-        parts.append(f"{i}. [{safe_title}]({path.name})")
+        parts.append(f"{i}. {_md_link(title, path.name)}")
     parts.append("")
     return "\n".join(parts)
 

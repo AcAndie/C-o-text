@@ -106,6 +106,48 @@ def _progress_path(url: str, base: str | None = None) -> str:
     return os.path.join(PROGRESS_DIR, f"{domain}_{base_slug}_{dir_hash}.json")
 
 
+# ── Index auto-heal (Ctrl+C recovery) ─────────────────────────────────────────
+
+async def _heal_missing_indexes(output_root: str) -> None:
+    """
+    Quét output_root, regenerate Index cho mỗi story folder có chapters
+    nhưng missing 0000_Index.md. Idempotent — chỉ ghi nếu content khác.
+
+    Bắt edge case: Ctrl+C giữa scrape → finally cleanup interrupted →
+    nav_injector skip → folder không có Index. Lần chạy sau auto-heal.
+    """
+    if not os.path.isdir(output_root):
+        return
+    try:
+        from writers.nav_injector import inject_nav_and_index, INDEX_FILENAME
+    except ImportError:
+        return
+    healed = 0
+    for entry in sorted(os.listdir(output_root)):
+        story_dir = os.path.join(output_root, entry)
+        if not os.path.isdir(story_dir):
+            continue
+        # Chỉ heal folder có ≥1 chapter file .md
+        chapter_files = [f for f in os.listdir(story_dir) if f.endswith(".md") and f != INDEX_FILENAME]
+        if not chapter_files:
+            continue
+        idx_path = os.path.join(story_dir, INDEX_FILENAME)
+        if os.path.exists(idx_path):
+            continue   # Skip folders với existing index — heal chỉ missing
+        story_name = entry.replace("_", " ")
+        try:
+            n_nav, idx_written = await asyncio.to_thread(
+                inject_nav_and_index, story_dir, story_name,
+            )
+            if idx_written:
+                healed += 1
+                print(f"  [Heal] 🩹 {entry}: regenerated index + {n_nav} chapter nav", flush=True)
+        except Exception as e:
+            print(f"  [Heal] ⚠ {entry} failed: {e}", flush=True)
+    if healed:
+        print(f"  [Heal] ✅ Regenerated {healed} missing indexes from prior cancelled runs\n", flush=True)
+
+
 # ── links.txt parser ──────────────────────────────────────────────────────────
 
 def _parse_links_file(path: str) -> tuple[list[str], list[str]]:
@@ -485,6 +527,12 @@ async def main() -> None:
     # User may paste an index/TOC URL instead of a chapter URL. Classify each
     # URL once (AI cached), redirect index → first_chapter_url, skip if cache
     # hit. Cost: 1 AI call per new URL (~negligible for free tier). Also
+    # INDEX-AUTO-HEAL: Quét output dir, regenerate Index/nav cho folder có
+    # chapters nhưng missing/stale index. Bắt case prior run Ctrl+C → finally
+    # cleanup interrupted → no Index. Idempotent: nav_injector chỉ ghi nếu
+    # content changed.
+    await _heal_missing_indexes(run_config.output_dir or OUTPUT_DIR)
+
     # detects language (en/vi/zh/ja/ko/ru) — multi-lang support hook.
     from utils.url_classifier import resolve_to_chapter_url
 

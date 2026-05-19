@@ -237,14 +237,34 @@ class DensityHeuristicBlock(ScraperBlock):
             return 0.0, 0
 
         text_density = text_len / html_len
-        p_count      = len(el.find_all("p"))
-        p_bonus      = min(p_count * 0.05, 0.3)
+
+        # PARA-BONUS: count text-bearing children — `<p>` HOẶC `<div>` có
+        # text ≥30 ký tự (generic wrapper detection). Webnovel.com dùng
+        # `<div class="cha-paragraph">` thay vì `<p>` → cần generic count.
+        para_count = len(el.find_all("p"))
+        if para_count < 2:
+            # Fallback: count direct children với text ≥30 chars
+            direct_text_children = sum(
+                1 for child in el.find_all(recursive=False)
+                if isinstance(child, Tag)
+                and len(child.get_text(strip=True)) >= 30
+            )
+            para_count = max(para_count, direct_text_children)
+        p_bonus = min(para_count * 0.05, 0.5)
+
+        # WRAPPER-PREFERENCE: big text + many paragraphs → wrapper bonus.
+        # Tránh DensityHeuristic chọn single leaf paragraph thay vì wrapper.
+        # Khi text ≥1000 chars VÀ ≥5 paragraph children → boost score 50%.
+        wrapper_bonus = 1.0
+        if text_len >= 1000 and para_count >= 5:
+            wrapper_bonus = 1.5
 
         score = (
             text_density
             * (1.0 - link_density)
             * math.log(text_len + 1)
             * (1.0 + p_bonus)
+            * wrapper_bonus
         )
         return score, text_len
 

@@ -109,13 +109,27 @@ async def run_learning_phase(
     _print_calibration(tag, domain, cal)
     if not cal["pass"]:
         bad_sel = profile.get("content_selector", "")
-        profile["content_selector"] = ""
-        profile["confidence"] = min(profile.get("confidence", 0.5), 0.3)
-        print(
-            f"  [{tag}] 🛠 content_selector={bad_sel!r} CLEARED (M0 fail) — "
-            f"pipeline sẽ dùng heuristic chain fallback.",
-            flush=True,
-        )
+        # AUTO-DISCOVER: AI hallucinated selector. Probe HTML cho candidate
+        # wrapper từ samples thực tế. Pick wrapper có class/id literal tồn tại
+        # trong HTML + match ≥3/5 samples ≥300 chars. Fallback CLEAR nếu
+        # không có candidate qualified.
+        discovered = _discover_content_selector(chapters[:5])
+        if discovered:
+            profile["content_selector"] = discovered
+            profile["confidence"] = min(profile.get("confidence", 0.5), 0.6)
+            print(
+                f"  [{tag}] 🔍 content_selector={bad_sel!r} HALLUCINATED → "
+                f"auto-discovered {discovered!r} từ HTML literal (conf=0.6)",
+                flush=True,
+            )
+        else:
+            profile["content_selector"] = ""
+            profile["confidence"] = min(profile.get("confidence", 0.5), 0.3)
+            print(
+                f"  [{tag}] 🛠 content_selector={bad_sel!r} CLEARED (M0 fail + "
+                f"no candidate found) — pipeline sẽ dùng heuristic chain fallback.",
+                flush=True,
+            )
 
     await pm.save_profile(domain, profile)
 
@@ -306,6 +320,103 @@ def _validate_content_selector(
     return False, (
         f"only {hits}/{tested} samples match ≥{min_chars} chars via {selector!r}"
     )
+
+
+# ── Auto-discover content selector (AI hallucination fallback) ───────────────
+
+def _discover_content_selector(
+    samples     : list[tuple[str, str]],
+    min_chars   : int = 300,
+    min_matches : int = 3,
+    top_k       : int = 5,
+) -> str | None:
+    """
+    Probe HTML literal cho content wrapper khi AI hallucinated.
+
+    Strategy:
+      1. Enumerate candidate selectors từ samples: tag với class/id có ≥1 `<p>`
+         child + text length ≥min_chars trên ≥1 sample.
+      2. Test mỗi candidate qua tất cả samples.
+      3. Rank by (hit_count desc, avg_text_len desc).
+      4. Return top selector nếu hit_count ≥ min_matches.
+
+    Tránh hallucination: candidate phải xuất hiện literal trong soup parse
+    của ≥1 sample (không invent class name).
+    """
+    if not samples:
+        return None
+
+    # Step 1: collect candidate (tag, class/id) tuples từ tất cả samples
+    candidates: set[str] = set()
+    for _url, html in samples:
+        try:
+            soup = BeautifulSoup(html, "lxml")
+        except Exception:
+            continue
+        for el in soup.find_all(["div", "section", "article", "main"]):
+            text_len = len(el.get_text(strip=True))
+            if text_len < min_chars:
+                continue
+            # Need ≥2 text-bearing children (wrapper signal). Generic count:
+            # `<p>` HOẶC `<div>` direct child với text ≥30 chars (webnovel.com
+            # dùng <div class="cha-paragraph"> thay vì <p>).
+            p_count = len(el.find_all("p"))
+            if p_count < 2:
+                direct_text_children = sum(
+                    1 for child in el.find_all(recursive=False)
+                    if hasattr(child, "get_text")
+                    and len(child.get_text(strip=True)) >= 30
+                )
+                p_count = max(p_count, direct_text_children)
+            if p_count < 2:
+                continue
+            # Build candidate from class (preferred) hoặc id
+            classes = el.get("class") or []
+            el_id   = el.get("id")
+            if el_id:
+                candidates.add(f"{el.name}#{el_id}")
+            for cls in classes:
+                if cls and (cls.isidentifier() or ("-" in cls and not any(c in cls for c in " \t<>"))):
+                    candidates.add(f"{el.name}.{cls}")
+
+    if not candidates:
+        return None
+
+    # Step 2: test each candidate across all samples
+    scored: list[tuple[str, int, float]] = []   # (selector, hit_count, avg_len)
+    for sel in candidates:
+        hit_count = 0
+        total_len = 0.0
+        tested = 0
+        for _url, html in samples:
+            try:
+                soup = BeautifulSoup(html, "lxml")
+                els  = soup.select(sel)
+                tested += 1
+                if not els:
+                    continue
+                text_sum = sum(len(e.get_text(strip=True)) for e in els)
+                if text_sum >= min_chars:
+                    hit_count += 1
+                    total_len += text_sum
+            except Exception:
+                continue
+        if hit_count >= min_matches:
+            avg_len = total_len / hit_count if hit_count else 0.0
+            scored.append((sel, hit_count, avg_len))
+
+    if not scored:
+        return None
+
+    # Step 3: rank — prefer most hits, then highest avg text length
+    scored.sort(key=lambda x: (x[1], x[2]), reverse=True)
+    best_sel, best_hits, best_avg = scored[0]
+    logger.info(
+        "[Discover] picked %r (hits=%d/%d, avg_len=%.0f) from %d candidates (top %d)",
+        best_sel, best_hits, len(samples), best_avg, len(candidates),
+        min(top_k, len(scored)),
+    )
+    return best_sel
 
 
 # ── JS-heavy detection ────────────────────────────────────────────────────────

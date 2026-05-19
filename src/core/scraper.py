@@ -711,8 +711,33 @@ async def _setup_story(
         if naming:
             for k, v in naming.items():
                 progress[k] = v  # type: ignore[literal-required]
+            # NAMING-PERSIST-GUARD: fail-loud nếu naming dict tồn tại nhưng
+            # output_dir_final / story_name_clean missing sau merge. Tránh
+            # silent fallback sang URL-slug dir (bug Vault/Novels/webnovel_com_book_*).
+            if not progress.get("output_dir_final") or not progress.get("story_name_clean"):
+                logger.error(
+                    "[Naming] Merge sai: naming=%r, progress keys after merge=%r",
+                    naming, sorted(progress.keys()),
+                )
+                raise RuntimeError(
+                    f"[{tag}] Naming merge failed: output_dir_final/story_name_clean "
+                    f"missing dù naming dict có cả 2 keys. Naming={naming!r}"
+                )
         progress["naming_done"] = True
         await save_progress(progress_path, progress)
+        # NAMING-PERSIST-VERIFY: re-read disk, confirm naming fields persisted.
+        # Catch silent race (parallel save overwrite, file-IO error swallowed).
+        if naming:
+            persisted = await load_progress(progress_path)
+            missing = [k for k in ("story_name_clean", "output_dir_final") if not persisted.get(k)]
+            if missing:
+                logger.error(
+                    "[Naming] Persist sai: disk missing %s. Disk keys=%r, mem keys=%r",
+                    missing, sorted(persisted.keys()), sorted(progress.keys()),
+                )
+                raise RuntimeError(
+                    f"[{tag}] Naming save failed: disk thiếu {missing} dù in-memory đầy đủ."
+                )
 
     if not progress.get("story_id_locked"):
         sid_pattern = build_story_id_regex(current_url)
@@ -980,25 +1005,12 @@ async def run_novel_task(
 
         issue_reporter.summarize(total)
 
-        await _run_protected(
-            _finalize_ads(
-                ads_filter = ads_filter,
-                domain     = domain,
-                ai_limiter = ai_limiter,
-                pm         = pm,
-                output_dir = actual_output_dir,
-                cancelled  = _cancelled,
-            ),
-            timeout = _FINALIZE_TIMEOUT_SEC,
-            label   = "finalize_ads",
-        )
-
-        await _run_protected(pm.flush(), timeout=_FLUSH_TIMEOUT_SEC, label="pm.flush")
-
-        # v1.0.12: Index TOC + top/bottom nav for Obsidian readers (.md only).
-        # v1.0.28: wrap in asyncio.shield() để hoàn thành cả khi parent cancelled.
-        # Trước: Ctrl+C giữa scrape → CancelledError propagate ngay → nav_injector
-        # thread bị bỏ dở → no Index. Shield giữ task chạy đến khi xong.
+        # INDEX-PRIORITY (Ctrl+C race fix): nav_injector chạy TRƯỚC finalize_ads
+        # + pm.flush. Trước: Ctrl+C giữa cleanup → second cancel signal có thể
+        # interrupt finally → nav_injector skip. Order: critical user-facing
+        # artifact (Index) trước, ads/profile flush sau.
+        # asyncio.shield + to_thread: thread không cancellable, shield bảo vệ
+        # await khỏi propagation.
         if writer.__class__.__name__ == "ObsidianWriter":
             try:
                 from writers.nav_injector import inject_nav_and_index
@@ -1014,6 +1026,21 @@ async def run_novel_task(
                     )
             except Exception as e:
                 logger.warning("[Scraper] nav_injector failed: %s", e)
+
+        await _run_protected(
+            _finalize_ads(
+                ads_filter = ads_filter,
+                domain     = domain,
+                ai_limiter = ai_limiter,
+                pm         = pm,
+                output_dir = actual_output_dir,
+                cancelled  = _cancelled,
+            ),
+            timeout = _FINALIZE_TIMEOUT_SEC,
+            label   = "finalize_ads",
+        )
+
+        await _run_protected(pm.flush(), timeout=_FLUSH_TIMEOUT_SEC, label="pm.flush")
 
         icon = "✔" if completed else ("🛑" if _cancelled else "⏸")
         print(f"\n  {icon} [{tag}] {story_label} — {total} chapters\n", flush=True)

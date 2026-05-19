@@ -4,6 +4,64 @@ All notable changes to Cào Text. Format based on [Keep a Changelog](https://kee
 
 ---
 
+## [1.2.1] — 2026-05-19
+
+AI hallucination hardening + Ctrl+C resilience release. Three orthogonal
+issues surfaced in webnovel.com scrape session: (1) AI invents selectors
+not present in HTML, (2) DensityHeuristic picks single leaf paragraph
+instead of wrapper, (3) Ctrl+C mid-scrape leaves folder without Index.
+
+### Added
+
+- **Auto-discover content selector** (`src/learning/phase.py:_discover_content_selector`) —
+  Fallback khi calibration M0 fail. Probe HTML literal cho `<div/section/article/main>`
+  có ≥2 text-bearing children (generic: `<p>` HOẶC direct child với text ≥30 chars).
+  Rank by (hit_count desc, avg_len desc). Webnovel.com: AI hallucinated `div.cha-p`
+  (0 hits) → discover picks `div.j_page` (47K chars, 3/3 hits).
+
+- **Startup index auto-heal** (`main.py:_heal_missing_indexes`) — Quét output dir,
+  regenerate `0000_Index.md` cho folder có chapter `.md` nhưng missing index.
+  Idempotent. Bắt edge case Ctrl+C lần 2 interrupts cleanup → nav_injector skip.
+
+- **AI prompt anti-hallucination constraints** (`src/ai/prompts.py:learning_1/2/10`) —
+  Mandate `evidence_title/content/next` fields chứa snippet HTML literal 50-150 chars
+  chứng minh selector match. Schema fields added (`src/ai/agents.py:_S_DOM_STRUCTURE`,
+  `_S_INDEPENDENT_CHECK`). `suspected_js_render` flag từ AI#2 OR'd vào `requires_playwright`
+  consensus.
+
+### Fixed
+
+- **DensityHeuristic prefer wrapper over leaf** (`src/pipeline/extractor.py:_score_element`) —
+  Generic wrapper detection: nếu `<p>` count < 2, fallback đếm direct children với
+  text ≥30 chars. Wrapper bonus 1.5x khi text ≥1000c + paragraphs ≥5. Trước: leaf
+  paragraph với text density cao win → chỉ extract 1 đoạn ngắn.
+
+- **Ctrl+C race: finally cleanup order** (`src/core/scraper.py:run_novel_task`) —
+  nav_injector chạy TRƯỚC finalize_ads + pm.flush trong finally. Critical user-facing
+  artifact (Index) ưu tiên trước background housekeeping. Second Ctrl+C trong cleanup
+  window không còn skip Index generation.
+
+- **Naming merge fail-loud guard** (`src/core/scraper.py:_setup_story`) — Sau merge
+  naming dict + save, re-load disk + verify `story_name_clean`/`output_dir_final`
+  persisted. Raise RuntimeError nếu missing. Trước: silent fallback sang URL-slug
+  folder (`webnovel_com_book_*`) khi naming persist fail.
+
+- **Index link `[ ]` escape** (`src/writers/nav_injector.py:_md_link`) — Helper
+  centralize label escape (`\[`, `\]`, `\\`) + URL wrap `<...>` angle bracket.
+  Trước: title chứa `[Rolling Stone]` → markdown link parse broken trong Obsidian.
+
+### Changed
+
+- `requirements.txt` — `lxml`, `playwright`, `playwright-stealth` moved từ
+  optional comments → required deps. Already used as default BS4 parser + fetch
+  fallback throughout codebase.
+
+- `.gitignore` — entire `Vault/.obsidian/` ignored (was: subset). Added `*.log`,
+  `relearn_*.txt`, `test_*.txt`, `.claude/` patterns. 6 previously-tracked
+  `.obsidian/` files untracked via `git rm --cached`.
+
+---
+
 ## [1.2.0] — 2026-05-19
 
 Safety-by-default release. Surfaces from V1.1 test audit: dangerous default

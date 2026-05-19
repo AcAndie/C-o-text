@@ -60,6 +60,25 @@ HTML Ch.2 (tối đa 8000 ký tự):
 
 NHIỆM VỤ CHÍNH: Phân loại CHÍNH XÁC từng element theo vai trò thực sự.
 
+⚠⚠⚠ ANTI-HALLUCINATION RULE (ĐỌC TRƯỚC KHI LÀM BẤT CỨ GÌ) ⚠⚠⚠
+CHỈ được trả về selector mà bạn TÌM THẤY ĐÚNG TRONG HTML ĐÃ CUNG CẤP TRÊN.
+KHÔNG được dùng kiến thức prior về site này từ training data.
+KHÔNG được suy đoán "site X thường dùng selector Y".
+
+QUY TRÌNH BẮT BUỘC cho TỪNG selector:
+  Bước 1: Đọc HTML thực tế ở trên, tìm tag/class/id literal string.
+  Bước 2: Nếu KHÔNG tìm thấy class/id đó trong HTML → return null + lý do trong notes.
+  Bước 3: Nếu tìm thấy → copy 50-150 ký tự HTML chứa match làm evidence.
+  Bước 4: Selector phải match trên CẢ Ch.1 VÀ Ch.2 (test thử cả hai).
+
+VÍ DỤ SAI (HALLUCINATION):
+  HTML có 'div.cha-words' nhưng AI return 'div.cha-p' vì "trí nhớ" site này.
+  HTML có '<h1>' nhưng AI return 'h3.dib' vì training data cũ.
+
+VÍ DỤ ĐÚNG:
+  HTML chứa '<div class="cha-words">...nội dung...</div>' → content_selector="div.cha-words"
+  evidence_content: '<div class="cha-words"><p>The morning light...'
+
 PHÂN BIỆT RÕ RÀNG (cực kỳ quan trọng):
   • chapter_title  : Tên chương (VD: "Chapter 9 – Core Strength")
   • story_title    : Tên truyện (VD: "Rock falls, everyone dies")
@@ -78,19 +97,29 @@ QUY TẮC QUAN TRỌNG về remove_selectors:
 
 Trả về JSON (CHỈ JSON thuần, không markdown):
 {{
-  "chapter_title_selector": "CSS selector chính xác nhất cho TÊN CHƯƠNG. Phải stable qua cả 2 chapters.",
-  "story_title_selector": "CSS selector cho TÊN TRUYỆN (thường ở sidebar/header). null nếu không có.",
+  "chapter_title_selector": "CSS selector chính xác nhất cho TÊN CHƯƠNG. null nếu KHÔNG TÌM THẤY trong HTML.",
+  "evidence_title": "Đoạn HTML literal 50-150 ký tự chứa match của chapter_title_selector. null nếu selector null.",
+  "story_title_selector": "CSS selector cho TÊN TRUYỆN. null nếu không có.",
   "author_selector": "CSS selector cho TÊN TÁC GIẢ. null nếu không tìm thấy.",
-  "content_selector": "CSS selector chứa TOÀN BỘ nội dung truyện. Ưu tiên #id > .class cụ thể.",
-  "next_selector": "CSS selector của nút/link 'Next Chapter'. Phải là <a> có href. null nếu không có.",
-  "remove_selectors": ["Selectors cần xóa. KHÔNG BAO GỜM ancestor của title/content"],
+  "content_selector": "CSS selector chứa TOÀN BỘ nội dung truyện. null nếu KHÔNG TÌM THẤY trong HTML.",
+  "evidence_content": "Đoạn HTML literal 50-150 ký tự chứa match của content_selector. null nếu selector null.",
+  "next_selector": "CSS selector của nút/link 'Next Chapter'. null nếu không có trong HTML (có thể JS-render, đặt nav_type=null).",
+  "evidence_next": "Đoạn HTML literal 50-150 ký tự chứa match của next_selector. null nếu selector null.",
+  "remove_selectors": ["Selectors cần xóa. KHÔNG BAO GỜM ancestor của title/content. Mỗi selector phải có trong HTML."],
   "nav_type": "'selector' | 'rel_next' | 'slug_increment' | 'fanfic' | null",
   "chapter_url_pattern": "Regex Python nhận diện URL chapter. null nếu không đủ thông tin.",
   "requires_playwright": false,
+  "requires_playwright_reason": "Nếu HTML không chứa content/nav element rõ ràng → có thể JS-rendered. Đặt true + giải thích. null nếu false.",
   "title_is_inside_remove_candidate": false,
-  "title_container": "CSS selector của div/section chứa title (để kiểm tra conflict). null nếu title là top-level.",
-  "notes": "Ghi chú đặc biệt về cấu trúc site. null nếu không có."
+  "title_container": "CSS selector của div/section chứa title. null nếu title là top-level.",
+  "notes": "Ghi chú đặc biệt. null nếu không có."
 }}
+
+⚠ HALLUCINATION CHECK FINAL:
+Trước khi return, đọc lại từng selector. Với MỖI selector non-null, tự hỏi:
+  "Tôi có thể chỉ ra chuỗi class/id này trong HTML literal ở trên không?"
+Nếu KHÔNG → đặt selector = null + evidence = null + ghi vào notes lý do.
+Selector null KHÔNG PHẢI thất bại — pipeline có fallback chain. Selector SAI mới là thất bại nghiêm trọng.
 
 CONTENT_SELECTOR BOUNDARY CHECK (⚠ CRITICAL — đọc trước khi chọn selector):
 Trước khi return content_selector, tự hỏi:
@@ -145,6 +174,14 @@ HTML Ch.2 (tối đa 8000 ký tự):
 
 NHIỆM VỤ: Xác định chính xác các CSS selectors cho từng phần.
 
+⚠⚠⚠ ANTI-HALLUCINATION RULE (BẮT BUỘC) ⚠⚠⚠
+CHỈ trả về selector có class/id literal xuất hiện trong HTML đã cung cấp.
+KHÔNG dùng prior knowledge về site. KHÔNG suy đoán.
+Mỗi selector non-null phải kèm evidence_* field chứa snippet HTML 50-150 ký tự.
+
+Nếu không tìm thấy element phù hợp trong HTML → return null + ghi notes lý do.
+Đặc biệt nếu HTML quá ngắn / có vẻ JS-rendered (nội dung load qua JS) → return tất cả selector = null + đặt suspected_js_render=true.
+
 QUY TẮC TUYỆT ĐỐI — remove_selectors:
   Trước khi thêm selector X vào remove_selectors, hãy kiểm tra:
   "Nếu tôi xóa X, tôi có vô tình xóa chapter title hoặc chapter content không?"
@@ -171,19 +208,28 @@ PHÂN BIỆT:
 
 Trả về JSON (CHỈ JSON thuần):
 {{
-  "chapter_title_selector": "Selector cho TÊN CHƯƠNG. null nếu không chắc.",
-  "content_selector": "Selector cho NỘI DUNG TRUYỆN.",
-  "next_selector": "Selector cho nút Next Chapter. null nếu không tìm thấy.",
-  "remove_selectors": ["Selectors an toàn để xóa — đã verify không phải ancestor của title/content"],
+  "chapter_title_selector": "Selector cho TÊN CHƯƠNG. null nếu không tìm thấy literal trong HTML.",
+  "evidence_title": "Snippet HTML 50-150 ký tự chứa match. null nếu selector null.",
+  "content_selector": "Selector cho NỘI DUNG TRUYỆN. null nếu không tìm thấy literal trong HTML.",
+  "evidence_content": "Snippet HTML 50-150 ký tự chứa match. null nếu selector null.",
+  "next_selector": "Selector cho nút Next Chapter. null nếu không có trong HTML literal.",
+  "evidence_next": "Snippet HTML 50-150 ký tự chứa match. null nếu selector null.",
+  "remove_selectors": ["Selectors an toàn để xóa — verify không phải ancestor của title/content + có trong HTML literal"],
   "nav_type": "'selector' | 'rel_next' | 'slug_increment' | 'fanfic' | null",
   "chapter_url_pattern": "Regex Python cho URL chapter. null nếu không đủ thông tin.",
-  "author_selector": "Selector cho tên tác giả (để TRÁNH lấy làm title). null nếu không xác định.",
+  "author_selector": "Selector cho tên tác giả. null nếu không xác định.",
+  "suspected_js_render": false,
   "confidence": 0.85,
   "uncertain_fields": ["Liệt kê field nào bạn KHÔNG CHẮC. [] nếu tất cả chắc chắn."],
   "notes": null
 }}
 
-confidence: 0.0-1.0 — mức độ chắc chắn của bạn về TẤT CẢ selectors.
+confidence rubric (STRICT):
+  0.95-1.0 : Tất cả selector non-null kèm evidence khớp HTML literal.
+  0.70-0.94: Một số selector null vì không tìm thấy (acceptable — fallback chain handle).
+  < 0.70   : Nhiều selector uncertain hoặc nghi JS-render.
+
+⚠ Selector SAI tệ hơn selector null. Khi nghi ngờ → null + suspected_js_render=true.
 """
 
     @staticmethod
@@ -593,15 +639,23 @@ Domain: {domain}
 
 NHIỆM VỤ:
 1. Tổng hợp tất cả kết quả thành profile CUỐI CÙNG
-2. Khi các AI calls disagree → chọn kết quả có confidence cao hơn
+2. Khi các AI calls disagree → chọn kết quả có evidence khớp HTML literal
 3. Loại bỏ HOÀN TOÀN bất kỳ remove_selector nào từng bị đánh dấu DANGEROUS
 4. Merge ads_keywords từ tất cả calls
 5. Tính confidence tổng thể
 
+⚠⚠⚠ ANTI-HALLUCINATION RULE (BẮT BUỘC) ⚠⚠⚠
+KHÔNG ĐƯỢC tự nghĩ ra selector mới. CHỈ chọn từ selector đã xuất hiện trong summary từ 9 AI calls.
+Nếu AI#1 và AI#2 đều null cho một field → field cuối cùng cũng phải null.
+Nếu calibration M0 từng fail một selector → KHÔNG chọn selector đó (đặt null thay).
+Selector null an toàn hơn selector hallucinated — pipeline có fallback chain.
+
 QUY TẮC BẤT BIẾN:
   ✗ KHÔNG thêm selector vào remove_selectors nếu nó từng được đánh dấu dangerous
-  ✗ KHÔNG để chapter_title_selector trống nếu có bất kỳ AI nào tìm được
+  ✗ KHÔNG để chapter_title_selector trống nếu có bất kỳ AI nào tìm được VÀ verified
   ✗ KHÔNG chọn author_selector làm chapter_title_selector
+  ✗ KHÔNG fabricate selector không xuất hiện trong summary
+  ✓ Nếu suspected_js_render=true từ AI#2 → đặt requires_playwright=true
 
 FORMAT ads_keywords (⚠):
   ✓ Chỉ plain text, lowercase, 5-200 ký tự

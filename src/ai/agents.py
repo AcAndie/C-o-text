@@ -354,7 +354,8 @@ def resolve_phase1_conflicts(
         consensus["remove_selectors"] = []
     consensus["requires_playwright"] = bool(
         (ai1 or {}).get("requires_playwright", False) or
-        (ai2 or {}).get("requires_playwright", False)
+        (ai2 or {}).get("requires_playwright", False) or
+        (ai2 or {}).get("suspected_js_render", False)
     )
     return consensus, conflicts
 
@@ -365,14 +366,18 @@ _S_DOM_STRUCTURE = {
     "type": "object",
     "properties": {
         "chapter_title_selector"          : {"type": "string",  "nullable": True},
+        "evidence_title"                  : {"type": "string",  "nullable": True},
         "story_title_selector"            : {"type": "string",  "nullable": True},
         "author_selector"                 : {"type": "string",  "nullable": True},
         "content_selector"                : {"type": "string",  "nullable": True},
+        "evidence_content"                : {"type": "string",  "nullable": True},
         "next_selector"                   : {"type": "string",  "nullable": True},
+        "evidence_next"                   : {"type": "string",  "nullable": True},
         "remove_selectors"                : {"type": "array",   "items": {"type": "string"}},
         "nav_type"                        : {"type": "string",  "nullable": True},
         "chapter_url_pattern"             : {"type": "string",  "nullable": True},
         "requires_playwright"             : {"type": "boolean"},
+        "requires_playwright_reason"      : {"type": "string",  "nullable": True},
         "title_is_inside_remove_candidate": {"type": "boolean"},
         "title_container"                 : {"type": "string",  "nullable": True},
         "notes"                           : {"type": "string",  "nullable": True},
@@ -383,12 +388,16 @@ _S_INDEPENDENT_CHECK = {
     "type": "object",
     "properties": {
         "chapter_title_selector": {"type": "string",  "nullable": True},
+        "evidence_title"        : {"type": "string",  "nullable": True},
         "content_selector"      : {"type": "string",  "nullable": True},
+        "evidence_content"      : {"type": "string",  "nullable": True},
         "next_selector"         : {"type": "string",  "nullable": True},
+        "evidence_next"         : {"type": "string",  "nullable": True},
         "remove_selectors"      : {"type": "array",   "items": {"type": "string"}},
         "nav_type"              : {"type": "string",  "nullable": True},
         "chapter_url_pattern"   : {"type": "string",  "nullable": True},
         "author_selector"       : {"type": "string",  "nullable": True},
+        "suspected_js_render"   : {"type": "boolean"},
         "confidence"            : {"type": "number"},
         "uncertain_fields"      : {"type": "array",   "items": {"type": "string"}},
         "notes"                 : {"type": "string",  "nullable": True},

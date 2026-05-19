@@ -1,6 +1,6 @@
-# Troubleshooting — Cào Text v1.2.0
+# Troubleshooting — Cào Text v1.2.1
 
-> 11 most common issues + concrete fix. Ordered by likelihood, not severity.
+> 13 most common issues + concrete fix. Ordered by likelihood, not severity.
 >
 > If your issue isn't listed: check `issues.md` (per-session log), then `progress/{...}.json` (per-story state), then re-run with `--no-validation --fast-learning` to isolate.
 
@@ -246,6 +246,57 @@ per_host_concurrency = 1
 - Nếu đã bị ban: đợi 24-72h cho IP cool, sau đó re-run với `--per-host-concurrency 1`.
 
 **Note**: Cap apply cho cả `fetch()` (chapter HTML) và `fetch_bytes()` (image). Single semaphore per domain — share scope.
+
+---
+
+## 12. Chapters chỉ extract 1 đoạn ngắn (~300 chars thay vì full 5000+)
+
+**Symptom**: Log shows `[curl→heuristic]` per chapter. Output `.md` files chỉ có 1 paragraph.
+
+**Cause**: AI hallucinated `content_selector` không tồn tại trong HTML literal. Calibration M0 fail → clear → DensityHeuristic pick single leaf `<p>` thay vì wrapper.
+
+**Detect**:
+```bash
+# Check profile
+python -c "import json; p=json.load(open('data/site_profiles.json'))['DOMAIN']; print('content_selector=', repr(p.get('content_selector')), 'confidence=', p.get('confidence'))"
+# content_selector='' + confidence=0.3 → calibration failed
+```
+
+**Fix v1.2.1+**: Auto-discover triggers on M0 fail — probes HTML literal cho wrapper với ≥2 text-bearing children, picks best. Re-learn:
+```bash
+echo "!relearn DOMAIN" >> links.txt
+python main.py links.txt
+```
+
+**Fix manual** (nếu auto-discover cũng fail):
+```bash
+# Edit data/site_profiles.json
+# Set content_selector tới real wrapper class (use browser DevTools Inspect)
+# Example webnovel.com: "div.cha-words"
+```
+
+---
+
+## 13. Ctrl+C → folder thiếu `0000_Index.md`
+
+**Symptom**: Story folder có 50+ chapter `.md` nhưng không có `0000_Index.md`. Obsidian không có entry navigation.
+
+**Cause**: Ctrl+C lần 2 trong cleanup window (after first Ctrl+C triggered finally block) → finalize_ads/pm.flush interrupted → nav_injector skip.
+
+**Fix v1.2.1+ auto**: Next run main.py → `_heal_missing_indexes` quét output dir, regenerate missing indexes idempotent:
+```bash
+python main.py links.txt   # auto-heal trước Phase 0
+# Log: [Heal] 🩹 STORY_NAME: regenerated index + N chapter nav
+```
+
+**Fix manual**:
+```bash
+python -c "
+import sys; sys.path.insert(0, 'src')
+from writers.nav_injector import inject_nav_and_index
+inject_nav_and_index('Vault/Novels/STORY_FOLDER', 'Story Display Name')
+"
+```
 
 ---
 

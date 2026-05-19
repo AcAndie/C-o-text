@@ -35,8 +35,13 @@ Vault/Novels/
 Vault/_Scraper/issues.md
 Vault/_Scraper/links.md
 Vault/_Scraper/epub_inbox/
-Vault/.obsidian/workspace*
-Vault/.obsidian/cache
+Vault/.obsidian/
+Vault/.obsidianignore
+
+# Per-run logs
+*.log
+relearn_*.txt
+test_*.txt
 
 # Python
 __pycache__/
@@ -56,3 +61,4 @@ build/
 *.swo
 .DS_Store
 Thumbs.db
+.claude/

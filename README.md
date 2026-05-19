@@ -4,7 +4,7 @@
 >
 > Site mới chỉ cần học **1 lần** (~8 AI calls), lần sau xài lại profile đã lưu — free khi không cần re-learn.
 
-**Version**: v1.2.0 (2026-05-19) — [CHANGELOG](CHANGELOG.md)
+**Version**: v1.2.1 (2026-05-19) — [CHANGELOG](docs/CHANGELOG.md)
 **License**: Personal use
 **Platform**: Windows 10/11 (tested), Linux/macOS (should work)
 **Runtime**: Python 3.11+
@@ -14,17 +14,15 @@
 ## Quick Start
 
 ```bash
-# 1. Cài dependencies
+# 1. Cài dependencies (đã bao gồm playwright + lxml)
 python -m pip install -r requirements.txt
-
-# 2. Tạo .env với Gemini API key (free tier OK)
-echo GEMINI_API_KEY=your_key_here > .env
-
-# 3. (Optional) Cài Playwright cho site JS-heavy / Cloudflare
-python -m pip install playwright playwright-stealth
 python -m playwright install chromium
 
-# 4. Scrape web novel — bỏ URL chapter 1 vào links.txt
+# 2. Tạo .env với Gemini API key (free tier OK, multi-key OK)
+echo GEMINI_API_KEY=your_key_here > .env
+# Hoặc nhiều key: GEMINI_API_KEY_1=..., GEMINI_API_KEY_2=...
+
+# 3. Scrape web novel — bỏ URL chapter 1 vào links.txt
 echo https://www.royalroad.com/fiction/12345/my-novel/chapter/1 > links.txt
 python main.py links.txt
 
@@ -216,11 +214,11 @@ A: Xem [BLUEPRINT.md](BLUEPRINT.md) §1 — pattern khác (learn-once vs per-sit
 | File | Role |
 |------|------|
 | [README.md](README.md) | This file — quick start + user reference |
-| [CHANGELOG.md](CHANGELOG.md) | Version history |
+| [docs/CHANGELOG.md](docs/CHANGELOG.md) | Version history |
 | [CLAUDE.md](CLAUDE.md) | AI agent governance (HOW + WHY) |
-| [BLUEPRINT.md](BLUEPRINT.md) | Vision + architecture (WHAT in total) |
-| [ROADMAP.md](ROADMAP.md) | Phase-by-phase execution (WHAT by sequence) |
-| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | 10 common issues |
+| [docs/BLUEPRINT.md](docs/BLUEPRINT.md) | Vision + architecture (WHAT in total) |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Phase-by-phase execution (WHAT by sequence) |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common issues + fixes |
 | [docs/V1_1_BACKLOG.md](docs/V1_1_BACKLOG.md) | Deferred features for v1.1+ |
 | [docs/MIGRATION_NOTES.md](docs/MIGRATION_NOTES.md) | Breaking schema notes |
 | [docs/PHASE_{1,2,3,4}_RETRO.md](docs/) | Phase retrospectives |
