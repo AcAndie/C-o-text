@@ -120,6 +120,15 @@ PW_MAX_CONCURRENCY: int = int(
     os.getenv("PW_MAX_CONCURRENCY", str(_get("scraper", "playwright_concurrency", 2)))
 )
 
+# ── Per-host curl concurrency (safety-by-default, v1.2 P6) ────────────────────
+# Semaphore limit per-domain trong DomainSessionPool. Tránh burst N concurrent
+# request cùng 1 host → IP ban. Default 3 = vẫn cho parallel learning fetch
+# (8 AI calls đọc 10 chapter), nhưng cap trip-into-DDOS-mode.
+# Priority: env PER_HOST_MAX_CONCURRENCY > config.toml > default 3.
+PER_HOST_MAX_CONCURRENCY: int = int(
+    os.getenv("PER_HOST_MAX_CONCURRENCY", str(_get("scraper", "per_host_concurrency", 3)))
+)
+
 # ── JS-heavy detection thresholds (P1-B) ─────────────────────────────────────
 # Playwright/curl content ratio threshold để classify site là JS-heavy.
 # Nếu pw_text_len > curl_text_len * JS_CONTENT_RATIO AND diff > JS_MIN_DIFF_CHARS

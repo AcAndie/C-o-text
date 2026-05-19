@@ -10,6 +10,7 @@ import asyncio
 import logging
 from urllib.parse import urlparse
 
+import config as _cfg
 from config import (
     PW_MAX_CONCURRENCY, REQUEST_TIMEOUT,
     pick_chrome_version, make_headers,
@@ -28,6 +29,11 @@ class DomainSessionPool:
 
     def __init__(self) -> None:
         self._sessions: dict[str, object] = {}
+        # v1.2 P6: per-host semaphore — safety-by-default cap concurrent
+        # in-flight request mỗi domain. Limit đọc lazy từ
+        # `_cfg.PER_HOST_MAX_CONCURRENCY` lúc init đầu tiên cho domain →
+        # CLI override (`--per-host-concurrency`) apply trước khi pool fetch.
+        self._host_semaphores: dict[str, asyncio.Semaphore] = {}
         self._cf_domains: set[str] = set()
         self._lock = asyncio.Lock()
 
@@ -42,7 +48,8 @@ class DomainSessionPool:
         self, url: str, timeout: int = REQUEST_TIMEOUT, referer: str | None = None,
     ) -> tuple[int, str]:
         """Fetch URL bằng curl_cffi. Returns (status_code, html).
-        v1.0.24: optional referer cho sites yêu cầu (Chinese, Korean)."""
+        v1.0.24: optional referer cho sites yêu cầu (Chinese, Korean).
+        v1.2 P6: per-host semaphore cap concurrent — tránh burst → IP ban."""
         try:
             from curl_cffi.requests import AsyncSession
 
@@ -53,11 +60,17 @@ class DomainSessionPool:
             async with self._lock:
                 if domain not in self._sessions:
                     self._sessions[domain] = AsyncSession(impersonate=version)
+                if domain not in self._host_semaphores:
+                    self._host_semaphores[domain] = asyncio.Semaphore(
+                        max(1, _cfg.PER_HOST_MAX_CONCURRENCY)
+                    )
                 session = self._sessions[domain]
+                sem     = self._host_semaphores[domain]
 
-            resp = await session.get(url, headers=headers, timeout=timeout)
-            html = resp.text or ""
-            return resp.status_code, html
+            async with sem:
+                resp = await session.get(url, headers=headers, timeout=timeout)
+                html = resp.text or ""
+                return resp.status_code, html
 
         except asyncio.CancelledError:
             raise
@@ -74,6 +87,8 @@ class DomainSessionPool:
 
         P2.2: dùng cho WebImageFetcher. Reuse per-domain session để giữ
         TLS fingerprint + cookie jar consistent với chapter fetch.
+        v1.2 P6: share per-host semaphore với fetch() — image download
+        cùng cap concurrent.
         """
         try:
             from curl_cffi.requests import AsyncSession
@@ -85,11 +100,17 @@ class DomainSessionPool:
             async with self._lock:
                 if domain not in self._sessions:
                     self._sessions[domain] = AsyncSession(impersonate=version)
+                if domain not in self._host_semaphores:
+                    self._host_semaphores[domain] = asyncio.Semaphore(
+                        max(1, _cfg.PER_HOST_MAX_CONCURRENCY)
+                    )
                 session = self._sessions[domain]
+                sem     = self._host_semaphores[domain]
 
-            resp = await session.get(url, headers=headers, timeout=timeout)
-            content_type = resp.headers.get("Content-Type") if hasattr(resp, "headers") else None
-            return resp.status_code, resp.content or b"", content_type
+            async with sem:
+                resp = await session.get(url, headers=headers, timeout=timeout)
+                content_type = resp.headers.get("Content-Type") if hasattr(resp, "headers") else None
+                return resp.status_code, resp.content or b"", content_type
 
         except asyncio.CancelledError:
             raise

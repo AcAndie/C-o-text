@@ -190,6 +190,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help    = f"Số Playwright instances tối đa (default: {_cfg.PW_MAX_CONCURRENCY})",
     )
     parser.add_argument(
+        "--per-host-concurrency",
+        type    = int,
+        default = None,
+        metavar = "N",
+        help    = f"Số concurrent request curl_cffi per host (safety, default: {_cfg.PER_HOST_MAX_CONCURRENCY})",
+    )
+    parser.add_argument(
         "--fast-learning",
         action  = "store_true",
         help    = "Skip ProseRichness validation trong learning phase (nhanh hơn ~20%%)",
@@ -240,6 +247,9 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
     if args.max_pw_instances is not None:
         _cfg.PW_MAX_CONCURRENCY = args.max_pw_instances
         print(f"  [Config] PW_MAX_CONCURRENCY = {_cfg.PW_MAX_CONCURRENCY}", flush=True)
+    if args.per_host_concurrency is not None:
+        _cfg.PER_HOST_MAX_CONCURRENCY = args.per_host_concurrency
+        print(f"  [Config] PER_HOST_MAX_CONCURRENCY = {_cfg.PER_HOST_MAX_CONCURRENCY}", flush=True)
 
     if args.fast_learning:
         # Flag được đọc bởi learning/phase.py
