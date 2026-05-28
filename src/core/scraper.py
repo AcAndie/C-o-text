@@ -343,7 +343,29 @@ async def scrape_one_chapter(
 
     fp = make_fingerprint(content)
     if fp in fingerprints:
-        print(f"  [{tag}] ♻  Loop nội dung — dừng", flush=True)
+        print(f"  [{tag}] ♻  Phát hiện trùng nội dung (chương lỗi/khóa) — Đang tìm link chương tiếp theo...", flush=True)
+        all_visited.add(url)  # Đánh dấu đã qua trang này để chặn lặp vô hạn
+        
+        # Tự động trích xuất link chương tiếp theo giống như logic ở cuối hàm
+        next_url = ctx.next_url
+        if not next_url and ctx.soup:
+            next_url = find_next_url(ctx.soup, url, profile)
+        if not next_url:
+            try:
+                ai_result = await ai_classify_and_find(html, url, ai_limiter)
+                if ai_result:
+                    next_url = ai_result.get("next_url")
+            except Exception as e:
+                logger.warning("[Fingerprint Loop] Không thể gọi AI tìm link fallback: %s", e)
+
+        # Nếu tìm thấy chương tiếp theo hợp lệ, ép tiến trình cập nhật URL và nhảy trang luôn
+        if next_url and next_url not in all_visited and story_id_ok(next_url, progress):
+            progress["current_url"] = next_url
+            await save_progress(progress_path, progress)
+            return next_url
+
+        # Nếu hoàn toàn chịu chết không tìm được link tiếp theo, lúc này mới chấp nhận dừng cào
+        print(f"  [{tag}] 🏁 Không tìm thấy link kế tiếp sau trang lỗi — Dừng chương trình.", flush=True)
         return None
 
     if not progress.get("story_title") and not progress.get("story_name_clean"):
@@ -831,6 +853,10 @@ async def _run_scrape_loop(
                     consecutive_empty = 0
                     if on_chapter_done:
                         await on_chapter_done()
+                elif next_url is not None:
+                    # Đã tìm được URL tiếp theo (fingerprint skip, chương VIP...)
+                    # — đang tiến về phía trước, không phải stuck. Reset counter.
+                    consecutive_empty = 0
                 else:
                     consecutive_empty += 1
                     if consecutive_empty >= MAX_EMPTY_STREAK:

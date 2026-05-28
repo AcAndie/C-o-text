@@ -180,11 +180,12 @@ def make_fingerprint(content: str) -> str:
 # ── is_junk_page ───────────────────────────────────────────────────────────────
 
 _JUNK_PATTERNS = [
-    re.compile(r"<title>[^<]*404[^<]*</title>",           re.IGNORECASE),
-    re.compile(r"<title>[^<]*not found[^<]*</title>",     re.IGNORECASE),
-    re.compile(r"<title>[^<]*error[^<]*</title>",         re.IGNORECASE),
-    re.compile(r"<title>[^<]*access denied[^<]*</title>", re.IGNORECASE),
-    re.compile(r"<title>[^<]*forbidden[^<]*</title>",     re.IGNORECASE),
+    # Chỉ match khi title BẮT ĐẦU bằng từ khóa lỗi — tránh "Chapter 404", "terror", "chapter error"
+    re.compile(r"<title>\s*404\b[^<]*</title>",                          re.IGNORECASE),
+    re.compile(r"<title>\s*(?:page\s+)?not\s+found\b[^<]*</title>",      re.IGNORECASE),
+    re.compile(r"<title>\s*(?:internal\s+server\s+)?error\b[^<]*</title>", re.IGNORECASE),
+    re.compile(r"<title>\s*access\s+denied\b[^<]*</title>",              re.IGNORECASE),
+    re.compile(r"<title>\s*forbidden\b[^<]*</title>",                    re.IGNORECASE),
 ]
 
 # Fix P0-4: 429 REMOVED — rate limit tạm thời, không phải lỗi vĩnh viễn.
