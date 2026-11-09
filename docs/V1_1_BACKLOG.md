@@ -420,4 +420,18 @@ If a gate breaches → spec it out fresh, don't resurrect this section.
 | 0.6 | DomainSessionPool per-host cap (P6) | Safety | ✅ done v1.2.0 |
 | 7.1 | Branch 136 `--check-new` flag + age skip | Perf | Measured >20s startup with 50+ completed stories |
 | 7.2 | Pyflakes cleanup | Code health | Bundle with next routine commit |
+| 7.3 | Large EPUB (>300 docs) AI token limit & missing `doc_ids` guard (+ EPUB AdsFilter short-prose false positive) | EPUB | Next session (`Thả Nữ Phù Thủy Kia Ra` 1500 docs cut at 830) |
+
+### 7.3 Large EPUB (>300 docs) AI analyzer token limit & missing `doc_ids` guard
+
+**Source**: Observed 2026-11-09 during `Thả Nữ Phù Thủy Kia Ra Full - zalo 0704730588.epub` (1500 spine docs) inbox processing.
+
+**Symptom**:
+1. `ai_analyze_epub_structure` sends all 1500 `docs_meta` entries in a single Gemini call. Gemini output hits max token limit around doc #831 (`page-0925.html`), leaving 669 missing `doc_ids`. `ai_analyze_epub_structure` (`src/ai/agents.py:1136-1144`) only prints a warning and returns the truncated list; `_apply_decisions` (`src/ingest/epub_structure.py:521-527`) treats all 669 missing `doc_ids` as continuations of chapter 830, merging chapters 831–1500 into a single giant file `0830_*.md`.
+2. In 1000+ chapter EPUBs (`Đỉnh Cấp Khí Vận` 1626 ch, `Cultivation Chat Group` 1348 ch), `AdsFilter` with fixed `auto_threshold = 10` (no AI verify) flags recurring short dialogue/transition lines at chapter edges (e.g. `"Hàn Tuyệt nói:"`, `"Một ngày nọ."`, `"Cùng lúc đó."`, `"Song Shuhang: \"...\""`) as ads.
+
+**Fix plan for next session**:
+1. In `src/ingest/epub_structure.py:build_chapter_plan_with_ai`: if `len(meta) > 250` (or configurable threshold), skip full-spine AI JSON listing and use rule-based `build_chapter_plan(book)` directly.
+2. In `src/ai/agents.py:ai_analyze_epub_structure`: if `len(missing) > max(5, int(len(input_ids) * 0.05))`, return `None` so caller falls back cleanly to `build_chapter_plan(book)`.
+3. Scale `AdsFilter` `auto_threshold` with total chapter count (e.g. `max(10, int(n_chapters * 0.03))`) or require minimum character/word length / URL-or-watermark signal before auto-stripping without AI verify.
 | 7.99 | Speculative perf (3 items) | Perf | Measured threshold breach (NOT theoretical "user has N") |

@@ -326,10 +326,11 @@ async def scrape_one_chapter(
     # Ads filter pass 2: SAU strip_nav_edges — bắt ads edge mới lộ ra sau strip
     content = ads_filter.filter(content, chapter_url=url)
 
-    if title and (ctx.title_method == "url_slug" or title == "Unknown Title"):
+    _slug_res = ctx.block_results.get("title:url_slug")
+    if title and ((_slug_res and _slug_res.ok) or title == "Unknown Title"):
         issue_reporter.report(
             "TITLE_FALLBACK", url,
-            detail=f"Title='{title}' (method={ctx.title_method}) — URL slug fallback",
+            detail=f"Title='{title}' — URL slug fallback",
             chapter_num=progress.get("chapter_count", 0) + 1,
         )
 
@@ -348,7 +349,7 @@ async def scrape_one_chapter(
         
         # Tự động trích xuất link chương tiếp theo giống như logic ở cuối hàm
         # Không dùng slug_increment khi đang ở trang trùng nội dung (tránh lặp vô hạn ở chương cuối)
-        next_url = ctx.next_url if ctx.next_method != "slug_increment" else None
+        next_url = ctx.next_url if ctx.nav_method != "slug_increment" else None
         if not next_url and ctx.soup:
             next_url = find_next_url(ctx.soup, url, profile, allow_slug_increment=False)
         if not next_url:
