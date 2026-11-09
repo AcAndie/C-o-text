@@ -50,7 +50,7 @@ def _get(section: str, key: str, default):
 
 # ── Project version ───────────────────────────────────────────────────────────
 # Bump on tagged release. See CHANGELOG.md for history.
-VERSION = "1.1.1"
+VERSION = "1.2.1"
 
 
 # ── API ───────────────────────────────────────────────────────────────────────

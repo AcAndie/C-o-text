@@ -326,10 +326,10 @@ async def scrape_one_chapter(
     # Ads filter pass 2: SAU strip_nav_edges — bắt ads edge mới lộ ra sau strip
     content = ads_filter.filter(content, chapter_url=url)
 
-    if title and re.fullmatch(r"Chapter \d+", title):
+    if title and (ctx.title_method == "url_slug" or title == "Unknown Title"):
         issue_reporter.report(
             "TITLE_FALLBACK", url,
-            detail=f"Title='{title}' — may be URL slug fallback",
+            detail=f"Title='{title}' (method={ctx.title_method}) — URL slug fallback",
             chapter_num=progress.get("chapter_count", 0) + 1,
         )
 
@@ -347,9 +347,10 @@ async def scrape_one_chapter(
         all_visited.add(url)  # Đánh dấu đã qua trang này để chặn lặp vô hạn
         
         # Tự động trích xuất link chương tiếp theo giống như logic ở cuối hàm
-        next_url = ctx.next_url
+        # Không dùng slug_increment khi đang ở trang trùng nội dung (tránh lặp vô hạn ở chương cuối)
+        next_url = ctx.next_url if ctx.next_method != "slug_increment" else None
         if not next_url and ctx.soup:
-            next_url = find_next_url(ctx.soup, url, profile)
+            next_url = find_next_url(ctx.soup, url, profile, allow_slug_increment=False)
         if not next_url:
             try:
                 ai_result = await ai_classify_and_find(html, url, ai_limiter)
@@ -853,10 +854,6 @@ async def _run_scrape_loop(
                     consecutive_empty = 0
                     if on_chapter_done:
                         await on_chapter_done()
-                elif next_url is not None:
-                    # Đã tìm được URL tiếp theo (fingerprint skip, chương VIP...)
-                    # — đang tiến về phía trước, không phải stuck. Reset counter.
-                    consecutive_empty = 0
                 else:
                     consecutive_empty += 1
                     if consecutive_empty >= MAX_EMPTY_STREAK:

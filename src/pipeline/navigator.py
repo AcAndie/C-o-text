@@ -16,6 +16,7 @@ Blocks (theo thứ tự ưu tiên):
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from urllib.parse import urljoin
 
@@ -159,6 +160,11 @@ class SlugIncrementNavBlock(ScraperBlock):
     async def execute(self, ctx: PipelineContext) -> BlockResult:
         start = time.monotonic()
         try:
+            if re.search(r"/chapters?/\d+/[^/?#]+", ctx.url, re.IGNORECASE):
+                return self._timed(
+                    BlockResult.failed("URL has numeric chapter ID before slug — skip slug increment"),
+                    start,
+                )
             m = RE_CHAP_SLUG.search(ctx.url)
             if m:
                 new_url = f"{m.group(1)}{int(m.group(2)) + 1}{m.group(3)}"

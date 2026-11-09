@@ -32,6 +32,8 @@ def find_next_url(
     soup        : BeautifulSoup,
     current_url : str,
     profile     : dict,
+    *,
+    allow_slug_increment: bool = True,
 ) -> str | None:
     """
     Tìm URL chapter tiếp theo. Thử theo thứ tự ưu tiên:
@@ -66,7 +68,11 @@ def find_next_url(
                 return urljoin(current_url, href)
 
     # 4. Slug increment
-    m = RE_CHAP_SLUG.search(current_url)
+    m = (
+        RE_CHAP_SLUG.search(current_url)
+        if allow_slug_increment and not re.search(r"/chapters?/\d+/[^/?#]+", current_url, re.IGNORECASE)
+        else None
+    )
     if m:
         return f"{m.group(1)}{int(m.group(2)) + 1}{m.group(3)}"
 
