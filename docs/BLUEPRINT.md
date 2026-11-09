@@ -1,6 +1,6 @@
 # Cào Text — Project Blueprint v1.2
 
-> **Status (2026-05-17):** ✅ **v1.0 SHIPPED.** All 8 phases done — Phase 0 cleanup, Phase 1 output abstraction, Phase 2 image support, Phase 3 EPUB adapter, Phase 4 translation/raw writers, Phase 5 TXT adapter, Phase 6 final cleanup, docs finalized. See [ROADMAP.md](ROADMAP.md) for phase-by-phase status and [CHANGELOG.md](CHANGELOG.md) for v1.0.0 entry.
+> **Status (2026-11-09):** ✅ **v1.2.1 SHIPPED.** All 8 phases of v1.0 done (Phase 0 cleanup → Phase 1 output abstraction → Phase 2 image support → Phase 3 EPUB adapter → Phase 4 translation/raw writers → Phase 5 TXT adapter → Phase 6 final cleanup + docs), plus v1.0.13–v1.2.1 production hardening (`ApiKeyPool`, `CalibrationPhase`, `DomainSessionPool` per-host semaphore, `_discover_content_selector`, `MAX_EMPTY_STREAK` restore, RoyalRoad `slug_increment` loop guard). See [ROADMAP.md](ROADMAP.md) for phase summary, [V1_1_BACKLOG.md](V1_1_BACKLOG.md) for open issues, and [CHANGELOG.md](CHANGELOG.md) for release notes.
 >
 > **Một công cụ chuẩn hóa nội dung tiểu thuyết cá nhân, đa dụng, đa ngôn ngữ** — ném input nào vào (URL truyện đa site / EPUB / TXT) cũng ra được một bộ chapter sạch, không noise, đọc được trên Obsidian hoặc đem đi dịch.
 >
@@ -447,95 +447,71 @@ INPUT: novel.txt
 Cào text/
 │
 ├── main.py                       # Entry point CLI
-├── config.py                     # Constants, env, regex
-├── .env                          # GEMINI_API_KEY (gitignored)
-├── .gitignore
-├── README.md                     # 🆕 Quick start, install, usage (maintained throughout)
-├── CLAUDE.md                     # Governance
-├── BLUEPRINT.md                  # This file
-├── ROADMAP.md                    # Execution order
-│
-├── ai/
-│   ├── client.py                 # AIRateLimiter, Gemini wrapper
-│   ├── prompts.py                # All AI prompts centralized
-│   └── agents.py                 # AI utility functions + validation guards
-│
-├── pipeline/                     # Core pipeline (Lego blocks)
-│   ├── base.py                   # BlockResult, PipelineContext, ScraperBlock, ImageRef
-│   ├── executor.py               # PipelineRunner, ChainExecutor
-│   ├── fetcher.py                # Curl/Playwright/Hybrid fetch blocks
-│   ├── extractor.py              # Selector/JsonLd/Density/XPath/Fallback/AI extract
-│   ├── title_extractor.py        # Selector/H1/Title/Og/UrlSlug title blocks
-│   ├── navigator.py              # Next URL finding
-│   └── validator.py              # ProseRichness, junk detection
-│
-├── core/
-│   ├── scraper.py                # run_novel_task orchestrator
-│   ├── orchestrator.py           # 🆕 v1.0 input-type routing orchestrator
-│   ├── session_pool.py           # DomainSessionPool, PlaywrightPool
-│   ├── html_filter.py            # prepare_soup (3-layer defense)
-│   ├── formatter.py              # MarkdownFormatter (extend cho img)
-│   └── image_pipeline/           # 🆕 v1.0 — image fetch strategies
-│       ├── __init__.py
-│       ├── base.py               # ImageFetchStrategy ABC
-│       ├── web_fetcher.py        # WebImageFetcher (HTTP qua DomainSessionPool)
-│       └── epub_extractor.py     # EpubImageExtractor (binary từ zip)
-│
-├── learning/
-│   ├── phase.py                  # Learning phase orchestrator
-│   ├── phase_ai.py               # 8 AI calls sequenced
-│   ├── profile_manager.py        # SiteProfile load/save
-│   └── naming.py                 # Story name + chapter pattern detection
-│
-├── ingest/                       # 🆕 v1.0 — input adapters
-│   ├── __init__.py
-│   ├── web.py                    # 🆕 wrap existing scraper as adapter
-│   ├── epub.py                   # 🆕 ebooklib parser
-│   ├── txt.py                    # 🆕 chapter boundary detection (VN+EN)
-│   └── router.py                 # 🆕 detect input type, dispatch
-│
-├── writers/                      # 🆕 v1.0 — output writer implementations
-│   ├── __init__.py               # (renamed từ output/ ở P1.3 — tránh
-│   ├── base.py                   #  conflict với runtime output/ dir gitignored)
-│   ├── obsidian.py               # 🆕 ObsidianWriter
-│   ├── translation.py            # 🆕 TranslationWriter
-│   └── raw.py                    # 🆕 RawWriter
-│
-├── utils/
-│   ├── types.py                  # SiteProfile, ProgressDict, FormattingRules TypedDicts
-│   ├── string_helpers.py         # normalize, slugify, strip_site_suffix
-│   ├── ads_filter.py             # AdsFilter with atomic save
-│   ├── content_cleaner.py        # 5-pass post-extraction cleaning
-│   ├── image_url.py              # 🆕 v1.0 — resolve_image_url helper
-│   ├── file_io.py                # load/save profiles, ensure dirs
-│   └── issue_reporter.py         # Session issue log
-│
-├── tools/                        # 🆕 v1.0 — dev tools (committed)
-│   ├── snapshot_baseline.py      # 🆕 capture baseline output for regression diff
-│   └── bulk_relearn.py           # 🆕 bulk delete profiles (or call via --bulk-relearn flag)
-│
-├── data/                         # gitignored (except baselines)
+├── src/
+│   ├── config.py                 # Constants, env, regex, Vault paths
+│   ├── ai/
+│   │   ├── client.py             # AIRateLimiter, ApiKeyPool, Gemini wrapper
+│   │   ├── prompts.py            # All AI prompts centralized
+│   │   └── agents.py             # AI utility functions + validation guards
+│   ├── pipeline/                 # Core pipeline (Lego blocks)
+│   │   ├── base.py               # BlockResult, PipelineContext, ScraperBlock, ImageRef
+│   │   ├── executor.py           # PipelineRunner, ChainExecutor
+│   │   ├── fetcher.py            # Curl/Playwright/Hybrid fetch blocks
+│   │   ├── extractor.py          # Selector/JsonLd/Density/XPath/Fallback/AI extract
+│   │   ├── title_extractor.py    # Selector/H1/Title/Og/UrlSlug title blocks + _title_from_url
+│   │   ├── navigator.py          # Next URL finding
+│   │   └── validator.py          # ProseRichness, junk detection
+│   ├── core/
+│   │   ├── scraper.py            # run_novel_task orchestrator
+│   │   ├── orchestrator.py       # Input-type routing orchestrator (EPUB / TXT)
+│   │   ├── session_pool.py       # DomainSessionPool (per-host Semaphore), PlaywrightPool
+│   │   ├── html_filter.py        # prepare_soup (3-layer defense)
+│   │   ├── formatter.py          # MarkdownFormatter (with img handling)
+│   │   └── image_pipeline/       # Image fetch strategies
+│   │       ├── base.py           # ImageFetchStrategy ABC
+│   │       ├── web_fetcher.py    # WebImageFetcher (HTTP qua DomainSessionPool)
+│   │       └── epub_extractor.py # EpubImageExtractor (binary từ zip)
+│   ├── learning/
+│   │   ├── phase.py              # Learning phase + CalibrationPhase + _discover_content_selector
+│   │   ├── phase_ai.py           # 8 AI calls sequenced
+│   │   ├── profile_manager.py    # SiteProfile load/save
+│   │   └── naming.py             # Story name + chapter pattern detection
+│   ├── ingest/                   # Input adapters
+│   │   ├── types.py              # RawDocument DTO
+│   │   ├── epub.py               # ebooklib parser + structure plan
+│   │   ├── epub_structure.py     # TOC / spine / divider merge heuristics
+│   │   ├── txt.py                # Chapter boundary detection (VN+EN)
+│   │   └── router.py             # Detect input type, dispatch
+│   ├── writers/                  # Output writer implementations
+│   │   ├── base.py               # ChapterWriter ABC
+│   │   ├── factory.py            # build_writer() central dispatch
+│   │   ├── obsidian.py           # ObsidianWriter
+│   │   ├── translation.py        # TranslationWriter
+│   │   ├── raw.py                # RawWriter
+│   │   └── nav_injector.py       # 0000_Index.md + prev/next link injection
+│   └── utils/
+│       ├── types.py              # SiteProfile, ProgressDict, FormattingRules TypedDicts
+│       ├── string_helpers.py     # normalize, slugify, strip_site_suffix
+│       ├── ads_filter.py         # AdsFilter with atomic save
+│       ├── content_cleaner.py    # 5-pass post-extraction cleaning
+│       ├── image_url.py          # resolve_image_url helper
+│       ├── file_io.py            # load/save profiles, ensure dirs
+│       └── issue_reporter.py     # Session issue log
+├── tools/
+│   ├── snapshot_baseline.py      # Capture baseline output for regression diff
+│   └── bulk_relearn.py           # Bulk delete profiles
+├── data/
 │   ├── site_profiles.json
 │   ├── ads_keywords.json
-│   ├── txt_cases.json            # 🆕 v1.0 — TXT pattern database
-│   └── baselines/                # 🆕 v1.0 — committed reference output
-│       └── {snapshot_name}/
-│           └── {chapter_files}
-│
-├── progress/                     # gitignored
-│   └── {domain}_{slug}_{hash8}.json
-│
-├── output/                       # gitignored
-│   └── {story_slug}/
-│       ├── 0001_*.md
-│       └── images/
-│
-├── links.txt                     # User input (gitignored)
-├── issues.md                     # Session log (gitignored)
-│
+│   ├── txt_cases.json
+│   └── baselines/
+├── Vault/                        # In-repo Obsidian Vault output & _Scraper runtime
 └── docs/
-    ├── V1_1_BACKLOG.md           # Deferred features
-    └── MIGRATION_NOTES.md        # Breaking changes
+    ├── BLUEPRINT.md              # Architecture & design reference (this file)
+    ├── ROADMAP.md                # Summary of completed Phases 0–6 & releases
+    ├── V1_1_BACKLOG.md           # Open bugs & deferred features
+    ├── TROUBLESHOOTING.md        # User runbook
+    └── CHANGELOG.md              # Version history
 ```
 
 ---
@@ -563,34 +539,25 @@ class SiteProfile(TypedDict, total=False):
 
     # Content rules
     formatting_rules     : FormattingRules
-    download_images      : bool          # 🆕 v1.0: site có ảnh đáng tải không
-    image_selector       : str | None    # 🆕 v1.0: nếu site có wrapper riêng cho illustration
+    download_images      : bool          # v1.0: site có ảnh đáng tải không
+    image_selector       : str | None    # v1.0: nếu site có wrapper riêng cho illustration
 ```
 
-### FormattingRules (explicit schema — fix gap từ v1.0 draft)
+### FormattingRules (explicit schema)
 
 ```python
 class FormattingRules(TypedDict, total=False):
-    # Tag → Markdown mapping decisions
     headings_as_h2       : bool     # h1/h2/h3 trong content → "##" thay vì cấu trúc gốc
     preserve_bold        : bool     # <b>/<strong> → "**text**"
     preserve_italic      : bool     # <i>/<em> → "*text*"
     preserve_blockquote  : bool     # <blockquote> → "> text"
     paragraph_separator  : str      # "\n\n" default
     list_style           : Literal["dash", "asterisk"]  # "- " hoặc "* "
-
-    # Image handling (single source of truth — không có image_alt_text duplicate)
     image_alt_strategy   : Literal["preserve", "skip", "fallback_to_filename"]
-
-    # Stripping
     strip_inline_links   : bool     # <a> → text only (novel rare meaningful link)
     strip_html_comments  : bool     # luôn True
-
-    # Language/encoding
-    text_encoding        : str      # "utf-8" default, không change trừ user override
+    text_encoding        : str      # "utf-8" default
 ```
-
-**Decision:** `image_alt_strategy` thay cho boolean `image_alt_text` cũ — explicit về behavior (preserve / skip / fallback). Mặc định `"preserve"`.
 
 ### RunConfig (per-run, transient)
 
@@ -598,83 +565,40 @@ class FormattingRules(TypedDict, total=False):
 @dataclass
 class RunConfig:
     output_mode      : Literal["obsidian", "translate", "raw"]
-    download_images  : bool          # derive từ output_mode default, override được
-    image_placeholder: bool          # translate mode: True (insert [IMAGE: alt])
-    fetch_metadata   : bool          # derive từ output_mode
+    download_images  : bool
+    image_placeholder: bool
+    fetch_metadata   : bool
     output_dir       : str
     max_pw_instances : int = 2
     fast_learning    : bool = False
     no_validation    : bool = False
-
-    @classmethod
-    def from_cli(cls, args) -> RunConfig:
-        mode = args.output_mode
-        defaults = {
-            "obsidian":  {"dl": True,  "ph": False, "meta": True},
-            "translate": {"dl": False, "ph": True,  "meta": False},
-            "raw":       {"dl": False, "ph": False, "meta": False},
-        }[mode]
-        return cls(
-            output_mode       = mode,
-            download_images   = args.download_images   or defaults["dl"],
-            image_placeholder = args.image_placeholder or defaults["ph"],
-            fetch_metadata    = args.fetch_metadata    or defaults["meta"],
-            output_dir        = args.output_dir,
-            ...
-        )
 ```
 
-### CleanedChapter (pipeline → writer contract)
+### CleanedChapter & ImageRef (pipeline → writer contract)
 
 ```python
 @dataclass
 class CleanedChapter:
     index           : int
     title           : str
-    body_markdown   : str             # Markdown chuẩn, image refs đã resolve hoặc placeholder
-    images          : list[ImageRef]  # URL/path + position (rỗng nếu mode không download)
-    source_url      : str | None      # None nếu input là EPUB/TXT
-    source_path     : str | None      # None nếu input là web
-    metadata        : dict            # author, story_name, language, ...
-
+    body_markdown   : str
+    images          : list[ImageRef]
+    source_url      : str | None
+    source_path     : str | None
+    metadata        : dict
 
 @dataclass
 class ImageRef:
-    original_url    : str             # URL gốc (web) hoặc href trong EPUB (vd "Images/cover.jpg")
-    local_path      : str | None      # None nếu chưa download (translate/raw mode) hoặc fetch failed
+    original_url    : str
+    local_path      : str | None
     alt_text        : str
-    position_marker : str             # placeholder trong body_markdown (vd "IMG_PLACEHOLDER_0")
-    source_type     : Literal["web", "epub"]  # cho strategy router biết dùng fetcher nào
-```
-
-### ProgressDict (per-story, persistent)
-
-```python
-class ProgressDict(TypedDict, total=False):
-    story_url          : str
-    next_url           : str | None
-    chapter_count      : int
-    last_chapter_idx   : int
-    last_updated       : str
-    naming             : NamingRules
-    completed          : bool
-    end_of_story_seen  : bool
-```
-
-### NamingRules (per-story)
-
-```python
-class NamingRules(TypedDict, total=False):
-    story_name_clean   : str    # slug, dùng cho folder
-    story_name_display : str    # human-readable, dùng cho frontmatter
-    chapter_pattern    : str    # regex extract số chapter từ title
-    title_strip_suffix : list[str]  # site suffix cần strip
-    language           : str    # ISO code, vd "vi", "en", "zh-Hans"
+    position_marker : str
+    source_type     : Literal["web", "epub"]
 ```
 
 ---
 
-## 9. Learning Phase (8 AI Calls + Naming)
+## 9. Learning Phase (8 AI Calls + Naming + Calibration)
 
 Chỉ chạy 1 lần per domain mới. Profile lưu vào `data/site_profiles.json`.
 
@@ -691,158 +615,54 @@ Phase 2 — Conflict Resolution (Ch.5-6):
 Phase 3 — Content Intelligence (Ch.7-8):
   AI#6 — Ch.7:   Special content detection
                  (tables, math, system box, hidden text, author note)
-  AI#7 — Ch.8:   Ads & watermark deep scan
-                 + 🆕 v1.0: detect image policy (site có ảnh đáng tải không)
+  AI#7 — Ch.8:   Ads & watermark deep scan + detect image policy
 
-Phase 4 — Synthesis:
+Phase 4 — Synthesis & Calibration:
   AI#8 — Master profile synthesis from all previous results
+  Calibration — 3-dim probe on sample HTML; auto fallback to _discover_content_selector if AI selector misses
 
 POST-LEARNING:
-  Naming Phase (separate, not counted as AI#N):
-    - Story name extraction (from title page or AI on titles)
-    - Chapter pattern detection (regex generated từ sample titles)
-    - Language detection (heuristic + AI verify)
+  Naming Phase: Story name extraction, chapter pattern regex, language detection
 ```
 
-**Conventions:**
-- Learning agents (`phase_ai.py`) receive pre-trimmed HTML via `snippet()`
-- Utility agents (`agents.py`) call `snippet()` themselves
-- `_default_formatting_rules()` initializes full structure TRƯỚC khi AI#6 chạy — nếu AI#6 fail, defaults vẫn đúng
-- Validation guards ở `agents.py` là layer 2 — layer 1 là prompt constraint ("PLAIN TEXT ONLY")
+---
 
-**Cost ước tính per site:** ~$0.02 với Gemini Flash. Một site novel scrape 1000 chapter → AI cost gần như zero sau learning phase.
+## 10. Roadmap Summary (All v1.0 Phases Shipped)
 
-**EPUB:** không cần Learning Phase. Naming dùng `book.get_metadata('DC', 'title')` từ Dublin Core, AI fallback chỉ khi metadata trống.
-
-**TXT:** không cần Learning Phase. Boundary detection có riêng — case database + AI verify (xem §3 Mode C).
+Toàn bộ 7 Phase của v1.0 (Phase 0 Cleanup → Phase 1 Output Abstraction → Phase 2 Image Support → Phase 3 EPUB Adapter → Phase 4 Translation/Raw Writers → Phase 5 TXT Adapter → Phase 6 Final Cleanup & Docs) và các bản vá đến v1.2.1 đã hoàn thành.
+- Xem bảng tóm tắt kết quả từng Phase tại **[`docs/ROADMAP.md`](ROADMAP.md)**.
+- Xem danh sách các vấn đề còn mở (§7.3 Large EPUB, §7.4 Webnovel UI noise, §7.5 RoyalRoad `<style>`-hidden watermark, P1 Baseline, P4 FlowSpec) tại **[`docs/V1_1_BACKLOG.md`](V1_1_BACKLOG.md)**.
 
 ---
 
-## 10. Roadmap (high-level — chi tiết xem ROADMAP.md)
-
-### Phase 0: Cleanup + Foundation (3 ngày) — ✅ DONE 2026-05-16
-
-- [x] Baseline snapshot tool (`tools/snapshot_baseline.py`) — capture deferred (chưa có profile FFN/RR thật trong repo)
-- [x] **Batch A** (P0.2): Xóa `learning/optimizer.py` + stale refs — ~450 dòng
-- [x] **Batch B** (P0.3): Xóa `StepConfig/ChainConfig/PipelineConfig` serialization + `learning/migrator.py` + legacy guard trong `ProfileManager.get()` — ~330 dòng
-- [ ] README.md skeleton (P0.4 — DEFERRED, README hiện là placeholder)
-- [x] MIGRATION_NOTES.md (`docs/MIGRATION_NOTES.md`) + bulk-relearn (`main.py --bulk-relearn`) — P0.5
-- [x] Docs sync (CLAUDE.md §17, BLUEPRINT.md §10, ROADMAP.md Phase 0) — P0.6
-
-**Mục tiêu:** giảm ~780 dòng, foundation sạch. Zero new feature. **Achieved.**
-
-### Phase 1: Output Mode Abstraction (1 tuần) — TRƯỚC image support
-
-- [ ] `RunConfig` dataclass + CLI flag parsing
-- [ ] `CleanedChapter` + `ImageRef` DTO + `FormattingRules` explicit TypedDict
-- [ ] `output/base.py`: `ChapterWriter` ABC
-- [ ] `output/obsidian.py`: `ObsidianWriter` (port từ `chapter_writer.py` hiện tại)
-- [ ] Pipeline refactor: produce `CleanedChapter` thay vì ghi file trực tiếp (**STOP** — shared logic, ask user)
-- [ ] **Baseline diff** vs Phase 0 snapshot — output phải identical (chỉ thêm frontmatter)
-
-**Acceptance test:** 1 URL × obsidian mode → output Markdown khớp baseline (chỉ thêm frontmatter YAML).
-
-### Phase 2: Image support cho web (1-2 tuần)
-
-- [ ] `utils/image_url.py`: resolve_image_url helper (lazy-load, protocol-relative, data URI skip)
-- [ ] `core/image_pipeline/base.py`: `ImageFetchStrategy` ABC
-- [ ] `core/image_pipeline/web_fetcher.py`: `WebImageFetcher` (HTTP qua `DomainSessionPool`)
-- [ ] `MarkdownFormatter` extend cho `<img>` — **STOP** — đổi return type, ask user
-- [ ] Pipeline image stage (mode-aware, đọc `run_config.download_images`)
-- [ ] AI#7 prompt update: detect image policy
-- [ ] Failure mode: image fail không crash chapter
-
-**Acceptance test:** scrape 1 Royal Road novel có art → output có `images/` folder, Markdown embed đúng vị trí, Obsidian render OK.
-
-### Phase 3: EPUB adapter (1-1.5 tuần)
-
-- [ ] `ingest/router.py` detect input type
-- [ ] `ingest/web.py` wrap existing scraper logic
-- [ ] `ingest/epub.py` ebooklib parse spine + Dublin Core metadata
-- [ ] `core/image_pipeline/epub_extractor.py`: `EpubImageExtractor` (binary từ zip, cùng interface với `WebImageFetcher`)
-- [ ] `core/orchestrator.py` route theo input type
-- [ ] Add `ebooklib` to dependencies
-- [ ] AdsFilter cho EPUB (per-file domain key)
-
-**Acceptance test:** EPUB pirate có watermark → cleaning passes strip, output sạch, image embedded extract đúng.
-
-### Phase 4: TranslationWriter + RawWriter (3 ngày)
-
-- [ ] `output/translation.py`: paragraph-per-line, no image (placeholder `[IMAGE: alt]`)
-- [ ] `output/raw.py`: text only, image stripped
-- [ ] Smoke test 3 mode × 2 input source (web + EPUB)
-
-**Acceptance test:** cùng 1 EPUB chạy 3 mode → 3 output thư mục khác nhau, đều correct.
-
-### Phase 5: TXT adapter (2 tuần — HIGHEST RISK)
-
-- [ ] `data/txt_cases.json` initial cases (VN "Chương N" + EN "Chapter N", ~5 case tổng)
-- [ ] `ingest/txt.py` chapter boundary detection
-- [ ] AI prompt cho pattern detection (fallback khi case DB miss)
-- [ ] Orchestrator route TXT
-- [ ] **Exit ramp**: sau 1 tuần test với 3 file, nếu < 50% pass → STOP, defer Phase 5 sang v1.1
-
-**Acceptance test:** 2/3 TXT (1 VN + 1 EN) detect đúng, 1/3 fail-loud nếu pattern lạ.
-
-### Phase 6: Final cleanup + Batch C (1 tuần)
-
-- [ ] Audit codebase post-Phase-5
-- [ ] Merge small files (<50 dòng) theo plan
-- [ ] Remove boilerplate abstraction
-- [ ] Final docs update + README polish
-
-### Phase 7+: Beyond v1.0 (defer to v1.1)
-
-- Case-based learning (sau khi có 10+ profile để thấy pattern)
-- Calibration phase (re-probe 10 chapter verify profile)
-- **Site Trung/Nhật CJK hardening** (encoding heuristic, font deob, slugify pinyin, "第N章" pattern)
-- TypedDict refactor `utils/types.py` (P3-D)
-- Manhua adapter (fork project riêng)
-- GUI (Streamlit nếu CLI không đủ)
-
----
-
-## 11. Decision Log
+## 11. Decision Log (Core Architectural Decisions)
 
 | # | Decision | Choice | Rationale |
 |---|---|---|---|
-| 1 | Scope v1.0 | Universal novel normalizer (web đa site đa ngôn ngữ / EPUB / TXT), 3 output mode + i18n baseline | User vision thật: đa dụng + decompose file nén |
-| 2 | Architecture | 2-phase learning (per domain) + Lego blocks | Khấu hao AI cost, composable, generic-enough |
-| 3 | Tránh Trafilatura integration | Không integrate | Generic article extraction khác novel chain — scope mismatch |
-| 4 | Tránh per-site hand-written adapter | Không adopt FanFicFare pattern | Scale linear không bền, AI learning amortize tốt hơn cho 5+ site |
-| 5 | Image scope | Inline illustration trong novel (use case 1), KHÔNG manhua thuần | Manhua = pipeline khác, gallery-dl đã giải tốt |
-| 6 | Output strategy | 3 mode chọn tại runtime, KHÔNG gộp | Mỗi mode có constraint khác (translate cần plain, Obsidian cần Markdown), gộp = compromise cả 2 |
-| 7 | Image policy | Per-mode (Obsidian: download, Translate: placeholder, Raw: strip) | Tiết kiệm bandwidth + thời gian khi không cần ảnh |
-| 8 | Input adapter shape | Mọi adapter produce `RawDocument` (HTML or text), pipeline không biết source | Decoupling input từ pipeline core |
-| 9 | EPUB parsing | `ebooklib` standard library | Mature, maintain tốt, support EPUB 2/3 |
-| 10 | TXT chapter boundary | Regex + AI verify, lưu pattern vào case database | TXT format hữu hạn, case-based hợp lý hơn ở đây |
-| 11 | Case-based learning cho web | DEFER v1.1 | Chưa có 10+ profile để thấy pattern thật |
-| 12 | Test framework | Smoke test + baseline diff trong v1.0, formal pytest defer | Solo dev, ROI thấp cho unit test ở giai đoạn này — nhưng baseline diff = regression guard cheap |
-| 13 | Database | Không dùng — JSON file đủ | Single user, no concurrent process, atomic write OK |
-| 14 | Web framework | Không có — CLI only | Local tool, không cần API |
-| 15 | AI provider | Gemini với full model | Free tier hữu ích, full model cho structured output |
-| 16 | Profile durability | Tin profile cho đến khi user `!relearn` hoặc `--bulk-relearn` | Site rarely change structure, user invalidate manual |
-| **17** | **Phase ordering** | **Output Abstraction (Phase 1) TRƯỚC Image Support (Phase 2)** | **Image policy = per-mode → cần RunConfig trước → cần CleanedChapter trước. Đảo thứ tự = technical debt cố ý.** |
-| **18** | **Baseline regression** | **`tools/snapshot_baseline.py` + commit baseline output vào `data/baselines/`, diff trước/sau refactor lớn** | **Smoke test pass ≠ output identical. Phase 0 và Phase 1.5 cần regression guard cứng.** |
-| **19** | **Image fetch strategy** | **Strategy pattern: `WebImageFetcher` (HTTP) vs `EpubImageExtractor` (zip binary), interface `ImageFetchStrategy.fetch()`** | **Source khác, code path khác. Nhưng pipeline không quan tâm — chỉ gọi `strategy.fetch(ref)`.** |
-| **20** | **TXT scope v1.0** | **Vietnamese + English chapter pattern only** | **CJK pattern cần language-specific regex + encoding heuristic — defer v1.1.** |
-| **21** | **i18n baseline v1.0** | **UTF-8 read/write explicit. Site đa ngôn ngữ work qua existing pipeline.** | **Content có CJK characters pass qua BeautifulSoup + Unicode-safe regex. Chỉ TXT chapter boundary cần language-specific — phần đó defer.** |
-| **22** | **EPUB naming source** | **Dublin Core metadata first (`book.get_metadata('DC', 'title')`), AI fallback nếu trống** | **Trust source khi available, tiết kiệm AI call.** |
-| **23** | **`FormattingRules.image_alt_strategy`** | **Enum literal `"preserve" / "skip" / "fallback_to_filename"` thay cho boolean cũ** | **Boolean ambiguous (preserve vs strip), enum explicit về behavior.** |
-| **24** | **Profile migration UX** | **`main.py --bulk-relearn [--pattern <regex>]` thay vì manual `!relearn` từng cái** | **User có 5+ profile cũ sau breaking schema — bulk script tiết kiệm 20 phút.** |
-| **25** | **README maintained** | **Skeleton từ Phase 0, update sau mỗi phase có CLI/UX change** | **Solo dev sẽ quên CLI flag sau 2 tuần không dùng.** |
+| 1 | Scope v1.0 | Universal novel normalizer (web đa site / EPUB / TXT), 3 output modes | Đa dụng + decompose file nén |
+| 2 | Architecture | 2-phase learning (per domain) + Lego blocks | Khấu hao AI cost, composable |
+| 6 | Output strategy | 3 mode chọn tại runtime (`obsidian`, `translate`, `raw`) | Mỗi mode có constraint riêng |
+| 7 | Image policy | Per-mode (`obsidian`: download, `translate`: placeholder, `raw`: strip) | Tiết kiệm bandwidth + thời gian |
+| 8 | Input adapter shape | Mọi adapter produce `RawDocument` (`ingest/types.py`) | Decoupling input từ pipeline core |
+| 17 | Phase ordering | Output Abstraction (Phase 1) TRƯỚC Image Support (Phase 2) | Image policy cần `RunConfig` và `CleanedChapter` trước |
+| 18 | Baseline regression | `tools/snapshot_baseline.py` + `data/baselines/` | Regression guard trước khi refactor hành vi |
+| 19 | Image fetch strategy | Strategy pattern: `WebImageFetcher` vs `EpubImageExtractor` | Cùng interface `ImageFetchStrategy.fetch()` |
+| 20 | TXT scope v1.0 | Vietnamese + English chapter pattern only | CJK defer sang `V1_1_BACKLOG.md` §3.1–3.2 |
+| 22 | EPUB naming source | Dublin Core metadata first, AI fallback nếu trống | Tiết kiệm AI call |
+| 57 | Per-host concurrency cap | `PER_HOST_MAX_CONCURRENCY=3` semaphore trong `DomainSessionPool` | Safety-by-default chống bị ban IP |
+
+*(Full 57-entry Decision Log maintained in [`CLAUDE.md`](../CLAUDE.md) §17).*
 
 ---
 
-## 12. Open Questions (defer answer to per-phase work)
+## 12. Open Questions (Resolved in Phases 1–5)
 
-- TXT case database schema: pattern lưu raw regex hay AI-generated normalized form? (→ Phase 5 P5.1)
-- Image download retry policy: retry mấy lần, exponential backoff? (→ Phase 2 P2.2)
-- Obsidian frontmatter: minimal (title, source) hay rich (chapter, story, author, language)? (→ Phase 1 P1.4)
-- Chunking trong TranslationWriter: theo character count, paragraph count, hay token count? Default value? (→ Phase 4 P4.1)
-- EPUB không có spine standard (vd EPUB 3 với navigation document): fallback strategy? (→ Phase 3 P3.4)
-
-Sẽ trả lời từng cái khi đụng vào phase tương ứng — không pre-decide.
+Toàn bộ các câu hỏi thiết kế ban đầu đã được chốt và triển khai:
+- **TXT case database schema**: Lưu raw regex kèm metadata trong `data/txt_cases.json` (`Decision #51–52`).
+- **Image download retry policy**: 2 lần retry, backoff 1s/3s, fail-soft giữ placeholder (`Decision #34`).
+- **Obsidian frontmatter**: Giữ minimal (`title`, `source`, `chapter_index`, `source_url`, `failed_images` khi có lỗi — `Decision #32`).
+- **Chunking trong `TranslationWriter`**: Mặc định tắt (`CHUNK_THRESHOLD = 0`), giữ 1 file/chương vì LLM hiện đại có context lớn (`Decision #45`).
+- **EPUB không có TOC / cấu trúc phẳng**: Đã xử lý bằng body fallback (`Decision #40`) và tách theo TXT pattern khi thiếu TOC (`b4944d2`).
 
 ---
 
@@ -851,33 +671,10 @@ Sẽ trả lời từng cái khi đụng vào phase tương ứng — không pre
 | Version | Date | Change |
 |---|---|---|
 | 1.0 | 2026-05-15 | Initial vision + architecture |
-| 1.1 | 2026-05-16 | Phase ordering fix (output trước image), Strategy pattern cho image fetch (Decision #19), FormattingRules explicit schema + image_alt_strategy enum (Decision #23), TXT scope narrow VN+EN (Decision #20), i18n baseline (Decision #21), EPUB Dublin Core naming (Decision #22), bulk-relearn UX (Decision #24), Input × Output matrix table, baseline regression protocol (Decision #18), tools/ folder, README maintained throughout (Decision #25) |
-| **1.2** | **2026-05-17** | **v1.0 SHIPPED. All 8 phases done. Phase 5 TXT adapter ships (exit ramp NOT triggered — VN+EN regex pass). Phase 6 Batch C cleanup ships (safe subset only — pure deletion ~0.6% LOC reduction). Behavioral refactors (FlowSpec, image stage extract) deferred to v1.1 backlog pending baseline capture. CLAUDE Decision #50-56, full Decision Log + ROADMAP marked complete.** |
+| 1.1 | 2026-05-16 | Phase ordering fix, Strategy pattern cho image fetch, explicit schemas |
+| 1.2 | 2026-05-17 | v1.0.0 SHIPPED (all Phases 0–6 complete) |
+| **1.2.1** | **2026-11-09** | **Production hardening (v1.0.13 → v1.2.1): Multi-key Gemini pool, Calibration phase, per-host concurrency cap, anti-hallucination selector discovery, `MAX_EMPTY_STREAK` restore, RoyalRoad `slug_increment` loop fix.** |
 
 ---
 
-## 14. v1.0 Final Status
-
-| Component | Status | Note |
-|---|---|---|
-| Web scraper (existing) | ✅ working | 5+ site profiles tested |
-| EPUB adapter | ✅ done | Dublin Core naming, body fallback, watermark filter (`epub:` namespace) |
-| TXT adapter | ✅ done | VN + EN regex pass. CJK defer v1.1. AI fallback with verify. |
-| Output modes | ✅ done | obsidian (Markdown + image), translate (plain + placeholder), raw (text only) |
-| Image stage | ✅ done | Mode-aware, Strategy pattern (WebImageFetcher + EpubImageExtractor) |
-| Learning Phase | ✅ done | 8 AI calls + Naming + AI#image |
-| AdsFilter | ✅ done | Cross-chapter freq, 3 namespaces (web / `epub:` / `txt:`) |
-| Resume / Cancel | ✅ done | Progress JSON per story, Ctrl+C safe |
-| CLI | ✅ done | `--output-mode`, `--bulk-relearn`, `--fast-learning`, `--no-validation` |
-| Docs | ✅ done | README + CHANGELOG + CLAUDE + BLUEPRINT + ROADMAP + TROUBLESHOOTING + V1_1_BACKLOG |
-| Baseline snapshot capture | ⚠️ deferred | Tool ready (`tools/snapshot_baseline.py`), live capture defer (user discretion: needs API quota + scrape time) |
-| FlowSpec orchestrator unify | ⚠️ deferred v1.1 | Behavioral refactor — needs baseline first |
-| Image stage extract to shared | ⚠️ deferred v1.1 | STOP §10 + baseline first |
-
-**Codebase:** ~11,340 LOC across 52 Python files.
-
----
-
-**END BLUEPRINT v1.2**
-
-*Living document — update khi vision/architecture đổi.*
+**END BLUEPRINT v1.2.1**
