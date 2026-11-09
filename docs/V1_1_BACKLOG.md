@@ -434,4 +434,35 @@ If a gate breaches → spec it out fresh, don't resurrect this section.
 1. In `src/ingest/epub_structure.py:build_chapter_plan_with_ai`: if `len(meta) > 250` (or configurable threshold), skip full-spine AI JSON listing and use rule-based `build_chapter_plan(book)` directly.
 2. In `src/ai/agents.py:ai_analyze_epub_structure`: if `len(missing) > max(5, int(len(input_ids) * 0.05))`, return `None` so caller falls back cleanly to `build_chapter_plan(book)`.
 3. Scale `AdsFilter` `auto_threshold` with total chapter count (e.g. `max(10, int(n_chapters * 0.03))`) or require minimum character/word length / URL-or-watermark signal before auto-stripping without AI verify.
+| 7.4 | `www.webnovel.com` UI chrome noise (`div.cha-page` outer wrapper, footer Vote/Power Status, Ch.1 book info header, inline comment count badges) | Web / Profile | Next session (observed 2026-11-09 across 20 scraped chapters) |
+| 7.5 | `www.royalroad.com` `<style>`-hidden `<p>` anti-piracy watermark leak in `html_filter.py` | Web / HTML Filter | Next session (observed 2026-11-09 on `Rock falls, everyone dies`) |
 | 7.99 | Speculative perf (3 items) | Perf | Measured threshold breach (NOT theoretical "user has N") |
+
+### 7.4 `www.webnovel.com` UI chrome noise (`div.cha-page` wrapper & missing remove selectors)
+
+**Source**: Observed 2026-11-09 when scraping 10 chapters each of `In Danmachi with Plasmids (New Version)` and `Zero Fate Against the World (New Version)`.
+
+**Symptom**:
+1. AI learned `"content_selector": "div.cha-page"` (outer page container on Webnovel) instead of narrower prose container (`div.cha-words` / `div.cha-content`).
+2. **Bottom of every chapter**: Webnovel's interactive footer widgets leak into `.md` output: `Notes`, `comment / N comment`, `Vote`, `Load failed, please RETRY`, `Weekly Power Status / -- / Power Ranking / -- / Power stone / Vote`.
+3. **Top of Chapter 1**: Book metadata header leaks (`original`, book title, `**Author:** ...`, `© WebNovel`, duplicate `# Chapter 1: ...`, duplicate cover image).
+4. **Inline paragraph comment badges**: Comment count numbers attached to paragraph endings (e.g., `...wanting to let it grow. 1`, `...mistake them for Skills]1`).
+
+**Fix plan**:
+- Narrow `content_selector` for `www.webnovel.com` (e.g. `div.cha-words` or `div.cha-content`) and/or add Webnovel UI chrome selectors (`.cha-hd`, `.cha-foot`, `.j_bottom_comment_area`, `.para-comment`, `.g_ad`, etc.) to `remove_selectors` / `KNOWN_NOISE_SELECTORS`.
+
+### 7.5 `www.royalroad.com` `<style>`-hidden `<p>` anti-piracy watermark leak
+
+**Source**: Observed 2026-11-09 when scraping 21 chapters of `Rock falls, everyone dies` on `www.royalroad.com`.
+
+**Symptom**:
+- Every prose chapter contains 1 injected anti-piracy paragraph in the middle of the chapter (or inside a status table), with randomized wording per chapter (e.g., *"This chapter was copied from Royal Road without the author's permission; reading the author's posting there helps support their work."*, *"Who approved this copy? Not the author..."*, *"A question of provenance: the author publishes this chapter on Royal Road..."*).
+- Because the phrasing is randomized per chapter, cross-chapter `AdsFilter` frequency matching cannot catch it.
+
+**Root Cause (`src/core/html_filter.py`)**:
+1. RoyalRoad assigns a 40+ char random alphanumeric class to every `<p>` tag in `div.chapter-content`, so `_strip_obfuscated_class_elements` (`html_filter.py:98-105`) skips `<p>` tags and elements `> 40` chars to avoid deleting real story paragraphs.
+2. RoyalRoad hides the single watermark `<p>` tag via a `<style>` block in the HTML page that sets `display: none` (or `speak: never`, `font-size: 0`, off-screen positioning) on that specific class (e.g. `.cjBiZWI... { display: none; }`).
+3. However, `prepare_soup` (`html_filter.py:270`) immediately decomposes all `<style>` tags in Layer 1 (`_ALWAYS_REMOVE`) before inspecting their CSS rules, and `_strip_invisible_elements` (`html_filter.py:208-228`) only checks inline `style="..."` attributes and static `_HIDDEN_CLASSES`.
+
+**Fix plan**:
+- In `src/core/html_filter.py:prepare_soup`, **before** decomposing `<style>` tags, parse `<style>` contents with a lightweight regex to extract CSS class/id selectors whose declaration block matches `_HIDDEN_STYLE_RE` (e.g. `display\s*:\s*none`, `visibility\s*:\s*hidden`, `opacity\s*:\s*0`, `font-size\s*:\s*0`, `speak\s*:\s*never`), and decompose matching elements in `soup` before decomposing `<style>`.
