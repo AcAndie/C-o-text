@@ -144,7 +144,7 @@ async def record_story_fixtures(
     profiles: dict[str, Any] = {}
     profiles_path = PROJECT_ROOT / PROFILES_FILE
     if profiles_path.exists():
-        profiles = await load_profiles(str(profiles_path))
+        profiles = await load_profiles()
 
     profile: dict[str, Any] = dict(profiles.get(parsed_domain) or {})
     if not profile:
@@ -205,6 +205,24 @@ async def record_story_fixtures(
                 referer=prev_url,
             )
 
+            # Nếu bị 403/CF ngay sau khi tải (do không delay hoặc CF challenge ngắn),
+            # chờ 10s rồi thử lại 1 lần nữa trước khi bỏ cuộc.
+            if status != 200 or len(html.strip()) < 1000:
+                logger.warning(
+                    "HTTP %s (len=%d) ở chương %d — chờ 10s và thử lại...",
+                    status,
+                    len(html),
+                    idx,
+                )
+                await asyncio.sleep(10.0)
+                status, html = await fetch_page(
+                    current_url,
+                    pool,
+                    pw_pool,
+                    profile=profile,
+                    referer=prev_url,
+                )
+
             if status != 200 or not html.strip():
                 logger.error(
                     "Tải thất bại ở chương %d (%s): HTTP %s, len=%d — dừng.",
@@ -253,6 +271,7 @@ async def record_story_fixtures(
         logger.warning("Bị hủy (CancelledError) — vẫn lưu meta.json cho các chương đã tải.")
         raise
     finally:
+        await pool.close_all()
         await pw_pool.close()
         if recorded_items:
             meta = {
@@ -281,16 +300,36 @@ def main(argv: list[str] | None = None) -> None:
         datefmt="%H:%M:%S",
     )
     out_root = Path(args.out_dir) if args.out_dir else FIXTURES_WEB_ROOT
-    asyncio.run(
-        record_story_fixtures(
-            args.url,
-            story_slug=args.story,
-            domain=args.domain,
-            max_chapters=args.chapters,
-            out_root=out_root,
-            no_delay=args.no_delay,
-        )
+    coro = record_story_fixtures(
+        args.url,
+        story_slug=args.story,
+        domain=args.domain,
+        max_chapters=args.chapters,
+        out_root=out_root,
+        no_delay=args.no_delay,
     )
+    if sys.platform == "win32":
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        def _silence_transport_errors(lp: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+            msg = context.get("message", "")
+            exc = context.get("exception")
+            exc_str = str(exc) if exc else ""
+            if any(
+                kw in msg.lower() or kw in exc_str.lower()
+                for kw in ("i/o operation on closed", "transport", "pipe")
+            ):
+                return
+            lp.default_exception_handler(context)
+
+        loop.set_exception_handler(_silence_transport_errors)
+        try:
+            loop.run_until_complete(coro)
+        finally:
+            loop.close()
+    else:
+        asyncio.run(coro)
 
 
 if __name__ == "__main__":
