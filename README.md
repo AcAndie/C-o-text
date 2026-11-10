@@ -163,13 +163,13 @@ output/{story_slug}/
 └── images/
 ```
 
-Detail: [BLUEPRINT.md](BLUEPRINT.md) §5.
+Detail + kế hoạch viết lại v2: [AGENTS.md](AGENTS.md) §4.
 
 ---
 
 ## Troubleshooting
 
-10 common issues + fixes: see [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+Mẹo debug chi tiết: see [AGENTS.md](AGENTS.md) §9.
 
 Quick triage:
 - **No `GEMINI_API_KEY` found** → Tạo `.env` với `GEMINI_API_KEY=...`
@@ -205,7 +205,7 @@ A: TranslationWriter có `CHUNK_THRESHOLD=0` (default off). Modern LLMs (Gemini 
 A: Có MAX_STRIP_RATIO 60% safety cap. Nếu nghi ngờ: xem `data/ads_keywords.json` per-domain, xóa keyword sai, re-run.
 
 **Q: Cào Text khác QuickTranslator / FanFicFare / Trafilatura ra sao?**
-A: Xem [BLUEPRINT.md](BLUEPRINT.md) §1 — pattern khác (learn-once vs per-site hand-written vs generic heuristic).
+A: Pattern khác: learn-once (AI học site 1 lần) vs per-site hand-written (FanFicFare) vs generic heuristic (Trafilatura).
 
 ---
 
@@ -214,15 +214,9 @@ A: Xem [BLUEPRINT.md](BLUEPRINT.md) §1 — pattern khác (learn-once vs per-sit
 | File | Role |
 |------|------|
 | [README.md](README.md) | This file — quick start + user reference |
+| [AGENTS.md](AGENTS.md) | **Hướng dẫn duy nhất cho AI**: quy tắc, kiến trúc, kế hoạch viết lại v2, lỗi đang mở |
+| [Vault/_Scraper/README.md](Vault/_Scraper/README.md) | Hướng dẫn dùng hằng ngày trong Obsidian |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | Version history |
-| [CLAUDE.md](CLAUDE.md) | AI agent governance (HOW + WHY) |
-| [docs/BLUEPRINT.md](docs/BLUEPRINT.md) | Vision + architecture (WHAT in total) |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Phase-by-phase execution (WHAT by sequence) |
-| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common issues + fixes |
-| [docs/V1_1_BACKLOG.md](docs/V1_1_BACKLOG.md) | Deferred features for v1.1+ |
-| [docs/MIGRATION_NOTES.md](docs/MIGRATION_NOTES.md) | Breaking schema notes |
-| [docs/PHASE_{1,2,3,4}_RETRO.md](docs/) | Phase retrospectives |
-| [docs/AUDIT_PHASE6.md](docs/AUDIT_PHASE6.md) | Phase 6 codebase audit |
 
 ---
 
