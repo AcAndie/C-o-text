@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "vn_chuong_colon",
+      "language": "vi",
+      "pattern": "^Chương\\s+(\\d+)\\s*[:\\-—]?\\s*(.*)$",
+      "samples": [
+        "Chương 1: Bắt đầu",
+        "Chương 2 - Khám phá",
+        "Chương 3"
+      ],
+      "confidence": 0.9
+    },
+    {
+      "id": "vn_chuong_number_only",
+      "language": "vi",
+      "pattern": "^Chương\\s+(\\d+)\\s*$",
+      "samples": [
+        "Chương 1",
+        "Chương 42"
+      ],
+      "confidence": 0.85
+    },
+    {
+      "id": "en_chapter_colon",
+      "language": "en",
+      "pattern": "^Chapter\\s+(\\d+)\\s*[:\\-—]?\\s*(.*)$",
+      "samples": [
+        "Chapter 1: The Beginning",
+        "Chapter 2 - Discovery"
+      ],
+      "confidence": 0.9
+    },
+    {
+      "id": "en_chapter_number_only",
+      "language": "en",
+      "pattern": "^Chapter\\s+(\\d+)\\s*$",
+      "samples": [
+        "Chapter 1",
+        "Chapter 42"
+      ],
+      "confidence": 0.85
+    }
+  ]
+}
