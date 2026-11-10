@@ -57,7 +57,7 @@ Code cũ (v1.2.1, ~13k dòng trong `src/`) vẫn chạy được và vẫn là b
 
 | Phase | Tên | Trạng thái |
 |---|---|---|
-| 0 | Lưới an toàn: fixtures + golden test + sửa 2 chỗ hỏng | ⬜ Chưa bắt đầu |
+| 0 | Lưới an toàn: fixtures + golden test + sửa 2 chỗ hỏng | 🟨 Đang làm |
 | 1 | Bộ khung package mới (`src/cao_text/`) | ⬜ |
 | 2 | Port phần lõi xác định (HTML, extract, writers, net) | ⬜ |
 | 3 | Lớp AI mới (provider, structured output, retry) | ⬜ |
@@ -250,7 +250,7 @@ AI fallback (AI trích nội dung, AI tìm next) **không** nằm trong `process
 ### Phase 0 — Lưới an toàn (BẮT BUỘC làm trước)
 Mục tiêu: chụp lại hành vi code cũ thành golden test chạy offline, để mọi bước viết lại đều so được.
 
-- [ ] **0.1** Tạo nhánh `rewrite-v2`. Thêm `pyproject.toml` tối thiểu (metadata, deps §3.6, `[project.optional-dependencies] dev`, cấu hình `ruff` và `pytest`), giữ `requirements.txt` đến Phase 7.
+- [x] **0.1** Tạo nhánh `rewrite-v2`. Thêm `pyproject.toml` tối thiểu (metadata, deps §3.6, `[project.optional-dependencies] dev`, cấu hình `ruff` và `pytest`), giữ `requirements.txt` đến Phase 7.
 - [ ] **0.2** Khôi phục `data/txt_cases.json` (bị xóa nhầm ở commit `e3d9152`, làm TXT flow crash): `git checkout e3d9152^ -- data/txt_cases.json`. Xác nhận `.gitignore` cho phép commit file này.
 - [ ] **0.3** Viết `tools/record_fixtures.py`: dùng `DomainSessionPool` cũ, đi theo next-link, lưu HTML thô của N chương liên tiếp vào `tests/fixtures_local/web/<domain>/<story>/0001.html…` + `meta.json` (danh sách URL theo thứ tự, ngày ghi, bản sao profile hiện tại của domain).
 - [ ] **0.4** Ghi fixtures (user chạy, cần mạng): RoyalRoad "Rock falls, everyone dies" 6 chương; Webnovel 2 truyện × 6 chương (các truyện trong `progress/`). Thêm vài trang index/trang chương cuối nếu có.
