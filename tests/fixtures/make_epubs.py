@@ -181,7 +181,9 @@ def build_sample_no_toc_with_divider(out_path: Path) -> None:
     book.add_item(main_doc)
     # Không tạo TOC (book.toc rỗng) để kiểm tra nhánh no-TOC fallback
     book.toc = ()
-    book.spine = [divider, main_doc]
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    book.spine = ["nav", divider, main_doc]
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     epub.write_epub(str(out_path), book)

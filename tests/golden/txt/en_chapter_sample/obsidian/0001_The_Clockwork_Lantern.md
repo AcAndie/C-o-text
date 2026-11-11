@@ -1,0 +1,13 @@
+---
+title: 'Chapter 1: The Clockwork Lantern'
+chapter_index: 1
+source_path: C:\Users\FPT MONG CAI\Desktop\Small Project\Cào text\tests\fixtures\txt\en_chapter_sample.txt
+story_name: 'en_chapter_sample'
+language: 'en'
+---
+
+# Chapter 1: The Clockwork Lantern
+
+ Rain hammered against the tall arched windows of the lower archive, blurring the gaslights along Cobble Street into trembling smears of amber. Arthur adjusted his brass spectacles and leaned closer to the workbench, where a small lantern of blackened iron sat disassembled into seventeen distinct pieces.
+For three months, the guild elders had insisted the mechanism was merely a decorative relic from the Second Foundry Age. Yet the tiny spiral grooves etched inside the central cylinder told a very different story. Each ridge was calibrated to a fraction of a millimeter, designed to channel pressurized aether rather than ordinary lamp oil.
+"If the valve holds," Arthur murmured to the empty room, "it won't just cast light. It will remember what it illuminated."

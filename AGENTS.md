@@ -256,7 +256,7 @@ Mục tiêu: chụp lại hành vi code cũ thành golden test chạy offline, �
 - [x] **0.4** Ghi fixtures (user chạy, cần mạng): RoyalRoad "Rock falls, everyone dies" 6 chương; Webnovel 2 truyện × 6 chương (các truyện trong `progress/`). Thêm vài trang index/trang chương cuối nếu có.
 - [x] **0.5** Fixtures commit được: `tests/fixtures/txt/` (2 file tự viết: VN "Chương N", EN "Chapter N"), `tests/fixtures/epub/` (2 EPUB nhỏ tự tạo bằng `ebooklib` trong script `tests/fixtures/make_epubs.py`: một có TOC, một không TOC + có trang divider "Part 1"), `tests/fixtures/html/` (vài trang HTML tự viết cho các ca: watermark ẩn bằng `<style>`, nút next dạng dropdown, fanfic `/s/ID/N/`).
 - [x] **0.6** Fixtures EPUB thật (local, gitignore): chép 2–3 EPUB nhỏ từ `Vault/_Scraper/epub_inbox/` (ví dụ `Ready_Player_One.epub`) + 1 EPUB lớn >1000 chương để tái hiện lỗi §7.3.
-- [ ] **0.7** Viết `tools/make_golden_v1.py`: chạy **code cũ** offline:
+- [x] **0.7** Viết `tools/make_golden_v1.py`: chạy **code cũ** offline:
   - Web: với mỗi HTML fixture gọi `PipelineRunner.run(..., prefetched_html=html, ai_limiter=None)` với profile trong `meta.json`, rồi áp `strip_nav_edges` + bỏ dòng tiêu đề trùng như `scrape_one_chapter`. Lưu `{title, content, next_url, nav_method, selector_used}` thành JSON.
   - EPUB/TXT: chạy `run_epub_flow` / `run_txt_flow` với `ai_limiter=None` cho cả 3 output mode vào thư mục tạm, chép kết quả vào `tests/golden[_local]/`.
 - [ ] **0.8** Viết `tests/conftest.py` (option `--update-golden`, helper so sánh: khớp tuyệt đối cho fixtures tổng hợp; với fixtures thật: khớp danh sách file + tiêu đề, nội dung `difflib` ratio ≥ 0.99, khác thì in diff gọn) và `tests/test_golden_v1.py` chạy code cũ so với golden (phải xanh ngay).
