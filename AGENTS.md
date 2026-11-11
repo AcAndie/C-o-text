@@ -259,7 +259,7 @@ Mục tiêu: chụp lại hành vi code cũ thành golden test chạy offline, �
 - [x] **0.7** Viết `tools/make_golden_v1.py`: chạy **code cũ** offline:
   - Web: với mỗi HTML fixture gọi `PipelineRunner.run(..., prefetched_html=html, ai_limiter=None)` với profile trong `meta.json`, rồi áp `strip_nav_edges` + bỏ dòng tiêu đề trùng như `scrape_one_chapter`. Lưu `{title, content, next_url, nav_method, selector_used}` thành JSON.
   - EPUB/TXT: chạy `run_epub_flow` / `run_txt_flow` với `ai_limiter=None` cho cả 3 output mode vào thư mục tạm, chép kết quả vào `tests/golden[_local]/`.
-- [ ] **0.8** Viết `tests/conftest.py` (option `--update-golden`, helper so sánh: khớp tuyệt đối cho fixtures tổng hợp; với fixtures thật: khớp danh sách file + tiêu đề, nội dung `difflib` ratio ≥ 0.99, khác thì in diff gọn) và `tests/test_golden_v1.py` chạy code cũ so với golden (phải xanh ngay).
+- [x] **0.8** Viết `tests/conftest.py` (option `--update-golden`, helper so sánh: khớp tuyệt đối cho fixtures tổng hợp; với fixtures thật: khớp danh sách file + tiêu đề, nội dung `difflib` ratio ≥ 0.99, khác thì in diff gọn) và `tests/test_golden_v1.py` chạy code cũ so với golden (phải xanh ngay).
 - [ ] **0.9** Ghi vào §10 danh sách **lỗi đã biết đang nằm trong golden** (watermark RoyalRoad §7.5, rác UI Webnovel §7.4) để sau này diff ở đó là "cải tiến có chủ đích".
 
 **DoD Phase 0:** `pytest -q` xanh offline; có golden cho ≥2 site web, ≥2 EPUB, ≥2 TXT × 3 output mode; TXT flow cũ chạy lại được.
