@@ -57,7 +57,7 @@ Code cũ (v1.2.1, ~13k dòng trong `src/`) vẫn chạy được và vẫn là b
 
 | Phase | Tên | Trạng thái |
 |---|---|---|
-| 0 | Lưới an toàn: fixtures + golden test + sửa 2 chỗ hỏng | 🟨 Đang làm |
+| 0 | Lưới an toàn: fixtures + golden test + sửa 2 chỗ hỏng | ✅ Xong |
 | 1 | Bộ khung package mới (`src/cao_text/`) | ⬜ |
 | 2 | Port phần lõi xác định (HTML, extract, writers, net) | ⬜ |
 | 3 | Lớp AI mới (provider, structured output, retry) | ⬜ |
@@ -260,7 +260,7 @@ Mục tiêu: chụp lại hành vi code cũ thành golden test chạy offline, �
   - Web: với mỗi HTML fixture gọi `PipelineRunner.run(..., prefetched_html=html, ai_limiter=None)` với profile trong `meta.json`, rồi áp `strip_nav_edges` + bỏ dòng tiêu đề trùng như `scrape_one_chapter`. Lưu `{title, content, next_url, nav_method, selector_used}` thành JSON.
   - EPUB/TXT: chạy `run_epub_flow` / `run_txt_flow` với `ai_limiter=None` cho cả 3 output mode vào thư mục tạm, chép kết quả vào `tests/golden[_local]/`.
 - [x] **0.8** Viết `tests/conftest.py` (option `--update-golden`, helper so sánh: khớp tuyệt đối cho fixtures tổng hợp; với fixtures thật: khớp danh sách file + tiêu đề, nội dung `difflib` ratio ≥ 0.99, khác thì in diff gọn) và `tests/test_golden_v1.py` chạy code cũ so với golden (phải xanh ngay).
-- [ ] **0.9** Ghi vào §10 danh sách **lỗi đã biết đang nằm trong golden** (watermark RoyalRoad §7.5, rác UI Webnovel §7.4) để sau này diff ở đó là "cải tiến có chủ đích".
+- [x] **0.9** Ghi vào §10 danh sách **lỗi đã biết đang nằm trong golden** (watermark RoyalRoad §7.5, rác UI Webnovel §7.4) để sau này diff ở đó là "cải tiến có chủ đích".
 
 **DoD Phase 0:** `pytest -q` xanh offline; có golden cho ≥2 site web, ≥2 EPUB, ≥2 TXT × 3 output mode; TXT flow cũ chạy lại được.
 
@@ -469,3 +469,4 @@ User yêu cầu một mục ở đây → trả lời: *"Mục [X] đang nằm n
 | 2026-11-09 | Gemini vẫn là provider mặc định, nhưng qua interface `LLMProvider` | Free tier + đã có multi-key; đổi provider sau không phải viết lại |
 | 2026-11-09 | Thêm `pydantic>=2`, `pytest`, `pytest-asyncio`, `ruff`; bỏ lệnh cấm test/lint cũ | Cần schema cho structured output và lưới test |
 | 2026-11-09 | Gộp toàn bộ tài liệu hướng dẫn AI vào `AGENTS.md`; `CLAUDE.md` chỉ còn trỏ tới file này | Gọn docs, một nguồn sự thật |
+| 2026-11-11 | Ghi nhận lỗi đã biết trong golden baseline v1: (1) RoyalRoad lọt watermark ẩn bằng `<style>` (§7.5); (2) Webnovel dính UI (Notes/Vote/Comments) do selector `div.cha-page` (§7.4); (3) AdsFilter xóa nhầm thoại ngắn ("Hàn Tuyệt nói:") ở EPUB lớn >1000 chaps do ngưỡng cố định 10 (§7.3) | Để khi sửa ở Phase 2 (Task 2.8, 2.9) và Phase 6 (Task 6.4), các diff này được phê duyệt là "cải tiến có chủ đích" theo §3.5 |
