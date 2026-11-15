@@ -59,7 +59,7 @@ Code cũ (v1.2.1, ~13k dòng trong `src/`) vẫn chạy được và vẫn là b
 |---|---|---|
 | 0 | Lưới an toàn: fixtures + golden test + sửa 2 chỗ hỏng | ✅ Xong |
 | 1 | Bộ khung package mới (`src/cao_text/`) | ✅ Xong |
-| 2 | Port phần lõi xác định (HTML, extract, writers, net) | ⬜ |
+| 2 | Port phần lõi xác định (HTML, extract, writers, net) | 🟨 Đang làm |
 | 3 | Lớp AI mới (provider, structured output, retry) | ⬜ |
 | 4 | Learning mới (1–3 AI call + kiểm chứng bằng code) | ⬜ |
 | 5 | Vòng lặp cào web mới + lưu tiến độ mới | ⬜ |
@@ -276,7 +276,7 @@ Mục tiêu: chụp lại hành vi code cũ thành golden test chạy offline, �
 
 ### Phase 2 — Port phần lõi xác định
 Nguyên tắc: **copy logic sang rồi dọn**, không thiết kế lại thuật toán. So với golden sau mỗi task.
-- [ ] **2.1** `net/http.py` + `net/browser.py`: port `DomainSessionPool` (impersonate Chrome xoay vòng, header + referer, per-host semaphore mặc định 3, delay theo domain, nhận diện Cloudflare → đánh dấu domain dùng Playwright, `fetch_bytes` cho ảnh) và `PlaywrightPool` (giới hạn instance, stealth best-effort). Giữ quy tắc "HTTP 429 với HTML rỗng → raise, không coi là hết truyện".
+- [x] **2.1** `net/http.py` + `net/browser.py`: port `DomainSessionPool` (impersonate Chrome xoay vòng, header + referer, per-host semaphore mặc định 3, delay theo domain, nhận diện Cloudflare → đánh dấu domain dùng Playwright, `fetch_bytes` cho ảnh) và `PlaywrightPool` (giới hạn instance, stealth best-effort). Giữ quy tắc "HTTP 429 với HTML rỗng → raise, không coi là hết truyện".
 - [ ] **2.2** `html/filter.py`: port `prepare_soup` đủ các layer (luôn xóa script/style/iframe; `KNOWN_NOISE_SELECTORS`; `remove_selectors` của profile; **bảo vệ tổ tiên** của content/title/next selector; phần tử bị ẩn qua inline style/class ẩn; class bị làm rối nhưng **không đụng `<p>`**).
 - [ ] **2.3** `html/formatter.py`, `html/cleaner.py` (gồm `strip_nav_edges`, 5–7 pass, trần an toàn xóa tối đa 60%).
 - [ ] **2.4** `extract/*` + `extract/page.py::process_page`: chain content (selector → JSON-LD → density heuristic ưu tiên wrapper → fallback list), title first-wins (selector 0.95 → h1 0.80 → `<title>` 0.65 → og:title 0.65 → url slug 0.40), nav (rel=next → selector → anchor text → slug increment → fanfic → dropdown), nhận diện trang index, validate độ dài/độ "văn xuôi". Gộp hai navigator cũ thành một.
@@ -470,3 +470,4 @@ User yêu cầu một mục ở đây → trả lời: *"Mục [X] đang nằm n
 | 2026-11-09 | Thêm `pydantic>=2`, `pytest`, `pytest-asyncio`, `ruff`; bỏ lệnh cấm test/lint cũ | Cần schema cho structured output và lưới test |
 | 2026-11-09 | Gộp toàn bộ tài liệu hướng dẫn AI vào `AGENTS.md`; `CLAUDE.md` chỉ còn trỏ tới file này | Gọn docs, một nguồn sự thật |
 | 2026-11-11 | Ghi nhận lỗi đã biết trong golden baseline v1: (1) RoyalRoad lọt watermark ẩn bằng `<style>` (§7.5); (2) Webnovel dính UI (Notes/Vote/Comments) do selector `div.cha-page` (§7.4); (3) AdsFilter xóa nhầm thoại ngắn ("Hàn Tuyệt nói:") ở EPUB lớn >1000 chaps do ngưỡng cố định 10 (§7.3) | Để khi sửa ở Phase 2 (Task 2.8, 2.9) và Phase 6 (Task 6.4), các diff này được phê duyệt là "cải tiến có chủ đích" theo §3.5 |
+| 2026-11-15 | Port hoàn chỉnh net layer (`DomainSessionPool`, `PlaywrightPool`, `fetch_page`): per-host semaphore, delay profile, nhận diện CF + Playwright fallback, `fetch_bytes`, raise `RateLimitedError` khi HTTP 429 rỗng | Hoàn thành Task 2.1, đáp ứng §6.2 và §6.3, code sạch và 100% offline testable |
