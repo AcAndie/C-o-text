@@ -204,3 +204,48 @@ def test_prepare_soup_style_hidden_elements() -> None:
     assert "At the end of the hall, a bronze astrolabe turned slowly" in text
     assert "We have less than an hour before the tide seals" in text
 
+
+def test_prepare_soup_webnovel_noise() -> None:
+    html = """
+    <div class="cha-page">
+      <div class="cha-info">
+        <div class="cha-info-top">
+          <img src="cover.jpg" alt="Cover" />
+          <h1>Novel Title</h1>
+          <p>Book Synopsis and metadata</p>
+        </div>
+      </div>
+      <div class="cha-content">
+        <p>First paragraph of the chapter.</p>
+        <p>
+          <anno data-annotation-id="123">
+            Second paragraph with a paragraph comment count.
+            <sup>42</sup>
+          </anno>
+        </p>
+      </div>
+      <div class="cha-page-ft">
+        <div class="j_power_rank_wrap">Power stone ranking and vote button</div>
+        <div class="j_bottom_comment_area">Bottom comment section</div>
+        <div class="para-comment">Paragraph comment bubble</div>
+      </div>
+    </div>
+    """
+    soup = prepare_soup(
+        html,
+        content_selector="div.cha-page",
+    )
+    text = soup.get_text()
+
+    # Rác UI Webnovel phải bị dọn sạch
+    assert "Book Synopsis and metadata" not in text
+    assert "Power stone ranking and vote button" not in text
+    assert "Bottom comment section" not in text
+    assert "Paragraph comment bubble" not in text
+    assert "42" not in text
+
+    # Nội dung văn bản truyện thật phải được giữ nguyên vẹn
+    assert "First paragraph of the chapter." in text
+    assert "Second paragraph with a paragraph comment count." in text
+
+

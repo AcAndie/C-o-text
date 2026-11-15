@@ -59,7 +59,7 @@ Code cũ (v1.2.1, ~13k dòng trong `src/`) vẫn chạy được và vẫn là b
 |---|---|---|
 | 0 | Lưới an toàn: fixtures + golden test + sửa 2 chỗ hỏng | ✅ Xong |
 | 1 | Bộ khung package mới (`src/cao_text/`) | ✅ Xong |
-| 2 | Port phần lõi xác định (HTML, extract, writers, net) | 🟨 Đang làm |
+| 2 | Port phần lõi xác định (HTML, extract, writers, net) | ✅ Xong |
 | 3 | Lớp AI mới (provider, structured output, retry) | ⬜ |
 | 4 | Learning mới (1–3 AI call + kiểm chứng bằng code) | ⬜ |
 | 5 | Vòng lặp cào web mới + lưu tiến độ mới | ⬜ |
@@ -284,7 +284,7 @@ Nguyên tắc: **copy logic sang rồi dọn**, không thiết kế lại thuậ
 - [x] **2.6** `writers/*` + `nav_injector`: port, giữ nguyên tên file, frontmatter, index, nav; escape `*` và backtick trong text thường.
 - [x] **2.7** `images/*`: một `apply_image_stage(content, refs, strategy, run_config, out_dir, chapter_num)` dùng chung; giữ link gốc khi tải lỗi + ghi `failed_images` vào frontmatter; EPUB resolver 4 chiến lược + fallback basename.
 - [x] **2.8** Fix §7.5 (watermark RoyalRoad ẩn bằng `<style>`): trước khi xóa `<style>`, quét CSS tìm selector class/id có `display:none | visibility:hidden | opacity:0 | font-size:0 | speak:never` → xóa phần tử khớp. Thêm test với `tests/fixtures/html/`. Golden RoyalRoad sẽ đổi (mất câu watermark) → quy trình §3.5.
-- [ ] **2.9** Fix một phần §7.4: thêm selector UI Webnovel (`.cha-hd`, `.cha-foot`, `.j_bottom_comment_area`, `.para-comment`, `.g_ad`…) vào `KNOWN_NOISE_SELECTORS`; bỏ số đếm comment dính cuối đoạn. Golden Webnovel đổi → §3.5.
+- [x] **2.9** Fix một phần §7.4: thêm selector UI Webnovel (`.cha-hd`, `.cha-foot`, `.j_bottom_comment_area`, `.para-comment`, `.g_ad`…) vào `KNOWN_NOISE_SELECTORS`; bỏ số đếm comment dính cuối đoạn. Golden Webnovel đổi → §3.5.
 
 **DoD:** golden web khớp (trừ diff đã duyệt ở 2.8/2.9), test writers/images xanh.
 
@@ -478,3 +478,4 @@ User yêu cầu một mục ở đây → trả lời: *"Mục [X] đang nằm n
 | 2026-11-15 | Port hoàn chỉnh `writers/*` (`ObsidianWriter`, `TranslationWriter`, `RawWriter`, `build_writer`) và `nav_injector`: định dạng tên file `0042_Title.md`, `slugify_filename` an toàn Windows, YAML frontmatter, paragraph indent em-space, strip markdown/placeholder cho translate/raw, tạo `0000_Index.md` và chèn 3-line nav footer | Hoàn thành Task 2.6 |
 | 2026-11-15 | Port hoàn chỉnh `images/*` (`WebImageFetcher`, `EpubImageExtractor`, `apply_image_stage`): hợp nhất `apply_image_stage` dùng chung cho cả Web và EPUB, hỗ trợ 3 output mode (obsidian/translate/raw), giữ link gốc khi tải lỗi, 4 chiến lược giải quyết href cho EPUB kèm fallback basename | Hoàn thành Task 2.7 |
 | 2026-11-16 | Fix §7.5: Quét CSS rules trong thẻ `<style>` tìm selector class/id có `display:none/visibility:hidden/opacity:0/font-size:0/speak:never` để loại bỏ phần tử ẩn trước khi xóa thẻ `<style>`; kiểm thử thành công trên `fixtures/html/` và làm sạch 100% watermark chống trộm trên RoyalRoad; cập nhật golden baseline RoyalRoad theo quy trình §3.5 | Hoàn thành Task 2.8 |
+| 2026-11-16 | Fix một phần §7.4: Bổ sung selector UI Webnovel (`.cha-hd`, `.cha-foot`, `.cha-page-ft`, `.cha-info`, `.cha-bts`, `.j_bottom_comment_area`, `.j_power_rank_wrap`, `.para-comment`, `anno > sup`...) vào `KNOWN_NOISE_SELECTORS`; loại bỏ khối bìa sách ở ch1, footer vote/power stone và số đếm comment; cập nhật golden baseline Webnovel theo quy trình §3.5 | Hoàn thành Task 2.9, đạt DoD và hoàn tất toàn bộ Phase 2 |
