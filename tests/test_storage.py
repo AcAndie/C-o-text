@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -60,6 +61,25 @@ async def test_async_atomic_write(tmp_path: Path) -> None:
     await async_atomic_write_json(json_file, {"async": True})
     loaded = json.loads(json_file.read_text(encoding="utf-8"))
     assert loaded["async"] is True
+
+
+async def test_async_atomic_write_cleans_tmp_on_cancellation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Khi task async bị cancel giữa chừng, file .tmp phải được xóa và raise CancelledError."""
+    target_file = tmp_path / "cancel_target.txt"
+    tmp_file = target_file.with_suffix(target_file.suffix + ".tmp")
+
+    def _slow_write(p: Path, c: str) -> None:
+        # Tạo file .tmp rồi raise CancelledError giả lập ngắt task
+        tmp_file.write_text("Dở dang...", encoding="utf-8")
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr("cao_text.storage.atomic_write_text", _slow_write)
+
+    with pytest.raises(asyncio.CancelledError):
+        await async_atomic_write_text(target_file, "Dữ liệu mới")
+
+    assert not target_file.exists()
+    assert not tmp_file.exists(), "File .tmp phải được dọn sạch khi bị CancelledError"
 
 
 # ── Test ProfileStore ─────────────────────────────────────────────────────────

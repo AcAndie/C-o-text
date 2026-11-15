@@ -58,7 +58,7 @@ Code cũ (v1.2.1, ~13k dòng trong `src/`) vẫn chạy được và vẫn là b
 | Phase | Tên | Trạng thái |
 |---|---|---|
 | 0 | Lưới an toàn: fixtures + golden test + sửa 2 chỗ hỏng | ✅ Xong |
-| 1 | Bộ khung package mới (`src/cao_text/`) | 🟨 Đang làm |
+| 1 | Bộ khung package mới (`src/cao_text/`) | ✅ Xong |
 | 2 | Port phần lõi xác định (HTML, extract, writers, net) | ⬜ |
 | 3 | Lớp AI mới (provider, structured output, retry) | ⬜ |
 | 4 | Learning mới (1–3 AI call + kiểm chứng bằng code) | ⬜ |
@@ -270,7 +270,7 @@ Mục tiêu: chụp lại hành vi code cũ thành golden test chạy offline, �
 - [x] **1.3** `log.py`: logging console gọn (giữ emoji/tiền tố domain như cũ cho dễ đọc) + `IssueReporter` ghi `issues.md` (newest on top, các loại: `BLOCKED`, `CONTENT_SUSPICIOUS`, `TITLE_FALLBACK`, `NEXT_URL_MISSING`…).
 - [x] **1.4** `models.py`: `SiteProfile` (pydantic, `profile_version=3`), `StoryState`, `RunConfig` (mặc định theo mode như §1), `CleanedChapter`, `ImageRef`.
 - [x] **1.5** `storage.py`: `atomic_write_text/json` (dọn `.tmp` khi cancel), `ProfileStore` (load/save/delete, lock async), `ProgressStore` (thiết kế §5 Phase 5, làm khung trước).
-- [ ] **1.6** Test đơn vị cho settings (ưu tiên nguồn), atomic write, model round-trip.
+- [x] **1.6** Test đơn vị cho settings (ưu tiên nguồn), atomic write, model round-trip.
 
 **DoD:** package cài được, test mới xanh, code cũ không bị ảnh hưởng (golden v1 vẫn xanh).
 

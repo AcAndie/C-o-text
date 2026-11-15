@@ -222,3 +222,18 @@ analyzer = "rules"
     assert cfg.js_detection.content_ratio == 2.0
     assert cfg.js_detection.min_diff_chars == 600
     assert cfg.epub.analyzer == "rules"
+
+
+def test_corrupt_toml_fallback_to_default_without_crash(tmp_path: Path) -> None:
+    """Khi config.toml bị lỗi cú pháp, Settings.load không crash mà dùng mặc định."""
+    bad_toml = tmp_path / "bad_config.toml"
+    bad_toml.write_text("this is invalid toml = = = [", encoding="utf-8")
+
+    cfg = Settings.load(
+        config_path=bad_toml,
+        env_dict={},
+        env_path=Path("non_existent_env"),
+    )
+    assert cfg.output.mode == "obsidian"
+    assert cfg.scraper.max_chapters == 5000
+

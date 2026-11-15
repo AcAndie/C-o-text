@@ -3,7 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from cao_text.models import CleanedChapter, ImageRef, RunConfig, SiteProfile, StoryState
+from cao_text.models import (
+    CleanedChapter,
+    FormattingRules,
+    ImageRef,
+    RunConfig,
+    SiteProfile,
+    StoryState,
+)
 from cao_text.settings import Settings
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -124,3 +131,40 @@ def test_cleaned_chapter_and_image_ref() -> None:
     assert len(chap.images) == 1
     assert chap.images[0].alt_text == "World Map"
     assert chap.metadata["author"] == "Arthur"
+
+
+def test_formatting_rules_roundtrip_with_extra_fields() -> None:
+    """Kiểm tra FormattingRules cho phép extra fields và roundtrip không mất dữ liệu."""
+    raw = {
+        "bold_italic": True,
+        "hr_dividers": False,
+        "custom_plugin_rule": "special_val",
+        "nested_dict": {"foo": "bar"},
+    }
+    rules = FormattingRules.model_validate(raw)
+    assert rules.bold_italic is True
+    assert rules.hr_dividers is False
+    assert rules.__pydantic_extra__["custom_plugin_rule"] == "special_val"
+
+    dumped = rules.model_dump()
+    assert dumped["custom_plugin_rule"] == "special_val"
+    assert dumped["nested_dict"] == {"foo": "bar"}
+
+
+def test_story_state_roundtrip_with_extra_fields() -> None:
+    """Kiểm tra StoryState cho phép extra metadata và roundtrip đầy đủ."""
+    raw = {
+        "story_key": "novel_xyz",
+        "start_url": "https://xyz.com/1",
+        "extra_custom_tag": "fantasy",
+        "total_words_estimated": 150000,
+    }
+    state = StoryState.model_validate(raw)
+    assert state.story_key == "novel_xyz"
+    assert state.__pydantic_extra__["extra_custom_tag"] == "fantasy"
+
+    dumped = state.model_dump()
+    assert dumped["total_words_estimated"] == 150000
+
+    reloaded = StoryState.model_validate(dumped)
+    assert reloaded.__pydantic_extra__["extra_custom_tag"] == "fantasy"
