@@ -181,8 +181,8 @@ def inject_nav_and_index(
         if source is None and meta.get("source_url"):
             try:
                 source = urlparse(meta["source_url"]).netloc or None
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("[NavInjector] urlparse failed for %r: %s", meta["source_url"], e)
         if story_name is None and meta.get("story_name"):
             story_name = meta["story_name"]
 

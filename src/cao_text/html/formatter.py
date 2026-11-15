@@ -11,6 +11,7 @@ Bao gồm:
 """
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 from urllib.parse import urljoin
@@ -18,6 +19,8 @@ from urllib.parse import urljoin
 from bs4 import NavigableString, Tag
 
 from cao_text.models import FormattingRules, ImageRef
+
+logger = logging.getLogger(__name__)
 
 # Các thẻ luôn bỏ qua khi bóc tách văn bản
 _EXTRACT_SKIP_TAGS = frozenset({
@@ -309,8 +312,8 @@ class MarkdownFormatter:
                         inner = extract_plain_text(node)
                         lines = "\n".join(f"> {line}" for line in inner.splitlines())
                         return f"{prefix}\n{lines}"
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("[Formatter] Callout selector %r failed: %s", sel, e)
         return None
 
     def _format_block(self, node: Tag) -> str | None:

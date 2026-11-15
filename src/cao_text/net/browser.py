@@ -48,6 +48,8 @@ class PlaywrightPool:
         if self._browser is not None:
             try:
                 await self._browser.close()
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.debug("[PW] Error closing old browser: %s", e)
             self._browser = None
@@ -61,6 +63,8 @@ class PlaywrightPool:
             self._browser = await self._playwright.chromium.launch(headless=True)
             self._page_count = 0
             logger.debug("[PW] Browser started (max_concurrency=%d).", self.max_concurrency)
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error("[PW] Browser launch failed: %s", e)
             raise
@@ -88,6 +92,8 @@ class PlaywrightPool:
                     from playwright_stealth import Stealth
 
                     await Stealth().apply_stealth_async(page)
+                except asyncio.CancelledError:
+                    raise
                 except Exception as se:
                     logger.debug("[PW] playwright-stealth apply failed: %s", se)
 
@@ -128,8 +134,10 @@ class PlaywrightPool:
                 if page is not None:
                     try:
                         await page.close()
-                    except Exception:
-                        pass
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as ce:
+                        logger.debug("[PW] page.close error: %s", ce)
 
     async def close(self) -> None:
         """Đóng toàn bộ browser và engine Playwright."""
@@ -137,15 +145,19 @@ class PlaywrightPool:
             if self._browser is not None:
                 try:
                     await self._browser.close()
-                except Exception:
-                    pass
+                except asyncio.CancelledError:
+                    raise
+                except Exception as be:
+                    logger.debug("[PW] browser.close error: %s", be)
                 self._browser = None
 
             if self._playwright is not None:
                 try:
                     await self._playwright.__aexit__(None, None, None)
-                except Exception:
-                    pass
+                except asyncio.CancelledError:
+                    raise
+                except Exception as pe:
+                    logger.debug("[PW] playwright exit error: %s", pe)
                 self._playwright = None
 
             self._page_count = 0

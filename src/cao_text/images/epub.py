@@ -1,6 +1,7 @@
 """epub.py — Trích xuất ảnh trực tiếp từ file nén EPUB in-memory."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import posixpath
@@ -59,6 +60,8 @@ class EpubImageExtractor(ImageFetchStrategy):
 
         try:
             return item.get_content()
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.warning("[EpubImageExtractor] get_content failed %s: %s", href, e)
             return None
@@ -74,6 +77,8 @@ class EpubImageExtractor(ImageFetchStrategy):
         for idx, ref in enumerate(refs):
             try:
                 data = await self.fetch(ref)
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.warning(
                     "[EpubImageExtractor] fetch raised for %s: %s",

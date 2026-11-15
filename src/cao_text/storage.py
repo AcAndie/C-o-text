@@ -246,6 +246,8 @@ class ProgressStore:
                     text = await asyncio.to_thread(state_file.read_text, encoding="utf-8")
                     data = json.loads(text)
                     return StoryState.model_validate(data)
+                except asyncio.CancelledError:
+                    raise
                 except Exception as e:
                     logger.warning("Không thể đọc state.json cho %s: %s", story_key, e)
                     return None

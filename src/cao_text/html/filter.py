@@ -283,8 +283,8 @@ def _is_protected(el: Tag, protected: list[Tag]) -> bool:
         try:
             if el in p.parents:
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[HtmlFilter] Parent check failed: %s", e)
     return False
 
 
@@ -317,8 +317,8 @@ def prepare_soup(
                 el = soup.select_one(sel)
                 if el:
                     protected.append(el)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("[HtmlFilter] Invalid protected selector %r: %s", sel, e)
 
     # Layer 1a: Quét CSS <style> tìm các phần tử bị ẩn trước khi xóa thẻ <style> (Fix §7.5)
     n_style_hidden = _strip_style_hidden_elements(soup, protected)

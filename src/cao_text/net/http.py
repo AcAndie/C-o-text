@@ -290,8 +290,10 @@ class DomainSessionPool:
             if session and hasattr(session, "close"):
                 try:
                     await session.close()
-                except Exception:
-                    pass
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.debug("[Pool] close_domain error for %s: %s", domain, e)
 
     async def close_all(self) -> None:
         """Đóng tất cả các session đang mở trong pool."""
@@ -300,8 +302,10 @@ class DomainSessionPool:
                 try:
                     if hasattr(session, "close"):
                         await session.close()
-                except Exception:
-                    pass
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.debug("[Pool] close_all session error: %s", e)
             self._sessions.clear()
             self._host_semaphores.clear()
         logger.debug("[Pool] All domain sessions closed.")
