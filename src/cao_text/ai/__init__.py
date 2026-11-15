@@ -15,6 +15,7 @@ from cao_text.ai.provider import (
     AITransient,
     LLMProvider,
 )
+from cao_text.ai.skeleton import compress_dom_to_skeleton
 
 __all__ = [
     "AIError",
@@ -27,4 +28,5 @@ __all__ = [
     "GeminiProvider",
     "LLMProvider",
     "classify_api_error",
+    "compress_dom_to_skeleton",
 ]
