@@ -34,6 +34,9 @@ cao-text = "cao_text.cli:main"
 where = ["src"]
 include = ["cao_text*"]
 
+[tool.setuptools.package-data]
+cao_text = ["files/*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "src"]
