@@ -176,3 +176,31 @@ def test_prepare_soup_invalid_selector_handled() -> None:
     # Selector syntax sai không làm crash prepare_soup
     soup = prepare_soup(html, remove_selectors=["div:invalid[[[selector"])
     assert "Valid text" in soup.get_text()
+
+
+def test_prepare_soup_style_hidden_elements() -> None:
+    from pathlib import Path
+
+    fixture_path = Path(__file__).resolve().parent / "fixtures" / "html" / "style_hidden_watermark.html"
+    assert fixture_path.exists(), f"Thiếu fixture: {fixture_path}"
+
+    html = fixture_path.read_text(encoding="utf-8")
+    soup = prepare_soup(
+        html,
+        content_selector="div.chapter-content",
+        title_selector="h1",
+        next_selector="a.btn-next",
+    )
+    text = soup.get_text()
+
+    # Các câu watermark ẩn bằng CSS <style> (.wm-secret-display-none, #wm-secret-opacity) phải bị xóa
+    assert "If you find this story on Amazon" not in text
+    assert "Unauthorized reproduction: please support the author" not in text
+    assert "Inline hidden watermark" not in text
+
+    # Văn bản thực sự phải được giữ nguyên vẹn
+    assert "Julian stepped into the stone corridor beneath the citadel" in text
+    assert "Every archway bore the crest of the old observatory" in text
+    assert "At the end of the hall, a bronze astrolabe turned slowly" in text
+    assert "We have less than an hour before the tide seals" in text
+

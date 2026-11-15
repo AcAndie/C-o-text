@@ -60,6 +60,22 @@ _HIDDEN_CLASSES: frozenset[str] = frozenset({
     "aria-hidden",
 })
 
+# CSS rule parser và thuộc tính ẩn phần tử trong <style> (Fix §7.5)
+_CSS_RULE_RE = re.compile(r"([^{}]+)\{([^{}]+)\}", re.DOTALL)
+_CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+_CSS_HIDDEN_DECL_RE = re.compile(
+    r"(?:"
+    r"\bdisplay\s*:\s*none\b"
+    r"|\bvisibility\s*:\s*hidden\b"
+    r"|\bopacity\s*:\s*0(?:\.0+)?\s*(?:!important)?\s*(?:;|\Z)"
+    r"|\bfont-size\s*:\s*0(?:px|pt|em|rem)?\s*(?:!important)?\s*(?:;|\Z)"
+    r"|\bspeak\s*:\s*never\b"
+    r"|\bclip\s*:\s*rect\s*\(\s*0(?:px)?\s*,\s*0(?:px)?\s*,\s*0(?:px)?\s*,\s*0(?:px)?\s*\)"
+    r"|\bposition\s*:\s*absolute\s*;\s*(?:left|top)\s*:\s*-[0-9]{3,}px"
+    r")",
+    re.IGNORECASE,
+)
+
 # Known noise selectors: bộ lọc an toàn mức global cho các thành phần rác phổ biến
 KNOWN_NOISE_SELECTORS: list[str] = [
     # FanFiction.net
@@ -179,6 +195,44 @@ def _strip_invisible_elements(soup: BeautifulSoup) -> int:
     return stripped
 
 
+def _strip_style_hidden_elements(soup: BeautifulSoup, protected: list[Tag]) -> int:
+    """Quét các thẻ <style> tìm CSS rules làm ẩn phần tử (display:none, visibility:hidden, opacity:0, font-size:0, speak:never...).
+
+    Loại bỏ các phần tử khớp trong DOM trước khi thẻ <style> bị xóa (Fix §7.5).
+    """
+    hidden_selectors: set[str] = set()
+    for s in soup.find_all("style"):
+        text = s.get_text()
+        if not text:
+            continue
+        text = _CSS_COMMENT_RE.sub("", text)
+        for m in _CSS_RULE_RE.finditer(text):
+            sel_text = m.group(1).strip()
+            decl_text = m.group(2).strip()
+            if _CSS_HIDDEN_DECL_RE.search(decl_text):
+                for part in sel_text.split(","):
+                    p = part.strip()
+                    # Chỉ chấp nhận selector có class (.) hoặc ID (#) để tránh xóa nhầm thẻ gốc toàn trang
+                    if "." in p or "#" in p:
+                        hidden_selectors.add(p)
+
+    stripped = 0
+    for sel in hidden_selectors:
+        try:
+            for el in soup.select(sel):
+                if not _is_alive(el):
+                    continue
+                if _is_protected(el, protected):
+                    logger.debug("[HtmlFilter] Skipped protected element in style scan: %s", sel)
+                    continue
+                el.decompose()
+                stripped += 1
+        except Exception as e:
+            logger.debug("[HtmlFilter] Error selecting style hidden %r: %s", sel, e)
+
+    return stripped
+
+
 def _iter_selector(soup: BeautifulSoup, sel: str) -> list[Tag]:
     """Hỗ trợ query selector thông thường và :contains('text') pseudo-selector."""
     m = _CONTAINS_RE.match(sel.strip())
@@ -232,6 +286,22 @@ def prepare_soup(
 
     soup = BeautifulSoup(html, "html.parser")
 
+    # Xác định danh sách phần tử cần bảo vệ (NAV-PROTECT) trước khi lọc
+    protected: list[Tag] = []
+    for sel in (content_selector, title_selector, next_selector):
+        if sel:
+            try:
+                el = soup.select_one(sel)
+                if el:
+                    protected.append(el)
+            except Exception:
+                pass
+
+    # Layer 1a: Quét CSS <style> tìm các phần tử bị ẩn trước khi xóa thẻ <style> (Fix §7.5)
+    n_style_hidden = _strip_style_hidden_elements(soup, protected)
+    if n_style_hidden:
+        logger.info("[HtmlFilter] Stripped %d style-hidden element(s)", n_style_hidden)
+
     # Layer 1: Luôn xóa noise tags
     for tag in soup.find_all(_ALWAYS_REMOVE):
         tag.decompose()
@@ -259,16 +329,6 @@ def prepare_soup(
     # Layer 3: Profile-specific remove selectors
     if not remove_selectors:
         return soup
-
-    protected: list[Tag] = []
-    for sel in (content_selector, title_selector, next_selector):
-        if sel:
-            try:
-                el = soup.select_one(sel)
-                if el:
-                    protected.append(el)
-            except Exception:
-                pass
 
     for sel in remove_selectors:
         if not sel or not sel.strip():
