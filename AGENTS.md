@@ -266,7 +266,7 @@ Mục tiêu: chụp lại hành vi code cũ thành golden test chạy offline, �
 
 ### Phase 1 — Bộ khung package mới
 - [x] **1.1** Tạo `src/cao_text/` theo §4.1 (file rỗng/khung), `pip install -e .[dev]` chạy được, `python -m cao_text --help` in được.
-- [ ] **1.2** `settings.py`: dataclass `Settings` load theo thứ tự ưu tiên **CLI > env > config.toml > mặc định**; đọc nhiều key `GEMINI_API_KEY` và `GEMINI_API_KEY_<số>` (regex chặt `^GEMINI_API_KEY(?:_\d+)?$`); thiếu key chỉ báo lỗi **khi thật sự cần gọi AI**, không phải lúc import. Giữ tương thích mọi khóa `config.toml` hiện có (`[output]`, `[paths]`, `[scraper]`, `[learning]`, `[ai]`, `[http]`, `[js_detection]`).
+- [x] **1.2** `settings.py`: dataclass `Settings` load theo thứ tự ưu tiên **CLI > env > config.toml > mặc định**; đọc nhiều key `GEMINI_API_KEY` và `GEMINI_API_KEY_<số>` (regex chặt `^GEMINI_API_KEY(?:_\d+)?$`); thiếu key chỉ báo lỗi **khi thật sự cần gọi AI**, không phải lúc import. Giữ tương thích mọi khóa `config.toml` hiện có (`[output]`, `[paths]`, `[scraper]`, `[learning]`, `[ai]`, `[http]`, `[js_detection]`).
 - [ ] **1.3** `log.py`: logging console gọn (giữ emoji/tiền tố domain như cũ cho dễ đọc) + `IssueReporter` ghi `issues.md` (newest on top, các loại: `BLOCKED`, `CONTENT_SUSPICIOUS`, `TITLE_FALLBACK`, `NEXT_URL_MISSING`…).
 - [ ] **1.4** `models.py`: `SiteProfile` (pydantic, `profile_version=3`), `StoryState`, `RunConfig` (mặc định theo mode như §1), `CleanedChapter`, `ImageRef`.
 - [ ] **1.5** `storage.py`: `atomic_write_text/json` (dọn `.tmp` khi cancel), `ProfileStore` (load/save/delete, lock async), `ProgressStore` (thiết kế §5 Phase 5, làm khung trước).
