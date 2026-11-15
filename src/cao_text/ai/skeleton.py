@@ -33,18 +33,39 @@ DISCARD_TAGS = {
 # Các thuộc tính cốt lõi cần giữ lại cho việc nhận diện selector
 ALLOWED_ATTRS = {"id", "class", "role", "rel"}
 
+# Nhận diện class bị làm rối (obfuscated base64/hash) hoặc gắn ID động từng đoạn văn
+_HEX_HASH_RE = re.compile(r"[0-9a-fA-F]{16,}")
+_RANDOM_TOKEN_RE = re.compile(r"^[A-Za-z0-9]{22,}$")
+
+# Các thẻ inline trống rỗng (thường là icon sau khi xóa svg/font) cần dọn nếu không có chữ
+_EMPTY_INLINE_TAGS = {"i", "span", "em", "b", "strong", "small", "u", "s", "sub", "sup"}
+
+
+def _is_obfuscated_class(cls_name: str) -> bool:
+    """Kiểm tra xem tên class có phải chuỗi hash/ngẫu nhiên sinh động theo từng thẻ hay không."""
+    if _HEX_HASH_RE.search(cls_name):
+        return True
+    if _RANDOM_TOKEN_RE.match(cls_name) and any(c.isdigit() for c in cls_name):
+        return True
+    return False
+
 
 def _filter_tag_attributes(tag: Tag) -> None:
-    """Lọc bỏ các thuộc tính không cần thiết của một thẻ HTML."""
+    """Lọc bỏ các thuộc tính không cần thiết và loại bỏ các class bị làm rối của một thẻ HTML."""
     attrs_to_delete: list[str] = []
-    for attr, val in tag.attrs.items():
+    for attr, val in list(tag.attrs.items()):
         if attr in ALLOWED_ATTRS:
-            if attr == "class" and isinstance(val, list):
-                tag.attrs[attr] = " ".join(val)
+            if attr == "class":
+                raw_classes = val if isinstance(val, list) else str(val).split()
+                clean_classes = [c for c in raw_classes if not _is_obfuscated_class(c)]
+                if clean_classes:
+                    tag.attrs["class"] = " ".join(clean_classes)
+                else:
+                    attrs_to_delete.append("class")
             continue
         if attr.startswith("aria-"):
             continue
-        if tag.name == "a" and attr == "href":
+        if tag.name in ("a", "link") and attr == "href":
             if isinstance(val, str) and len(val) > 120:
                 tag.attrs[attr] = val[:120] + "..."
             continue
@@ -53,7 +74,7 @@ def _filter_tag_attributes(tag: Tag) -> None:
         attrs_to_delete.append(attr)
 
     for attr in attrs_to_delete:
-        del tag.attrs[attr]
+        tag.attrs.pop(attr, None)
 
 
 def _collapse_repeating_children(soup: BeautifulSoup, repeat_threshold: int = 4) -> None:
@@ -133,7 +154,23 @@ def compress_dom_to_skeleton(
 
     soup = BeautifulSoup(html, "html.parser")
 
-    # 1. Loại bỏ các thẻ rác
+    # 1. Trích xuất thông tin quan trọng từ <head> (<title> và <link rel="next">) trước khi xóa
+    head_title_str: str | None = None
+    next_link_href: str | None = None
+    head = soup.find("head")
+    if head is not None:
+        title_tag = head.find("title")
+        if title_tag:
+            head_title_str = title_tag.get_text(strip=True)
+        for link_tag in head.find_all("link"):
+            rel_val = link_tag.get("rel", [])
+            rels = [r.lower() for r in (rel_val if isinstance(rel_val, list) else str(rel_val).split())]
+            if "next" in rels and link_tag.get("href"):
+                next_link_href = str(link_tag.get("href"))
+                break
+        head.decompose()
+
+    # 2. Loại bỏ các thẻ rác
     for tag in soup.find_all(DISCARD_TAGS):
         tag.decompose()
 
@@ -141,47 +178,66 @@ def compress_dom_to_skeleton(
     for comment in soup.find_all(string=lambda t: isinstance(t, Comment)):
         comment.extract()
 
-    # 2. Xử lý phần thẻ <head>: chỉ giữ lại <title> nếu có
-    head = soup.find("head")
-    if head is not None:
-        title = head.find("title")
-        title_str = title.get_text(strip=True) if title else None
-        head.decompose()
-        if title_str and soup.body is not None:
-            new_title = soup.new_tag("title")
-            new_title.string = title_str[:max_node_text]
-            soup.body.insert(0, new_title)
+    # Đưa <title> và <link rel="next"> vào đầu <body> nếu có
+    container = soup.body if soup.body is not None else soup
+    if next_link_href:
+        new_link = soup.new_tag("link", rel="next", href=next_link_href[:120])
+        container.insert(0, new_link)
+    if head_title_str:
+        new_title = soup.new_tag("title")
+        new_title.string = head_title_str[:max_node_text]
+        container.insert(0, new_title)
 
-    # 3. Gộp các node con lặp lại liên tiếp (ví dụ 100 đoạn <p> hay 500 mục <li>)
-    _collapse_repeating_children(soup, repeat_threshold=repeat_threshold)
-
-    # 4. Lọc và chuẩn hóa thuộc tính của từng tag
-    for tag in soup.find_all(True):
-        _filter_tag_attributes(tag)
-
-    # 5. Cắt ngắn văn bản của mỗi node
+    # 3. Cắt ngắn văn bản của mỗi node và xóa khoảng trắng thừa
     for text_node in list(soup.find_all(string=True)):
         if isinstance(text_node, Comment):
             continue
         raw = str(text_node)
         cleaned = re.sub(r"\s+", " ", raw).strip()
         if not cleaned:
-            text_node.replace_with("")
+            text_node.extract()
             continue
         if len(cleaned) > max_node_text:
             cleaned = cleaned[:max_node_text].rstrip() + "..."
         text_node.replace_with(cleaned)
 
-    # 6. Render kết quả và áp dụng trần max_chars
+    # 4. Lọc và chuẩn hóa thuộc tính của từng tag (xóa cả class obfuscated trước khi gộp thẻ lặp)
+    for tag in soup.find_all(True):
+        _filter_tag_attributes(tag)
+
+    # Dọn dẹp các thẻ inline rỗng (ví dụ <i class="icon"></i> không chứa chữ hay thẻ con)
+    for tag in reversed(list(soup.find_all(True))):
+        if tag.name in _EMPTY_INLINE_TAGS and not tag.get_text(strip=True) and not tag.find(True):
+            if not tag.get("id"):
+                tag.decompose()
+
+    # 5. Gộp các node con lặp lại liên tiếp (ví dụ 100 đoạn <p> hay 500 mục <li>)
+    _collapse_repeating_children(soup, repeat_threshold=repeat_threshold)
+
+    # 6. Render kết quả và áp dụng trần max_chars (giữ cả phần đầu và phần cuối trang)
     target = soup.body if soup.body is not None else soup
     raw_output = str(target)
     cleaned_output = re.sub(r">\s+<", "><", raw_output).strip()
 
     if len(cleaned_output) > max_chars:
-        truncated = cleaned_output[:max_chars]
-        last_bracket = truncated.rfind(">")
-        if last_bracket > 0:
-            truncated = truncated[: last_bracket + 1]
-        cleaned_output = f"{truncated}\n<!-- ... [DOM Skeleton đã được cắt bớt để bảo toàn giới hạn {max_chars} ký tự] -->"
+        marker = f"\n<!-- ... [DOM Skeleton đã được cắt bớt để bảo toàn giới hạn {max_chars} ký tự] -->\n"
+        if max_chars <= len(marker) + 40:
+            cleaned_output = cleaned_output[:max_chars]
+        else:
+            avail = max_chars - len(marker)
+            head_budget = int(avail * 0.7)
+            tail_budget = avail - head_budget
+
+            head_part = cleaned_output[:head_budget]
+            last_gt = head_part.rfind(">")
+            if last_gt > head_budget // 2:
+                head_part = head_part[: last_gt + 1]
+
+            tail_part = cleaned_output[len(cleaned_output) - tail_budget :]
+            first_lt = tail_part.find("<")
+            if 0 <= first_lt < tail_budget // 2:
+                tail_part = tail_part[first_lt:]
+
+            cleaned_output = f"{head_part}{marker}{tail_part}"
 
     return cleaned_output

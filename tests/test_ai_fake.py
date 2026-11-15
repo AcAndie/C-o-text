@@ -56,7 +56,8 @@ async def test_fake_provider_default_instances_all_7_schemas() -> None:
 
     res_epub = await fake.generate("prompt", EpubRulesOutput)
     assert isinstance(res_epub, EpubRulesOutput)
-    assert len(res_epub.chapters) == 1
+    assert res_epub.chapter_title_regex is not None
+    assert res_epub.merge_unnamed_into_previous is True
 
     assert fake.call_count == 7
 

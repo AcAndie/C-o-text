@@ -25,13 +25,25 @@ from cao_text.ai.schemas import (
 
 
 def test_site_analysis_schema_valid() -> None:
-    """SiteAnalysisOutput validate đúng các trường và khoảng giá trị confidence."""
+    """SiteAnalysisOutput validate đúng các trường selector, naming, ảnh và formatting_rules (§6.4)."""
     valid_data = {
         "content_selector": "div.chapter-content",
         "title_selector": "h1.chapter-title",
         "next_selector": "a.next-chap",
         "nav_type": "selector",
         "remove_selectors": [".ads", ".share-box"],
+        "watermark_selectors": [".hidden-wm"],
+        "ads_keywords": ["Read free at novel.com"],
+        "download_images": True,
+        "image_selector": "div.chapter-content img",
+        "story_name_clean": "Rock Falls Everyone Dies",
+        "chapter_keyword": "Chapter",
+        "has_chapter_subtitle": True,
+        "story_prefix_strip": "RFED - ",
+        "formatting_rules": {
+            "tables": True,
+            "system_box_selector": "div.system-alert",
+        },
         "confidence": 0.95,
         "requires_playwright": False,
         "notes": "Trang chuẩn",
@@ -39,7 +51,16 @@ def test_site_analysis_schema_valid() -> None:
     output = SiteAnalysisOutput.model_validate(valid_data)
     assert output.content_selector == "div.chapter-content"
     assert output.title_selector == "h1.chapter-title"
+    assert output.story_name_clean == "Rock Falls Everyone Dies"
+    assert output.download_images is True
     assert output.confidence == 0.95
+
+    # Kiểm tra build_formatting_rules() trả về đủ khóa mặc định an toàn (§6.4)
+    fmt = output.build_formatting_rules()
+    assert fmt.tables is True
+    assert fmt.bold_italic is True
+    assert fmt.hr_dividers is True
+    assert fmt.system_box == {"enabled": True, "selector": "div.system-alert"}
 
     # Thiếu content_selector -> lỗi
     with pytest.raises(ValidationError):
@@ -129,40 +150,46 @@ def test_txt_pattern_schema() -> None:
 
 
 def test_epub_rules_schema() -> None:
-    """EpubRulesOutput tổ chức các chương và phụ lục."""
+    """EpubRulesOutput trả về bộ quy tắc phân chia chương theo Phase 6.2 & §7.3 (không liệt kê từng doc)."""
     data = {
         "story_title": "Ready Player One",
         "author": "Ernest Cline",
+        "chapter_title_regex": r"^(?:Chapter|Level)\s+\d+",
+        "divider_title_regex": r"^Level\s+(?:One|Two|Three)",
+        "front_matter_keywords": ["cover", "copyright", "toc"],
+        "back_matter_keywords": ["acknowledgments", "appendix"],
         "front_matter_hrefs": ["cover.xhtml", "toc.xhtml"],
-        "chapters": [
-            {
-                "title": "Level One: Chapter 0001",
-                "hrefs": ["part1.xhtml", "ch1.xhtml"],
-                "is_special": False,
-            },
-            {
-                "title": "Level One: Chapter 0002",
-                "hrefs": ["ch2.xhtml"],
-                "is_special": False,
-            },
-        ],
         "back_matter_hrefs": ["afterword.xhtml"],
+        "merge_unnamed_into_previous": True,
+        "confidence": 0.92,
     }
     out = EpubRulesOutput.model_validate(data)
     assert out.story_title == "Ready Player One"
+    assert out.chapter_title_regex == r"^(?:Chapter|Level)\s+\d+"
+    assert out.divider_title_regex == r"^Level\s+(?:One|Two|Three)"
     assert len(out.front_matter_hrefs) == 2
-    assert len(out.chapters) == 2
-    assert isinstance(out.chapters[0], EpubChapterItem)
-    assert out.chapters[0].hrefs == ["part1.xhtml", "ch1.xhtml"]
+    assert out.merge_unnamed_into_previous is True
+    assert out.confidence == 0.92
+
+    item = EpubChapterItem(title="Chapter 1", hrefs=["part1.xhtml", "ch1.xhtml"])
+    assert item.hrefs == ["part1.xhtml", "ch1.xhtml"]
 
 
 def test_prompts_generation_strings() -> None:
     """Các hàm prompt sinh chuỗi có nội dung hướng dẫn đầy đủ."""
-    # 1. analyze_site
-    p_analyze = prompt_analyze_site("<div class='main'>text</div>", "https://site.com/c1")
+    # 1. analyze_site (đơn lẻ và danh sách 2 chương + ứng viên)
+    p_analyze = prompt_analyze_site(
+        ["<div class='main'>ch1</div>", "<div class='main'>ch2</div>"],
+        ["https://site.com/c1", "https://site.com/c2"],
+        candidates={"content": ["div.main"]},
+        repeated_lines=["Watermark line"],
+        raw_titles=["Novel - Chapter 1"],
+    )
     assert "https://site.com/c1" in p_analyze
     assert "content_selector" in p_analyze
+    assert "story_name_clean" in p_analyze
     assert "DOM SKELETON" in p_analyze
+    assert "Watermark line" in p_analyze
 
     # 2. repair_site
     p_repair = prompt_repair_site(
@@ -199,6 +226,10 @@ def test_prompts_generation_strings() -> None:
     assert "Hồi 1" in p_txt
 
     # 7. epub_rules
-    p_epub = prompt_epub_rules("- doc1.xhtml (1000 words)\n- doc2.xhtml (5000 words)")
-    assert "front_matter_hrefs" in p_epub
+    p_epub = prompt_epub_rules(
+        "- doc1.xhtml (1000 words)\n- doc2.xhtml (5000 words)",
+        toc_titles=["Cover", "Part 1", "Chapter 1"],
+    )
+    assert "chapter_title_regex" in p_epub
+    assert "divider_title_regex" in p_epub
     assert "doc1.xhtml" in p_epub

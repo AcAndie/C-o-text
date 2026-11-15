@@ -339,3 +339,41 @@ async def test_gemini_provider_fallback_model_on_exhaustion() -> None:
     assert res.title == "Fallback thành công"
     # Model chính thử 2 lần, sau đó fallback model được gọi 1 lần
     assert called_models == ["gemini-3.8-flash", "gemini-3.8-flash", "gemini-2.5-flash"]
+
+
+@pytest.mark.asyncio
+async def test_gemini_provider_fallback_model_on_503_single_key_no_cooldown_hang() -> None:
+    """Khi model chính bị 503 (AIRateLimited) trên 1 key duy nhất, fallback model chạy ngay không bị kẹt cooldown 60s."""
+    called_models = []
+
+    def factory(key: str) -> MagicMock:
+        client = MagicMock()
+        client.aio = MagicMock()
+        client.aio.models = MagicMock()
+
+        async def generate_mock(model: str, contents: str, config: Any) -> Any:
+            called_models.append(model)
+            if model == "gemini-3.8-flash":
+                raise _FakeAPIError(503, "High demand - unavailable")
+            good = MagicMock()
+            good.parsed = _MockSampleModel(title="Fallback 503", chapter_count=10)
+            return good
+
+        client.aio.models.generate_content = AsyncMock(side_effect=generate_mock)
+        return client
+
+    provider = GeminiProvider(
+        api_keys=["single-key-only"],
+        model="gemini-3.8-flash",
+        fallback_model="gemini-2.5-flash",
+        max_retries=2,
+        backoff_base=0.01,
+        max_backoff=0.02,
+        cooldown_sec=60.0,  # Cooldown 60s nhưng fallback dùng ignore_cooldown=True nên hoàn thành < 1s
+        jitter=(0.0, 0.0),
+        client_factory=factory,
+    )
+
+    res = await asyncio.wait_for(provider.generate("test 503", _MockSampleModel), timeout=2.0)
+    assert res.title == "Fallback 503"
+    assert called_models == ["gemini-3.8-flash", "gemini-3.8-flash", "gemini-2.5-flash"]

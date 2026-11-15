@@ -5,9 +5,49 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from cao_text.models import FormattingRules
+
+
+class FormattingRulesSchema(BaseModel):
+    """Cấu hình định dạng văn bản do AI đề xuất (tương thích строг với Gemini response_schema)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    tables: bool = Field(default=False, description="Giữ bảng HTML dưới dạng bảng Markdown (ví dụ bảng trạng thái LitRPG)")
+    math_support: bool = Field(default=False, description="Giữ công thức toán học LaTeX/MathML")
+    bold_italic: bool = Field(default=True, description="Giữ định dạng in đậm / in nghiêng")
+    hr_dividers: bool = Field(default=True, description="Giữ đường kẻ ngang phân cảnh (<hr>)")
+    image_alt_strategy: str = Field(
+        default="skip",
+        description="Chiến lược xử lý alt text của ảnh: skip, preserve, fallback_to_filename",
+    )
+    system_box_selector: str | None = Field(
+        default=None,
+        description="CSS selector cho hộp hệ thống / bảng thông báo kỹ năng nếu có",
+    )
+    author_note_selector: str | None = Field(
+        default=None,
+        description="CSS selector cho phần lời tác giả (author note) nếu cần đóng khung riêng",
+    )
+
+    def to_formatting_rules(self) -> FormattingRules:
+        """Chuyển đổi sang FormattingRules đầy đủ khóa mặc định an toàn (§6.4)."""
+        rules = FormattingRules(
+            tables=self.tables,
+            math_support=self.math_support,
+            bold_italic=self.bold_italic,
+            hr_dividers=self.hr_dividers,
+            image_alt_strategy=self.image_alt_strategy,
+        )
+        if self.system_box_selector:
+            rules.system_box = {"enabled": True, "selector": self.system_box_selector}
+        if self.author_note_selector:
+            rules.author_note = {"enabled": True, "selector": self.author_note_selector}
+        return rules
+
 
 class SiteAnalysisOutput(BaseModel):
-    """Kết quả phân tích DOM skeleton để tạo profile cho một site mới."""
+    """Kết quả phân tích DOM skeleton để tạo profile và đặt tên cho một site mới (Phase 4)."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -16,15 +56,55 @@ class SiteAnalysisOutput(BaseModel):
     next_selector: str | None = Field(default=None, description="CSS selector cho nút/link chương kế tiếp")
     nav_type: str = Field(
         default="selector",
-        description="Loại điều hướng: selector, rel_next, anchor_text, slug_increment, dropdown",
+        description="Loại điều hướng: selector, rel_next, anchor_text, slug_increment, fanfic, dropdown",
     )
     remove_selectors: list[str] = Field(
         default_factory=list,
         description="Danh sách CSS selector các phần tử rác (quảng cáo, comments, vote, nút chia sẻ)",
     )
+    watermark_selectors: list[str] = Field(
+        default_factory=list,
+        description="Danh sách CSS selector của câu watermark/chống copy chèn giữa nội dung",
+    )
+    ads_keywords: list[str] = Field(
+        default_factory=list,
+        description="Các câu rác/quảng cáo/watermark văn bản thuần lặp lại cần lọc bỏ",
+    )
+    download_images: bool = Field(
+        default=False,
+        description="Truyện có ảnh minh họa nội dung chương cần tải về hay không",
+    )
+    image_selector: str | None = Field(
+        default=None,
+        description="CSS selector cho thẻ ảnh minh họa trong chương (nếu có)",
+    )
+    story_name_clean: str | None = Field(
+        default=None,
+        description="Tên bộ truyện đã làm sạch (bỏ hậu tố tên web, 'Read online', 'Free'...) để đặt tên thư mục",
+    )
+    chapter_keyword: str = Field(
+        default="Chapter",
+        description="Từ khóa chương dùng thống nhất (ví dụ: 'Chương' cho truyện Việt, 'Chapter' cho truyện Anh)",
+    )
+    has_chapter_subtitle: bool = Field(
+        default=False,
+        description="Tiêu đề chương có tên phụ (subtitle) đi kèm số chương hay không",
+    )
+    story_prefix_strip: str | None = Field(
+        default=None,
+        description="Tiền tố tên truyện lặp lại ở đầu mỗi tiêu đề chương cần cắt bỏ",
+    )
+    formatting_rules: FormattingRulesSchema = Field(
+        default_factory=FormattingRulesSchema,
+        description="Quy tắc định dạng nội dung (bảng biểu, in đậm/nghiêng, hộp hệ thống)",
+    )
     confidence: float = Field(default=0.9, ge=0.0, le=1.0, description="Độ tin cậy của phân tích")
     requires_playwright: bool = Field(default=False, description="Site có bắt buộc dùng Playwright hay không")
     notes: str | None = Field(default=None, description="Ghi chú về cấu trúc site")
+
+    def build_formatting_rules(self) -> FormattingRules:
+        """Trả về FormattingRules có đầy đủ khóa mặc định trước khi ghi đè (§6.4)."""
+        return self.formatting_rules.to_formatting_rules()
 
 
 class SiteRepairOutput(BaseModel):
@@ -97,10 +177,18 @@ class VerifyAdsOutput(BaseModel):
 
 
 class TxtPatternOutput(BaseModel):
-    """Kết quả nhận diện pattern ranh giới chương cho file văn bản TXT."""
+    """Kết quả nhận diện pattern ranh giới chương cho file văn bản TXT (Phase 6.1)."""
 
     model_config = ConfigDict(extra="ignore")
 
+    pattern_id: str | None = Field(
+        default=None,
+        description="Định danh ngắn gọn dạng snake_case cho pattern (ví dụ: vn_hoi_tiet, en_act_scene)",
+    )
+    language: str = Field(
+        default="other",
+        description="Ngôn ngữ chính của file: 'vi', 'en', 'zh', hoặc 'other'",
+    )
     chapter_regex: str = Field(description="Biểu thức chính quy (Python regex) khớp dòng tiêu đề chương")
     example_matches: list[str] = Field(default_factory=list, description="Các ví dụ khớp từ mẫu")
     confidence: float = Field(default=0.8, ge=0.0, le=1.0)
@@ -108,7 +196,7 @@ class TxtPatternOutput(BaseModel):
 
 
 class EpubChapterItem(BaseModel):
-    """Một mục chương được gom nhóm từ các tài liệu thành phần trong EPUB."""
+    """Một mục chương đã được lập kế hoạch từ các tài liệu thành phần trong EPUB."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -118,22 +206,39 @@ class EpubChapterItem(BaseModel):
 
 
 class EpubRulesOutput(BaseModel):
-    """Kế hoạch cấu trúc chương cho tài liệu EPUB."""
+    """Bộ quy tắc phân loại và gộp/tách chương cho EPUB (Phase 6.2 & §7.3 — KHÔNG liệt kê từng doc)."""
 
     model_config = ConfigDict(extra="ignore")
 
     story_title: str | None = Field(default=None, description="Tên tác phẩm")
     author: str | None = Field(default=None, description="Tác giả")
+    chapter_title_regex: str | None = Field(
+        default=None,
+        description="Python regex nhận diện tiêu đề chương chính (ví dụ: '^(?:Chapter|Chương)\\s+\\d+')",
+    )
+    divider_title_regex: str | None = Field(
+        default=None,
+        description="Python regex nhận diện trang divider Phần/Quyển (ví dụ: '^(?:Part|Book|Volume|Quyển)\\s+[\\w\\d]+') để gộp vào chương sau",
+    )
+    front_matter_keywords: list[str] = Field(
+        default_factory=list,
+        description="Danh sách từ khóa tiêu đề hoặc tên file thuộc đầu sách cần bỏ qua (cover, copyright, toc, preface...)",
+    )
+    back_matter_keywords: list[str] = Field(
+        default_factory=list,
+        description="Danh sách từ khóa tiêu đề hoặc tên file thuộc cuối sách cần bỏ qua (afterword, appendix, license...)",
+    )
     front_matter_hrefs: list[str] = Field(
         default_factory=list,
-        description="Danh sách href là bìa, bản quyền, mục lục đầu sách",
-    )
-    chapters: list[EpubChapterItem] = Field(
-        default_factory=list,
-        description="Danh sách các chương truyện thực sự",
+        description="Danh sách href cụ thể ở đầu sách chắc chắn là bìa, bản quyền, mục lục cần bỏ",
     )
     back_matter_hrefs: list[str] = Field(
         default_factory=list,
-        description="Danh sách href là phụ lục, lời kết, quảng cáo cuối sách",
+        description="Danh sách href cụ thể ở cuối sách chắc chắn là phụ lục, quảng cáo cuối sách cần bỏ",
     )
-    reasoning: str | None = Field(default=None, description="Giải thích cách phân chia")
+    merge_unnamed_into_previous: bool = Field(
+        default=True,
+        description="Nếu True, các tài liệu con không có tiêu đề TOC sẽ được gộp nối tiếp vào chương liền trước",
+    )
+    confidence: float = Field(default=0.85, ge=0.0, le=1.0, description="Độ tin cậy của bộ quy tắc")
+    reasoning: str | None = Field(default=None, description="Giải thích ngắn gọn quy tắc phân chia")

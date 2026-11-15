@@ -109,16 +109,53 @@ def test_compress_dom_collapse_repeating_children() -> None:
 
 
 def test_compress_dom_max_chars_cap() -> None:
-    """Tổng độ dài chuỗi skeleton không vượt quá max_chars và có ghi chú cắt ngắn."""
+    """Tổng độ dài chuỗi skeleton không vượt quá max_chars và giữ cả phần đầu lẫn phần cuối trang."""
     paragraphs = "".join([f'<p class="para-{i}">Nội dung đoạn số {i} của tiểu thuyết.</p>' for i in range(100)])
-    raw_html = f'<div id="big-box">{paragraphs}</div>'
+    raw_html = f'<div id="big-box"><header id="top-nav">Đầu trang</header>{paragraphs}<footer id="bot-nav"><a href="/next">Next</a></footer></div>'
 
-    max_budget = 300
+    max_budget = 400
     skeleton = compress_dom_to_skeleton(raw_html, max_chars=max_budget)
 
-    # Đảm bảo nội dung chính được giữ trong ngân sách
-    assert len(skeleton) <= max_budget + 150  # Cộng thêm độ dài dòng ghi chú cắt bớt
+    # Đảm bảo tổng độ dài tuân thủ nghiêm ngặt ngân sách max_chars
+    assert len(skeleton) <= max_budget
     assert "DOM Skeleton đã được cắt bớt" in skeleton
+    assert "top-nav" in skeleton
+    assert "bot-nav" in skeleton
+
+
+def test_compress_dom_obfuscated_classes_and_head_rel_next() -> None:
+    """Lọc bỏ class obfuscated/hash để gộp các đoạn văn và giữ lại <link rel="next"> trong <head>."""
+    rr_paras = "".join(
+        [
+            f'<p class="cnM2ZTU1MzcyMDhiNzQ4MWQ4MjNjZDhiNTZmZTIwYz{i:02d}">Đoạn RoyalRoad {i}</p>'
+            for i in range(10)
+        ]
+    )
+    wn_paras = "".join(
+        [
+            f'<div class="db cha-paragraph j_paragraph j_para_63305e34d9219a014e51f7ce9c9831{i:02d}"><p>Đoạn Webnovel {i}</p></div>'
+            for i in range(10)
+        ]
+    )
+    raw_html = f"""
+    <html>
+      <head>
+        <title>Test Novel</title>
+        <link rel="next" href="/chapter-2" />
+      </head>
+      <body>
+        <div class="chapter-inner">{rr_paras}</div>
+        <div class="cha-words">{wn_paras}</div>
+      </body>
+    </html>
+    """
+    skeleton = compress_dom_to_skeleton(raw_html, repeat_threshold=4)
+    assert 'rel="next"' in skeleton
+    assert 'href="/chapter-2"' in skeleton
+    # Các đoạn RoyalRoad và Webnovel đều được gộp mặc dù có class hash riêng biệt
+    assert "tương tự được gộp" in skeleton
+    assert "Đoạn RoyalRoad 5" not in skeleton
+    assert "Đoạn Webnovel 5" not in skeleton
 
 
 def test_compress_dom_with_fixtures_html() -> None:
@@ -137,22 +174,24 @@ def test_compress_dom_with_fixtures_html() -> None:
 
 
 def test_compress_dom_with_local_royalroad_fixture_if_exists() -> None:
-    """Kiểm tra tỷ lệ nén trên fixture thật của RoyalRoad nếu có."""
-    rr_fixture = (
-        Path(__file__).resolve().parent
-        / "fixtures_local"
-        / "web"
-        / "www.royalroad.com"
-        / "rock_falls_everyone_dies"
-        / "0001.html"
-    )
-    if not rr_fixture.exists():
-        return
+    """Kiểm tra tỷ lệ nén và gộp đoạn trên fixture thật của RoyalRoad và Webnovel nếu có."""
+    base_dir = Path(__file__).resolve().parent / "fixtures_local" / "web"
+    rr_fixture = base_dir / "www.royalroad.com" / "rock_falls_everyone_dies" / "0001.html"
+    if rr_fixture.exists():
+        raw_html = rr_fixture.read_text(encoding="utf-8")
+        raw_size = len(raw_html)
+        skeleton = compress_dom_to_skeleton(raw_html, max_chars=15000)
 
-    raw_html = rr_fixture.read_text(encoding="utf-8")
-    raw_size = len(raw_html)
-    skeleton = compress_dom_to_skeleton(raw_html, max_chars=15000)
+        assert len(skeleton) <= 15000
+        assert len(skeleton) < raw_size * 0.25
+        assert "chapter-inner" in skeleton
+        assert "tương tự được gộp" in skeleton
 
-    # Nén từ ~93KB xuống <= 15KB
-    assert len(skeleton) <= 15150
-    assert len(skeleton) < raw_size * 0.25
+    wn_fixture = base_dir / "www.webnovel.com" / "in_danmachi_with_plasmids" / "0001.html"
+    if wn_fixture.exists():
+        raw_html = wn_fixture.read_text(encoding="utf-8")
+        skeleton = compress_dom_to_skeleton(raw_html, max_chars=15000)
+
+        assert len(skeleton) <= 15000
+        assert "cha-words" in skeleton
+        assert "tương tự được gộp" in skeleton

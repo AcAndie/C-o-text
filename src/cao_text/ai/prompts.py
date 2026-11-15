@@ -4,21 +4,51 @@ from __future__ import annotations
 from typing import Any
 
 
-def prompt_analyze_site(skeleton: str, url: str) -> str:
-    """Tạo prompt yêu cầu AI phân tích DOM skeleton để xác định bộ chọn CSS cho site mới."""
-    return f"""Bạn là chuyên gia bóc tách dữ liệu web novel (CSS selector extraction).
-Nhiệm vụ: Phân tích cấu trúc DOM skeleton dưới đây từ URL: {url}
+def prompt_analyze_site(
+    skeleton: str | list[str],
+    url: str | list[str],
+    *,
+    candidates: dict[str, Any] | None = None,
+    repeated_lines: list[str] | None = None,
+    raw_titles: list[str] | None = None,
+) -> str:
+    """Tạo prompt yêu cầu AI phân tích DOM skeleton (1–2 chương) + ứng viên + naming cho site mới (Phase 4)."""
+    urls_str = ", ".join(url) if isinstance(url, list) else url
+    if isinstance(skeleton, list):
+        skeleton_block = "\n\n".join(
+            f"--- CHƯƠNG MẪU #{i + 1} ---\n{sk}" for i, sk in enumerate(skeleton)
+        )
+    else:
+        skeleton_block = skeleton
+
+    extra_blocks: list[str] = []
+    if candidates:
+        extra_blocks.append(f"=== ỨNG VIÊN HEURISTIC ===\n{candidates}")
+    if repeated_lines:
+        lines_str = "\n".join(f"  - {ln!r}" for ln in repeated_lines[:30])
+        extra_blocks.append(f"=== CÁC DÒNG LẶP LẠI GIỮA CÁC CHƯƠNG ===\n{lines_str}")
+    if raw_titles:
+        titles_str = "\n".join(f"  - {t!r}" for t in raw_titles[:10])
+        extra_blocks.append(f"=== TIÊU ĐỀ THÔ (<title> / <h1>) ===\n{titles_str}")
+
+    extra_section = ("\n\n" + "\n\n".join(extra_blocks)) if extra_blocks else ""
+
+    return f"""Bạn là chuyên gia bóc tách dữ liệu web novel (CSS selector extraction & naming).
+Nhiệm vụ: Phân tích cấu trúc DOM skeleton từ URL: {urls_str}
 
 Hãy xác định chính xác các thành phần sau:
 1. `content_selector`: CSS selector cho vùng chứa nội dung truyện chính (ưu tiên thẻ bao bọc sát nhất chứa toàn bộ các đoạn văn bản, KHÔNG bao bọc khu vực bình luận, đánh giá, bảng điều khiển hoặc nút chia sẻ).
 2. `title_selector`: CSS selector cho tiêu đề chương (h1, h2, hoặc class tiêu đề).
-3. `next_selector`: CSS selector trỏ tới nút/liên kết đọc chương kế tiếp (Next Chapter / Next).
-4. `nav_type`: Loại điều hướng ("selector", "rel_next", "anchor_text", "slug_increment", "dropdown").
-5. `remove_selectors`: Danh sách các CSS selector cho các phần tử rác nằm bên trong hoặc ngay sát content (quảng cáo, nút vote, box bình luận, watermark, social buttons).
-6. `requires_playwright`: Đặt True nếu nội dung chương được render động qua JavaScript hoặc bị mã hóa.
+3. `next_selector` và `nav_type`: CSS selector trỏ tới nút/liên kết chương kế tiếp và loại điều hướng ("selector", "rel_next", "anchor_text", "slug_increment", "fanfic", "dropdown").
+4. `remove_selectors` và `watermark_selectors`: Danh sách CSS selector phần tử rác (quảng cáo, nút vote, bình luận, social) và watermark ẩn chèn giữa chương.
+5. `ads_keywords`: Các dòng rác/quảng cáo/watermark văn bản thuần lặp lại cần xóa.
+6. Chính sách ảnh (`download_images`, `image_selector`) và quy tắc định dạng (`formatting_rules`: bảng LitRPG, hộp hệ thống, lời tác giả).
+7. Đặt tên chuẩn hóa (`story_name_clean`, `chapter_keyword`, `has_chapter_subtitle`, `story_prefix_strip`).
+8. `requires_playwright`: Đặt True nếu nội dung chương bị rỗng/mã hóa cần trình duyệt render.
+{extra_section}
 
 === DOM SKELETON ===
-{skeleton}
+{skeleton_block}
 """
 
 
@@ -127,16 +157,26 @@ Yêu cầu regex:
 """
 
 
-def prompt_epub_rules(docs_meta_summary: str) -> str:
-    """Tạo prompt phân tích cấu trúc tài liệu thành phần trong EPUB để gom/tách chương."""
-    return f"""Phân tích cấu trúc các tài liệu con trong file sách EPUB để lên kế hoạch xuất chương.
-Dưới đây là danh sách tóm tắt các tài liệu trong EPUB (gồm id, href, tiêu đề trong mục lục TOC và độ dài ước tính):
+def prompt_epub_rules(
+    docs_meta_summary: str,
+    toc_titles: list[str] | None = None,
+) -> str:
+    """Tạo prompt phân tích mẫu tài liệu EPUB + TOC để sinh QUY TẮC chia chương (Phase 6.2 & §7.3)."""
+    toc_block = ""
+    if toc_titles:
+        toc_str = "\n".join(f"  - {t}" for t in toc_titles[:150])
+        toc_block = f"\n=== TIÊU ĐỀ TRONG MỤC LỤC (TOC) ===\n{toc_str}\n"
 
-=== DANH SÁCH TÀI LIỆU EPUB ===
+    return f"""Phân tích cấu trúc mẫu tài liệu trong sách EPUB để trích xuất QUY TẮC phân chia chương (KHÔNG liệt kê từng chương).
+Dưới đây là thông tin mẫu các tài liệu ở đầu, giữa và cuối sách (id, href, tiêu đề, số từ):
+{toc_block}
+=== MẪU TÀI LIỆU EPUB (ĐẦU / GIỮA / CUỐI) ===
 {docs_meta_summary}
 
-Nhiệm vụ:
-1. `front_matter_hrefs`: Các href là trang bìa (cover), thông tin xuất bản, lời tựa, mục lục.
-2. `chapters`: Danh sách các chương thực sự của truyện. Mỗi chương gồm `title` (tiêu đề chuẩn hóa) và `hrefs` (danh sách href các tài liệu thành phần; nếu một chương bị chia nhỏ thành nhiều file, hãy gom chung vào cùng 1 chương).
-3. `back_matter_hrefs`: Các href là lời bạt, cảm ơn, giới thiệu sách khác ở cuối cuốn sách.
+Nhiệm vụ: Trả về bộ quy tắc tổng quát để code tự động áp dụng lên toàn bộ sách:
+1. `chapter_title_regex`: Regex khớp tiêu đề các chương chính (ví dụ `^(?:Chapter|Chương)\\s+\\d+`).
+2. `divider_title_regex`: Regex khớp trang ngăn cách Phần/Quyển (`Part`, `Book`, `Volume`, `Quyển`) để gộp vào chương liền sau.
+3. `front_matter_keywords` & `front_matter_hrefs`: Từ khóa tiêu đề/filename và danh sách href thuộc phần đầu sách cần bỏ qua (cover, bản quyền, lời tựa, mục lục).
+4. `back_matter_keywords` & `back_matter_hrefs`: Từ khóa tiêu đề/filename và danh sách href thuộc phần cuối sách cần bỏ qua (lời bạt, phụ lục, quảng cáo).
+5. `merge_unnamed_into_previous`: Đặt True nếu một chương dài bị tách thành nhiều file liên tiếp mà các file sau không có tiêu đề riêng.
 """

@@ -148,6 +148,7 @@ class ApiKeyPool:
         self,
         keys: list[str],
         client_factory: Callable[[str], Any] | None = None,
+        cooldown_sec: float = 60.0,
     ) -> None:
         if not keys:
             raise ValueError("ApiKeyPool cần ít nhất 1 API key hợp lệ.")
@@ -155,6 +156,7 @@ class ApiKeyPool:
         self._factory = client_factory or self._default_factory
         self._clients: list[Any] = [self._factory(k) for k in self._keys]
         self._cooldown: list[float] = [0.0] * len(self._keys)
+        self.cooldown_sec = cooldown_sec
         self._idx = 0
         self._lock = asyncio.Lock()
 
@@ -173,8 +175,14 @@ class ApiKeyPool:
         now = time.monotonic()
         return any(c <= now for c in self._cooldown)
 
-    async def get_client(self) -> tuple[Any, str, int]:
-        """Lấy client và key index đang rảnh (không cooling). Chờ nếu tất cả đều đang cooling."""
+    async def get_client(self, *, ignore_cooldown: bool = False) -> tuple[Any, str, int]:
+        """Lấy client và key index đang rảnh (không cooling).
+
+        Nếu tất cả đều đang cooling:
+            - Khi `ignore_cooldown=True` (ví dụ sau khi đã chờ backoff hoặc chuyển sang fallback model):
+              chọn ngay key có thời hạn cooldown sắp hết sớm nhất.
+            - Khi `ignore_cooldown=False`: chờ đến khi có ít nhất 1 key hết thời gian cooling.
+        """
         while True:
             wait_sec = 0.0
             async with self._lock:
@@ -187,6 +195,11 @@ class ApiKeyPool:
                         return self._clients[chosen_idx], self._keys[chosen_idx], chosen_idx
                     self._idx = (self._idx + 1) % n
 
+                if ignore_cooldown:
+                    chosen_idx = min(range(n), key=lambda i: self._cooldown[i])
+                    self._idx = (chosen_idx + 1) % n
+                    return self._clients[chosen_idx], self._keys[chosen_idx], chosen_idx
+
                 wait_until = min(self._cooldown)
                 wait_sec = max(0.0, wait_until - now + 0.1)
 
@@ -198,11 +211,12 @@ class ApiKeyPool:
                 )
                 await asyncio.sleep(wait_sec)
 
-    async def mark_cooling(self, key_idx: int, cooldown_sec: float = 60.0) -> None:
+    async def mark_cooling(self, key_idx: int, cooldown_sec: float | None = None) -> None:
         """Đánh dấu một key cần làm nguội và xoay vòng ngay sang key tiếp theo."""
+        dur = self.cooldown_sec if cooldown_sec is None else cooldown_sec
         async with self._lock:
             if 0 <= key_idx < len(self._cooldown):
-                self._cooldown[key_idx] = time.monotonic() + cooldown_sec
+                self._cooldown[key_idx] = time.monotonic() + dur
                 self._idx = (key_idx + 1) % len(self._keys)
                 masked = self._mask_key(self._keys[key_idx])
                 active_count = sum(1 for c in self._cooldown if c <= time.monotonic())
@@ -210,7 +224,7 @@ class ApiKeyPool:
                     "API Key #%d (%s) vào cooldown %.0fs (còn %d/%d key active)",
                     key_idx + 1,
                     masked,
-                    cooldown_sec,
+                    dur,
                     active_count,
                     len(self._keys),
                 )
@@ -236,6 +250,7 @@ class GeminiProvider(LLMProvider):
         max_retries: int = 3,
         backoff_base: float = 1.0,
         max_backoff: float = 30.0,
+        cooldown_sec: float = 60.0,
         client_factory: Callable[[str], Any] | None = None,
     ) -> None:
         self.model = model
@@ -243,7 +258,12 @@ class GeminiProvider(LLMProvider):
         self.max_retries = max_retries
         self.backoff_base = backoff_base
         self.max_backoff = max_backoff
-        self.pool = ApiKeyPool(api_keys, client_factory=client_factory)
+        self.cooldown_sec = cooldown_sec
+        self.pool = ApiKeyPool(
+            api_keys,
+            client_factory=client_factory,
+            cooldown_sec=cooldown_sec,
+        )
         self.limiter = AIRateLimiter(max_rpm=max_rpm, jitter=jitter)
 
     @property
@@ -263,6 +283,7 @@ class GeminiProvider(LLMProvider):
 
         # 1. Thử trên model chính (kèm retry)
         for attempt in range(self.max_retries):
+            is_last_attempt = attempt >= self.max_retries - 1
             try:
                 return await self._execute_attempt(
                     model=self.model,
@@ -271,6 +292,7 @@ class GeminiProvider(LLMProvider):
                     system_instruction=system_instruction,
                     temperature=temperature,
                     can_repair=True,
+                    ignore_cooldown=(attempt > 0),
                 )
             except asyncio.CancelledError:
                 raise
@@ -283,12 +305,16 @@ class GeminiProvider(LLMProvider):
                 if self.pool.has_active_key():
                     logger.info("Key bị rate-limit nhưng pool còn key khác. Thử ngay với key rảnh...")
                     continue
+                if is_last_attempt:
+                    break
 
                 wait_sec = min(self.backoff_base * (2**attempt), self.max_backoff) + random.uniform(0.1, 0.5)
                 logger.warning("Rate-limit toàn bộ keys (attempt %d/%d). Chờ %.1fs...", attempt + 1, self.max_retries, wait_sec)
                 await asyncio.sleep(wait_sec)
             except (AITransient, AIInvalidOutput) as e:
                 last_error = e
+                if is_last_attempt:
+                    break
                 wait_sec = min(self.backoff_base * (2**attempt), self.max_backoff) + random.uniform(0.1, 0.5)
                 logger.warning(
                     "%s trên model %s (attempt %d/%d). Chờ %.1fs...",
@@ -303,6 +329,8 @@ class GeminiProvider(LLMProvider):
                 last_error = classify_api_error(e)
                 if isinstance(last_error, AIFatal):
                     raise last_error from e
+                if is_last_attempt:
+                    break
                 wait_sec = min(self.backoff_base * (2**attempt), self.max_backoff)
                 await asyncio.sleep(wait_sec)
 
@@ -322,6 +350,7 @@ class GeminiProvider(LLMProvider):
                     system_instruction=system_instruction,
                     temperature=temperature,
                     can_repair=True,
+                    ignore_cooldown=True,
                 )
             except asyncio.CancelledError:
                 raise
@@ -342,10 +371,11 @@ class GeminiProvider(LLMProvider):
         system_instruction: str | None = None,
         temperature: float | None = None,
         can_repair: bool = True,
+        ignore_cooldown: bool = False,
     ) -> T:
         """Thực hiện một lần gọi API với token bucket rate limit, xoay key và kiểm tra schema."""
         await self.limiter.acquire()
-        client, key_str, key_idx = await self.pool.get_client()
+        client, key_str, key_idx = await self.pool.get_client(ignore_cooldown=ignore_cooldown)
 
         # Tạo cấu hình gọi API với structured output
         config_kwargs: dict[str, Any] = {
@@ -370,7 +400,7 @@ class GeminiProvider(LLMProvider):
         except Exception as exc:
             classified = classify_api_error(exc, key_hint=self.pool._mask_key(key_str))
             if isinstance(classified, AIRateLimited):
-                await self.pool.mark_cooling(key_idx, cooldown_sec=60.0)
+                await self.pool.mark_cooling(key_idx, cooldown_sec=self.cooldown_sec)
             raise classified from exc
 
         # Phân tích cú pháp phản hồi

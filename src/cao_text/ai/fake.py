@@ -9,7 +9,6 @@ from pydantic import BaseModel
 
 from cao_text.ai.provider import LLMProvider
 from cao_text.ai.schemas import (
-    EpubChapterItem,
     EpubRulesOutput,
     ExtractedContentOutput,
     PageClassificationOutput,
@@ -168,6 +167,8 @@ class FakeProvider(LLMProvider):
             )
         if issubclass(schema, TxtPatternOutput):
             return schema(
+                pattern_id="vn_chuong_so",
+                language="vi",
                 chapter_regex=r"^Chương\s+\d+",
                 example_matches=["Chương 1", "Chương 2"],
                 confidence=0.9,
@@ -175,9 +176,13 @@ class FakeProvider(LLMProvider):
         if issubclass(schema, EpubRulesOutput):
             return schema(
                 story_title="Fake Book",
+                chapter_title_regex=r"^(?:Chapter|Chương)\s+\d+",
+                divider_title_regex=r"^Part\s+\d+",
+                front_matter_keywords=["cover", "toc"],
                 front_matter_hrefs=["cover.xhtml"],
-                chapters=[EpubChapterItem(title="Chương 1", hrefs=["ch1.xhtml"])],
                 back_matter_hrefs=[],
+                merge_unnamed_into_previous=True,
+                confidence=0.9,
             )
 
         try:
