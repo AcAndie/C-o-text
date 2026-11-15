@@ -32,12 +32,13 @@ GOLDEN_LOCAL_ROOT = PROJECT_ROOT / "tests" / "golden_local"
 
 @pytest.mark.parametrize("txt_stem", ["vn_chuong_sample", "en_chapter_sample"])
 @pytest.mark.parametrize("mode", ["obsidian", "translate", "raw"])
-async def test_golden_txt_commitable(txt_stem: str, mode: str) -> None:
+async def test_golden_txt_commitable(txt_stem: str, mode: str, update_golden: bool) -> None:
     txt_path = FIXTURES_ROOT / "txt" / f"{txt_stem}.txt"
     expected_dir = GOLDEN_ROOT / "txt" / txt_stem / mode
 
     assert txt_path.exists(), f"Thiếu fixture TXT: {txt_path}"
-    assert expected_dir.exists(), f"Thiếu golden TXT: {expected_dir}"
+    if not update_golden:
+        assert expected_dir.exists(), f"Thiếu golden TXT: {expected_dir}"
 
     with tempfile.TemporaryDirectory() as td:
         cfg = RunConfig(
@@ -53,19 +54,25 @@ async def test_golden_txt_commitable(txt_stem: str, mode: str) -> None:
         assert subdirs, "run_txt_flow không tạo thư mục đầu ra"
         actual_dir = subdirs[0]
 
-        assert_dir_contents_match(actual_dir, expected_dir, is_synthetic=True)
+        assert_dir_contents_match(
+            actual_dir,
+            expected_dir,
+            is_synthetic=True,
+            update_golden=update_golden,
+        )
 
 
 # ── EPUB Commitable Tests ─────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("epub_stem", ["sample_with_toc", "sample_no_toc_part_divider"])
 @pytest.mark.parametrize("mode", ["obsidian", "translate", "raw"])
-async def test_golden_epub_commitable(epub_stem: str, mode: str) -> None:
+async def test_golden_epub_commitable(epub_stem: str, mode: str, update_golden: bool) -> None:
     epub_path = FIXTURES_ROOT / "epub" / f"{epub_stem}.epub"
     expected_dir = GOLDEN_ROOT / "epub" / epub_stem / mode
 
     assert epub_path.exists(), f"Thiếu fixture EPUB: {epub_path}"
-    assert expected_dir.exists(), f"Thiếu golden EPUB: {expected_dir}"
+    if not update_golden:
+        assert expected_dir.exists(), f"Thiếu golden EPUB: {expected_dir}"
 
     with tempfile.TemporaryDirectory() as td:
         cfg = RunConfig(
@@ -81,7 +88,12 @@ async def test_golden_epub_commitable(epub_stem: str, mode: str) -> None:
         assert subdirs, "run_epub_flow không tạo thư mục đầu ra"
         actual_dir = subdirs[0]
 
-        assert_dir_contents_match(actual_dir, expected_dir, is_synthetic=True)
+        assert_dir_contents_match(
+            actual_dir,
+            expected_dir,
+            is_synthetic=True,
+            update_golden=update_golden,
+        )
 
 
 # ── Web Local Tests ───────────────────────────────────────────────────────────
@@ -105,12 +117,13 @@ _WEB_STORIES = _get_web_stories()
 
 @pytest.mark.skipif(not _WEB_STORIES, reason="Không tìm thấy tests/fixtures_local/web")
 @pytest.mark.parametrize("domain, story", _WEB_STORIES)
-async def test_golden_web_local(domain: str, story: str) -> None:
+async def test_golden_web_local(domain: str, story: str, update_golden: bool) -> None:
     fixture_story_dir = FIXTURES_LOCAL_ROOT / "web" / domain / story
     golden_story_dir = GOLDEN_LOCAL_ROOT / "web" / domain / story
 
     assert fixture_story_dir.exists(), f"Thiếu fixture web: {fixture_story_dir}"
-    assert golden_story_dir.exists(), f"Thiếu golden web: {golden_story_dir}"
+    if not update_golden:
+        assert golden_story_dir.exists(), f"Thiếu golden web: {golden_story_dir}"
 
     with open(fixture_story_dir / "meta.json", encoding="utf-8") as f:
         meta: dict[str, Any] = json.load(f)
@@ -127,7 +140,8 @@ async def test_golden_web_local(domain: str, story: str) -> None:
         golden_json_path = golden_story_dir / (Path(file_name).stem + ".json")
 
         assert html_path.exists(), f"Thiếu file HTML: {html_path}"
-        assert golden_json_path.exists(), f"Thiếu file golden JSON: {golden_json_path}"
+        if not update_golden:
+            assert golden_json_path.exists(), f"Thiếu file golden JSON: {golden_json_path}"
 
         html = html_path.read_text(encoding="utf-8")
         url = ch["url"]
@@ -168,6 +182,14 @@ async def test_golden_web_local(domain: str, story: str) -> None:
             "selector_used": ctx.selector_used,
         }
 
+        if update_golden:
+            golden_json_path.parent.mkdir(parents=True, exist_ok=True)
+            golden_json_path.write_text(
+                json.dumps(actual_record, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            continue
+
         with open(golden_json_path, encoding="utf-8") as f:
             expected_record: dict[str, Any] = json.load(f)
 
@@ -194,13 +216,13 @@ def _local_epub_available(name: str) -> bool:
 )
 @pytest.mark.parametrize("epub_stem", _LOCAL_EPUB_SMALL)
 @pytest.mark.parametrize("mode", ["obsidian", "translate", "raw"])
-async def test_golden_epub_local_small(epub_stem: str, mode: str) -> None:
+async def test_golden_epub_local_small(epub_stem: str, mode: str, update_golden: bool) -> None:
     epub_path = FIXTURES_LOCAL_ROOT / "epub" / f"{epub_stem}.epub"
     expected_dir = GOLDEN_LOCAL_ROOT / "epub" / epub_stem / mode
 
     if not epub_path.exists():
         pytest.skip(f"Thiếu file EPUB local: {epub_path}")
-    if not expected_dir.exists():
+    if not expected_dir.exists() and not update_golden:
         pytest.skip(f"Thiếu golden EPUB local: {expected_dir}")
 
     with tempfile.TemporaryDirectory() as td:
@@ -222,6 +244,7 @@ async def test_golden_epub_local_small(epub_stem: str, mode: str) -> None:
             expected_dir,
             is_synthetic=False,
             min_ratio=0.99,
+            update_golden=update_golden,
         )
 
 
@@ -231,7 +254,7 @@ async def test_golden_epub_local_small(epub_stem: str, mode: str) -> None:
     not (FIXTURES_LOCAL_ROOT / "epub" / "Dinh_Cap_Khi_Van_1631_chaps.epub").exists(),
     reason="Thiếu file EPUB lớn 1631 chaps",
 )
-async def test_golden_epub_local_large(run_slow: bool) -> None:
+async def test_golden_epub_local_large(run_slow: bool, update_golden: bool) -> None:
     if not run_slow:
         pytest.skip("Chạy kèm flag '--run-slow' để kiểm tra bộ EPUB 1631 chương (~60s)")
 
@@ -257,4 +280,5 @@ async def test_golden_epub_local_large(run_slow: bool) -> None:
             expected_dir,
             is_synthetic=False,
             min_ratio=0.99,
+            update_golden=update_golden,
         )

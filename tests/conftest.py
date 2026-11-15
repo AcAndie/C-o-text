@@ -5,12 +5,21 @@ from __future__ import annotations
 
 import difflib
 import json
+import re
+import shutil
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+_INDEX_DATE_RE = re.compile(r"(> - \*\*Last updated\*\*: )\d{4}-\d{2}-\d{2}")
+
+
+def _normalize_index_date(text: str) -> str:
+    """Chuẩn hóa ngày động YYYY-MM-DD trong 0000_Index.md để test không phụ thuộc ngày chạy."""
+    return _INDEX_DATE_RE.sub(r"\1<DATE>", text)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -36,6 +45,24 @@ def update_golden(request: pytest.FixtureRequest) -> bool:
 @pytest.fixture
 def run_slow(request: pytest.FixtureRequest) -> bool:
     return bool(request.config.getoption("--run-slow"))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_ads_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Cô lập data/ads_keywords.json trong mọi bài test:
+    chép bản sao sang tmp_path để AdsFilter đọc đúng dữ liệu gốc nhưng mọi
+    lệnh save() trong lúc test chỉ ghi vào file tạm, không làm bẩn dữ liệu user.
+    """
+    real_ads = PROJECT_ROOT / "data" / "ads_keywords.json"
+    tmp_ads = tmp_path / "ads_keywords.json"
+    if real_ads.exists():
+        shutil.copy2(real_ads, tmp_ads)
+    else:
+        tmp_ads.write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setattr("config.ADS_DB_FILE", str(tmp_ads), raising=False)
+    monkeypatch.setattr("utils.ads_filter.ADS_DB_FILE", str(tmp_ads), raising=False)
 
 
 def format_diff(actual: str, expected: str, fromfile: str = "actual", tofile: str = "expected", max_lines: int = 40) -> str:
@@ -118,12 +145,20 @@ def assert_dir_contents_match(
     *,
     is_synthetic: bool = True,
     min_ratio: float = 0.99,
+    update_golden: bool = False,
 ) -> None:
     """
     So sánh toàn bộ nội dung của hai thư mục:
-    - Danh sách file tương đối phải khớp nhau
+    - Nếu update_golden=True: ghi đè expected_dir bằng actual_dir.
+    - Danh sách file tương đối phải khớp nhau.
     - Từng file text được so sánh theo exact (synthetic) hoặc similarity ratio (real).
     """
+    if update_golden:
+        if expected_dir.exists():
+            shutil.rmtree(expected_dir)
+        shutil.copytree(actual_dir, expected_dir)
+        return
+
     actual_files = sorted(p.relative_to(actual_dir) for p in actual_dir.rglob("*") if p.is_file())
     expected_files = sorted(p.relative_to(expected_dir) for p in expected_dir.rglob("*") if p.is_file())
 
@@ -148,6 +183,10 @@ def assert_dir_contents_match(
 
         act_text = act_path.read_text(encoding="utf-8")
         exp_text = exp_path.read_text(encoding="utf-8")
+
+        if rel_file.name == "0000_Index.md":
+            act_text = _normalize_index_date(act_text)
+            exp_text = _normalize_index_date(exp_text)
 
         if is_synthetic:
             assert_text_exact(act_text, exp_text, context=ctx)
