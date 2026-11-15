@@ -1,6 +1,12 @@
 """Lớp AI: LLMProvider protocol, GeminiProvider, schemas, prompts và DOM skeleton."""
 from __future__ import annotations
 
+from cao_text.ai.gemini import (
+    AIRateLimiter,
+    ApiKeyPool,
+    GeminiProvider,
+    classify_api_error,
+)
 from cao_text.ai.provider import (
     AIError,
     AIFatal,
@@ -15,6 +21,10 @@ __all__ = [
     "AIFatal",
     "AIInvalidOutput",
     "AIRateLimited",
+    "AIRateLimiter",
     "AITransient",
+    "ApiKeyPool",
+    "GeminiProvider",
     "LLMProvider",
+    "classify_api_error",
 ]
