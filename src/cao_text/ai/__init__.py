@@ -1,6 +1,7 @@
-"""Lớp AI: LLMProvider protocol, GeminiProvider, schemas, prompts và DOM skeleton."""
+"""Lớp AI: LLMProvider protocol, GeminiProvider, FakeProvider, schemas, prompts và DOM skeleton."""
 from __future__ import annotations
 
+from cao_text.ai.fake import FakeCall, FakeProvider
 from cao_text.ai.gemini import (
     AIRateLimiter,
     ApiKeyPool,
@@ -47,6 +48,8 @@ __all__ = [
     "EpubChapterItem",
     "EpubRulesOutput",
     "ExtractedContentOutput",
+    "FakeCall",
+    "FakeProvider",
     "GeminiProvider",
     "LLMProvider",
     "PageClassificationOutput",
