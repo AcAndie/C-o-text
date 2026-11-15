@@ -48,6 +48,9 @@ _TITLE_EXCLUDE_ANCESTOR_KEYWORDS: frozenset[str] = frozenset({
     "advert",
 })
 
+# Ký tự phân cách site suffix trong <title> và og:title (giữ nguyên logic code cũ v1: chỉ strip khi có | hoặc dash dài)
+_TITLE_TAG_SEP_RE = re.compile(r"[\|–—]")
+
 # Mẫu hậu tố tên website phổ biến
 _SITE_SUFFIX_RE = re.compile(
     r"\s*[\|–—\-]\s*(?:"
@@ -214,7 +217,9 @@ def extract_title(
     # 3. Thẻ <title>
     title_tag = soup.find("title")
     if title_tag:
-        raw = strip_site_suffix(title_tag.get_text(strip=True))
+        raw = title_tag.get_text(strip=True)
+        if _TITLE_TAG_SEP_RE.search(raw):
+            raw = strip_site_suffix(raw)
         text = normalize_title(raw)
         if _MIN_TITLE_LEN <= len(text) <= _MAX_TITLE_LEN:
             return text, "title_tag"
@@ -222,7 +227,9 @@ def extract_title(
     # 4. Thẻ meta og:title
     og = soup.find("meta", property="og:title")
     if og and og.get("content"):
-        raw = strip_site_suffix(str(og["content"]).strip())
+        raw = str(og["content"]).strip()
+        if _TITLE_TAG_SEP_RE.search(raw):
+            raw = strip_site_suffix(raw)
         text = normalize_title(raw)
         if _MIN_TITLE_LEN <= len(text) <= _MAX_TITLE_LEN:
             return text, "og"

@@ -120,11 +120,16 @@ def find_next_url(
         return None, "none"
 
     next_selector: str | None = None
+    nav_type: str | None = None
     if profile is not None:
         if hasattr(profile, "next_selector"):
             next_selector = profile.next_selector
+            nav_type = getattr(profile, "nav_type", None)
         elif isinstance(profile, dict):
             next_selector = profile.get("next_selector")
+            nav_type = profile.get("nav_type")
+
+    nav_type_lower = (nav_type or "").lower()
 
     # 1. rel="next"
     el = soup.find("link", rel="next") or soup.find("a", rel="next")
@@ -174,34 +179,44 @@ def find_next_url(
         )
         return new_url, "fanfic"
 
-    # 6. Select Dropdown
-    for sel in _DROPDOWN_SELECTORS:
-        try:
-            select_el = soup.select_one(sel)
-            if select_el is None:
-                continue
-            options = select_el.find_all("option")
-            if not options:
-                continue
+    # 6. Select Dropdown (chỉ kích hoạt khi profile chỉ định nav_type dropdown hoặc next_selector là thẻ select)
+    is_dropdown_nav = (
+        nav_type_lower in ("select_dropdown", "dropdown")
+        or bool(next_selector and "select" in next_selector.lower())
+    )
+    if is_dropdown_nav:
+        dropdown_selectors = (
+            [next_selector] + [s for s in _DROPDOWN_SELECTORS if s != next_selector]
+            if (next_selector and "select" in next_selector.lower())
+            else _DROPDOWN_SELECTORS
+        )
+        for sel in dropdown_selectors:
+            try:
+                select_el = soup.select_one(sel)
+                if select_el is None:
+                    continue
+                options = select_el.find_all("option")
+                if not options:
+                    continue
 
-            current_idx: int | None = None
-            for idx, opt in enumerate(options):
-                if opt.get("selected") is not None:
-                    current_idx = idx
-                    break
-
-            if current_idx is None:
+                current_idx: int | None = None
                 for idx, opt in enumerate(options):
-                    val = opt.get("value", "")
-                    if val and val in current_url:
+                    if opt.get("selected") is not None:
                         current_idx = idx
                         break
 
-            if current_idx is not None and current_idx < len(options) - 1:
-                next_val = options[current_idx + 1].get("value", "").strip()
-                if next_val:
-                    return urljoin(current_url, next_val), f"dropdown:{sel}"
-        except Exception:
-            continue
+                if current_idx is None:
+                    for idx, opt in enumerate(options):
+                        val = opt.get("value", "")
+                        if val and val in current_url:
+                            current_idx = idx
+                            break
+
+                if current_idx is not None and current_idx < len(options) - 1:
+                    next_val = options[current_idx + 1].get("value", "").strip()
+                    if next_val and not next_val.startswith("#") and "javascript:" not in next_val.lower():
+                        return urljoin(current_url, next_val), f"dropdown:{sel}"
+            except Exception:
+                continue
 
     return None, "none"
