@@ -60,7 +60,7 @@ Code cũ (v1.2.1, ~13k dòng trong `src/`) vẫn chạy được và vẫn là b
 | 0 | Lưới an toàn: fixtures + golden test + sửa 2 chỗ hỏng | ✅ Xong |
 | 1 | Bộ khung package mới (`src/cao_text/`) | ✅ Xong |
 | 2 | Port phần lõi xác định (HTML, extract, writers, net) | ✅ Xong |
-| 3 | Lớp AI mới (provider, structured output, retry) | 🟨 |
+| 3 | Lớp AI mới (provider, structured output, retry) | ✅ Xong |
 | 4 | Learning mới (1–3 AI call + kiểm chứng bằng code) | ⬜ |
 | 5 | Vòng lặp cào web mới + lưu tiến độ mới | ⬜ |
 | 6 | EPUB/TXT flow hợp nhất + sửa lỗi EPUB lớn | ⬜ |
