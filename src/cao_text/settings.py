@@ -31,11 +31,14 @@ def _find_project_root() -> Path:
 
 
 def _derive_fallback_model(primary: str) -> str:
-    """Tự suy ra fallback model nếu model chính là flash/pro và chưa cấu hình fallback."""
+    """Tự suy ra fallback model nếu model chính là flash/pro và chưa cấu hình fallback.
+
+    Quy tắc: Không dùng biến thể 'lite' cho structured output (§3.1).
+    """
     p = primary.lower()
-    if "flash-lite" in p:
-        return primary
-    return "gemini-2.0-flash-lite"
+    if "2.5-flash" in p:
+        return "gemini-3.8-flash"
+    return "gemini-2.5-flash"
 
 
 def _extract_gemini_keys(source: dict[str, str | None]) -> list[str]:
@@ -122,8 +125,8 @@ class AISettings:
     """Cấu hình tương tác AI Gemini ([ai])."""
 
     api_keys: list[str] = field(default_factory=list)
-    model: str = "gemini-2.5-flash"
-    fallback_model: str = "gemini-2.0-flash-lite"
+    model: str = "gemini-3.8-flash"
+    fallback_model: str = "gemini-2.5-flash"
     max_rpm: int = 10
     jitter: tuple[float, float] = (0.5, 2.0)
 

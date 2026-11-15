@@ -71,6 +71,10 @@ conflict_threshold = 3
 
 # ── AI / Gemini ──────────────────────────────────────────────────────────────
 [ai]
+# Model mặc định & fallback (không dùng bản lite cho structured output)
+# model = "gemini-3.8-flash"
+# fallback_model = "gemini-2.5-flash"
+#
 # Max requests per minute (rate limit token bucket)
 max_rpm = 10
 

@@ -60,7 +60,7 @@ Code cũ (v1.2.1, ~13k dòng trong `src/`) vẫn chạy được và vẫn là b
 | 0 | Lưới an toàn: fixtures + golden test + sửa 2 chỗ hỏng | ✅ Xong |
 | 1 | Bộ khung package mới (`src/cao_text/`) | ✅ Xong |
 | 2 | Port phần lõi xác định (HTML, extract, writers, net) | ✅ Xong |
-| 3 | Lớp AI mới (provider, structured output, retry) | ⬜ |
+| 3 | Lớp AI mới (provider, structured output, retry) | 🟨 |
 | 4 | Learning mới (1–3 AI call + kiểm chứng bằng code) | ⬜ |
 | 5 | Vòng lặp cào web mới + lưu tiến độ mới | ⬜ |
 | 6 | EPUB/TXT flow hợp nhất + sửa lỗi EPUB lớn | ⬜ |
@@ -289,7 +289,7 @@ Nguyên tắc: **copy logic sang rồi dọn**, không thiết kế lại thuậ
 **DoD:** golden web khớp (trừ diff đã duyệt ở 2.8/2.9), test writers/images xanh.
 
 ### Phase 3 — Lớp AI mới
-- [ ] **3.1** Đầu phase: **tra tài liệu chính thức** (https://ai.google.dev/gemini-api/docs/models) để chọn model Flash ổn định mới nhất làm mặc định + model fallback. Model chỉ khai báo ở `settings.py` / `config.toml` (`[ai] model`, `[ai] fallback_model`), không rải khắp nơi. Ghi lựa chọn vào §10. Không dùng biến thể "lite" cho structured output.
+- [x] **3.1** Đầu phase: **tra tài liệu chính thức** (https://ai.google.dev/gemini-api/docs/models) để chọn model Flash ổn định mới nhất làm mặc định + model fallback. Model chỉ khai báo ở `settings.py` / `config.toml` (`[ai] model`, `[ai] fallback_model`), không rải khắp nơi. Ghi lựa chọn vào §10. Không dùng biến thể "lite" cho structured output.
 - [ ] **3.2** `ai/provider.py`: `LLMProvider` Protocol, lỗi chuẩn hóa `AIRateLimited`, `AITransient`, `AIFatal`, `AIInvalidOutput`.
 - [ ] **3.3** `ai/gemini.py`: `google-genai` async; structured output bằng `response_schema=<PydanticModel>` và đọc `response.parsed`; phân loại lỗi theo **mã lỗi của SDK** (`google.genai.errors.APIError.code`: 429/503 → rate limit, 5xx/timeout/connect → transient), **không** dò chữ trong message. Key pool xoay vòng + cooldown 60s khi 429/503, bỏ chờ nếu còn key rảnh; rate limiter token-bucket (`[ai] max_rpm`, rollback slot khi bị cancel); backoff có giới hạn; hết retry thì thử fallback model một lần. Output sai schema → 1 lần gọi lại kèm lỗi validate.
 - [ ] **3.4** `ai/skeleton.py`: nén HTML thành DOM skeleton (bỏ script/style/svg/noscript/comment; chỉ giữ thuộc tính `id`, `class`, `rel`, `href` của link điều hướng, `role`, `aria-*`; text cắt ≤80 ký tự/nút; gộp con lặp lại; giới hạn tổng ký tự cấu hình được). Test với fixtures.
@@ -479,3 +479,4 @@ User yêu cầu một mục ở đây → trả lời: *"Mục [X] đang nằm n
 | 2026-11-15 | Port hoàn chỉnh `images/*` (`WebImageFetcher`, `EpubImageExtractor`, `apply_image_stage`): hợp nhất `apply_image_stage` dùng chung cho cả Web và EPUB, hỗ trợ 3 output mode (obsidian/translate/raw), giữ link gốc khi tải lỗi, 4 chiến lược giải quyết href cho EPUB kèm fallback basename | Hoàn thành Task 2.7 |
 | 2026-11-16 | Fix §7.5: Quét CSS rules trong thẻ `<style>` tìm selector class/id có `display:none/visibility:hidden/opacity:0/font-size:0/speak:never` để loại bỏ phần tử ẩn trước khi xóa thẻ `<style>`; kiểm thử thành công trên `fixtures/html/` và làm sạch 100% watermark chống trộm trên RoyalRoad; cập nhật golden baseline RoyalRoad theo quy trình §3.5 | Hoàn thành Task 2.8 |
 | 2026-11-16 | Fix một phần §7.4: Bổ sung selector UI Webnovel (`.cha-hd`, `.cha-foot`, `.cha-page-ft`, `.cha-info`, `.cha-bts`, `.j_bottom_comment_area`, `.j_power_rank_wrap`, `.para-comment`, `anno > sup`...) vào `KNOWN_NOISE_SELECTORS`; loại bỏ khối bìa sách ở ch1, footer vote/power stone và số đếm comment; cập nhật golden baseline Webnovel theo quy trình §3.5 | Hoàn thành Task 2.9, đạt DoD và hoàn tất toàn bộ Phase 2 |
+| 2026-11-16 | Tra cứu tài liệu chính thức https://ai.google.dev/gemini-api/docs/models và cấu hình model AI cho Phase 3 (§3.1): chọn `gemini-3.8-flash` làm model chính (Flash ổn định mới nhất, tối ưu agentic & coding workflow) và `gemini-2.5-flash` làm model fallback. Loại bỏ biến thể lite (`gemini-2.0-flash-lite`) vì thiếu ổn định cho structured output. Khai báo tập trung duy nhất ở `settings.py` và `config.toml` | Hoàn thành Task 3.1, xử lý dứt điểm mục §7.8 |

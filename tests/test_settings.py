@@ -19,6 +19,10 @@ def test_settings_defaults() -> None:
     assert cfg.scraper.playwright_concurrency == 2
     assert cfg.learning.chapters == 10
     assert cfg.ai.max_rpm == 10
+    assert cfg.ai.model == "gemini-3.8-flash"
+    assert cfg.ai.fallback_model == "gemini-2.5-flash"
+    assert "lite" not in cfg.ai.model.lower()
+    assert "lite" not in cfg.ai.fallback_model.lower()
     assert cfg.http.request_timeout == 60.0
     assert cfg.js_detection.content_ratio == 1.5
     assert cfg.epub.analyzer == "ai"
@@ -29,6 +33,24 @@ def test_settings_defaults() -> None:
     assert cfg.download_images is True
     assert cfg.profiles_file.endswith("site_profiles.json")
     assert cfg.ads_db_file.endswith("ads_keywords.json")
+
+
+def test_derive_fallback_model_no_lite() -> None:
+    """Fallback model không dùng biến thể lite và tự suy ra hợp lý (§3.1)."""
+    from cao_text.settings import _derive_fallback_model
+
+    fb1 = _derive_fallback_model("gemini-3.8-flash")
+    assert fb1 == "gemini-2.5-flash"
+    assert "lite" not in fb1
+
+    fb2 = _derive_fallback_model("gemini-2.5-flash")
+    assert fb2 == "gemini-3.8-flash"
+    assert "lite" not in fb2
+
+    fb3 = _derive_fallback_model("gemini-2.5-pro")
+    assert fb3 == "gemini-2.5-flash"
+    assert "lite" not in fb3
+
 
 
 def test_gemini_key_extraction_and_order() -> None:
