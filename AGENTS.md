@@ -61,7 +61,7 @@ Code cũ (v1.2.1, ~13k dòng trong `src/`) vẫn chạy được và vẫn là b
 | 1 | Bộ khung package mới (`src/cao_text/`) | ✅ Xong |
 | 2 | Port phần lõi xác định (HTML, extract, writers, net) | ✅ Xong |
 | 3 | Lớp AI mới (provider, structured output, retry) | ✅ Xong |
-| 4 | Learning mới (1–3 AI call + kiểm chứng bằng code) | ⬜ |
+| 4 | Learning mới (1–3 AI call + kiểm chứng bằng code) | 🟨 |
 | 5 | Vòng lặp cào web mới + lưu tiến độ mới | ⬜ |
 | 6 | EPUB/TXT flow hợp nhất + sửa lỗi EPUB lớn | ⬜ |
 | 7 | CLI mới + chuyển hẳn sang code mới + xóa code cũ | ⬜ |
@@ -310,7 +310,7 @@ Luồng `learn_site(start_url)`:
 5. **Sai → AI call #2/#3 `repair_site`** kèm báo cáo lỗi cụ thể (tối đa 2 vòng). Vẫn sai → dùng ứng viên tốt nhất từ bước 2 (hoặc để trống selector cho heuristic), `confidence ≤ 0.3`, ghi `issues.md`.
 6. Lưu profile v3. Profile v2 cũ (chỉ có 2: webnovel, royalroad) → học lại; hỏi user trước khi ghi đè `data/site_profiles.json` lần đầu.
 
-- [ ] **4.1** `learn/candidates.py` + test trên fixtures.
+- [x] **4.1** `learn/candidates.py` + test trên fixtures.
 - [ ] **4.2** `learn/verify.py` (V1–V6) + test: profile cũ của Webnovel (`div.cha-page`) phải bị V2 đánh fail.
 - [ ] **4.3** `learn/learner.py` với `FakeProvider` + test luồng sửa lỗi.
 - [ ] **4.4** `web/start.py`: phân loại URL index/chapter, tìm chương 1 (giữ fast-path Webnovel: ID chương nhỏ nhất = chương 1), cache kết quả.
