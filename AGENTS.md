@@ -311,7 +311,7 @@ Luồng `learn_site(start_url)`:
 6. Lưu profile v3. Profile v2 cũ (chỉ có 2: webnovel, royalroad) → học lại; hỏi user trước khi ghi đè `data/site_profiles.json` lần đầu.
 
 - [x] **4.1** `learn/candidates.py` + test trên fixtures.
-- [ ] **4.2** `learn/verify.py` (V1–V6) + test: profile cũ của Webnovel (`div.cha-page`) phải bị V2 đánh fail.
+- [x] **4.2** `learn/verify.py` (V1–V6) + test: profile cũ của Webnovel (`div.cha-page`) phải bị V2 đánh fail.
 - [ ] **4.3** `learn/learner.py` với `FakeProvider` + test luồng sửa lỗi.
 - [ ] **4.4** `web/start.py`: phân loại URL index/chapter, tìm chương 1 (giữ fast-path Webnovel: ID chương nhỏ nhất = chương 1), cache kết quả.
 - [ ] **4.5** Smoke thật: học lại RoyalRoad + Webnovel bằng Gemini, so số AI call (mục tiêu ≤3) và kết quả `process_page` với golden đã duyệt.
