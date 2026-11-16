@@ -34,7 +34,7 @@ RE_FANFIC = re.compile(r"(/s/\d+/)(\d+)(/.+)?$")
 
 # Regex nhận diện URL chương thông dụng
 RE_CHAP_URL = re.compile(
-    r"(?:chapter|chuong|chap)[_\-/]?\d+"
+    r"(?:chapter|chuong|chap|ch)[_\-/]?\d+"
     r"|/ch?[/_-]\d+"
     r"|(?:episode|ep|part)[_\-/]?\d+"
     r"|/s/\d+/\d+"

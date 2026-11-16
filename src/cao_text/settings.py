@@ -195,6 +195,10 @@ class Settings:
     def ads_db_file(self) -> str:
         return str(Path(self.paths.data_dir) / "ads_keywords.json")
 
+    @property
+    def url_classifications_file(self) -> str:
+        return str(Path(self.paths.data_dir) / "url_classifications.json")
+
     # ── AI Key Accessors (chỉ raise lỗi khi gọi, không raise khi import) ──────
 
     def get_primary_api_key(self) -> str:
