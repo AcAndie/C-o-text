@@ -61,7 +61,7 @@ Code cũ (v1.2.1, ~13k dòng trong `src/`) vẫn chạy được và vẫn là b
 | 1 | Bộ khung package mới (`src/cao_text/`) | ✅ Xong |
 | 2 | Port phần lõi xác định (HTML, extract, writers, net) | ✅ Xong |
 | 3 | Lớp AI mới (provider, structured output, retry) | ✅ Xong |
-| 4 | Learning mới (1–3 AI call + kiểm chứng bằng code) | 🟨 |
+| 4 | Learning mới (1–3 AI call + kiểm chứng bằng code) | ✅ Xong |
 | 5 | Vòng lặp cào web mới + lưu tiến độ mới | ⬜ |
 | 6 | EPUB/TXT flow hợp nhất + sửa lỗi EPUB lớn | ⬜ |
 | 7 | CLI mới + chuyển hẳn sang code mới + xóa code cũ | ⬜ |
@@ -314,7 +314,7 @@ Luồng `learn_site(start_url)`:
 - [x] **4.2** `learn/verify.py` (V1–V6) + test: profile cũ của Webnovel (`div.cha-page`) phải bị V2 đánh fail.
 - [x] **4.3** `learn/learner.py` với `FakeProvider` + test luồng sửa lỗi.
 - [x] **4.4** `web/start.py`: phân loại URL index/chapter, tìm chương 1 (giữ fast-path Webnovel: ID chương nhỏ nhất = chương 1), cache kết quả.
-- [ ] **4.5** Smoke thật: học lại RoyalRoad + Webnovel bằng Gemini, so số AI call (mục tiêu ≤3) và kết quả `process_page` với golden đã duyệt.
+- [x] **4.5** Smoke thật: học lại RoyalRoad + Webnovel bằng Gemini, so số AI call (mục tiêu ≤3) và kết quả `process_page` với golden đã duyệt.
 
 **DoD:** học được 2 site thật với ≤3 AI call, profile qua V1–V6; Webnovel ra `div.cha-words`/`div.cha-content` hoặc tương đương không dính UI.
 
@@ -486,3 +486,8 @@ User yêu cầu một mục ở đây → trả lời: *"Mục [X] đang nằm n
 | 2026-11-16 | Thiết lập 7 Pydantic schemas tại `src/cao_text/ai/schemas.py` và 7 hàm tạo prompt ngắn gọn tại `src/cao_text/ai/prompts.py` (`analyze_site`, `repair_site`, `classify_page`, `extract_content`, `verify_ads_lines`, `txt_pattern`, `epub_rules`) | Hoàn thành Task 3.5 |
 | 2026-11-16 | Cài đặt `FakeProvider` tại `src/cao_text/ai/fake.py`: tuân thủ `LLMProvider` Protocol, tự động sinh instance mặc định cho 7 schemas chuẩn, hỗ trợ cấu hình theo schema/queue FIFO, giả lập lỗi và lưu lịch sử cuộc gọi phục vụ test offline | Hoàn thành Task 3.6 |
 | 2026-11-16 | Rà soát & tinh chỉnh toàn diện Phase 3: (1) `skeleton.py` lọc bỏ class obfuscated/hash (`j_para_<hex>`, base64) trước khi gộp đoạn, giữ `<link rel="next">` từ `<head>` và cắt head+tail nghiêm ngặt `<= max_chars`; (2) `EpubRulesOutput` chuyển sang trả về bộ quy tắc regex/keywords thay vì liệt kê từng chương (ngăn lỗi §7.3 cho EPUB >300 doc), `SiteAnalysisOutput` bổ sung đầy đủ trường naming, chính sách ảnh và `build_formatting_rules()` có đủ khóa mặc định (§6.4); (3) `GeminiProvider` bỏ chờ cooldown 60s của key khi chuyển sang `fallback_model` sau lỗi 503/429 trên model chính | Đảm bảo Phase 3 khớp 100% thiết kế Phase 4–6, §6.4, §7.3 và vượt qua live smoke test thực tế |
+| 2026-11-16 | Cài đặt `learn/candidates.py`: tìm ứng viên content/title/next bằng code thuần $O(\text{depth})$; phạt nặng outer wrapper chứa UI (`div.cha-page` của Webnovel) và ưu tiên vùng văn bản chặt chẽ (`div.cha-words`) | Hoàn thành Task 4.1 |
+| 2026-11-16 | Cài đặt bộ 6 quy tắc kiểm chứng `learn/verify.py` (V1–V6): bắt buộc phát hiện và đánh fail `div.cha-page` của Webnovel qua V2; kiểm tra tính liên tục của next link (V4), an toàn của remove_selectors <= 20% (V5) và ads_keywords (V6) | Hoàn thành Task 4.2 |
+| 2026-11-16 | Cài đặt luồng học tự động `learn/learner.py` (`learn_site`): 6 bước trọn vẹn (lấy mẫu -> ứng viên code -> AI analyze -> kiểm chứng V1–V6 -> vòng sửa lỗi tối đa 2 lần -> lưu SiteProfile v3 vào ProfileStore), kiểm thử toàn diện với FakeProvider | Hoàn thành Task 4.3 |
+| 2026-11-16 | Cài đặt `web/start.py`: phân loại URL index/chapter, tìm chương 1 qua `ClassificationStore` cache; fast-path Webnovel sort ID chương tự động (confidence=0.99); port các helper story metadata (`extract_story_title`, `build_story_id_regex`, `is_chapter_url`, `story_id_ok`) | Hoàn thành Task 4.4 |
+| 2026-11-16 | Chạy smoke test thực tế với Gemini thật trên 2 site RoyalRoad và Webnovel: đạt 1 AI call duy nhất cho mỗi site (mục tiêu <= 3 calls), vượt qua kiểm chứng V1–V6 ngay lần đầu; Webnovel ra đúng selector `div.cha-words` không dính UI rác | Hoàn thành Task 4.5, đạt 100% DoD Phase 4 |
