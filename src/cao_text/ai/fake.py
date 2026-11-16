@@ -68,6 +68,11 @@ class FakeProvider(LLMProvider):
         """Thêm một phản hồi vào hàng đợi tuần tự (FIFO)."""
         self._queue.append(response)
 
+    def enqueue_responses(self, responses: list[Any]) -> None:
+        """Thêm danh sách phản hồi vào hàng đợi tuần tự (FIFO)."""
+        for r in responses:
+            self.enqueue_response(r)
+
     async def generate(
         self,
         prompt: str,
