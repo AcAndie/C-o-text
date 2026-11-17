@@ -96,16 +96,21 @@ def process_page(
         is_index_page = detect_page_type(soup, url) == "index"
 
     # 4. Trích xuất nội dung chương
-    raw_content, content_method, images, selector_used = extract_content(soup, url, profile)
+    raw_content, content_method, images, selector_used = extract_content(
+        soup, url, profile, source=source
+    )
 
     content_md: str | None = None
     cleaned_before_strip: str | None = None
     if raw_content:
         cleaned = clean_extracted_content(raw_content)
         cleaned_before_strip = cleaned
-        stripped = strip_nav_edges(cleaned)
-        if stripped and len(stripped.strip()) >= 100:
-            content_md = stripped
+        if source == "web":
+            stripped = strip_nav_edges(cleaned)
+            if stripped and len(stripped.strip()) >= 100:
+                content_md = stripped
+            else:
+                content_md = cleaned
         else:
             content_md = cleaned
 
@@ -122,17 +127,25 @@ def process_page(
     if source == "web":
         next_url, nav_method = find_next_url(soup, url, profile)
 
-    # 7. Kiểm chứng nội dung
-    val = validate_content(content_md or "")
+    # 7. Kiểm chứng nội dung (§6.6: bỏ qua validate độ dài cho EPUB/TXT)
+    if source == "web":
+        val = validate_content(content_md or "")
+        is_valid = val.is_valid
+        val_score = val.score
+        val_notes = val.notes
+    else:
+        is_valid = bool(content_md and content_md.strip())
+        val_score = 1.0 if is_valid else 0.0
+        val_notes = []
 
     diagnostics: dict[str, Any] = {
         "content_chars": len(content_md) if content_md else 0,
         "content_method": content_method,
         "title_method": title_method,
         "nav_method": nav_method,
-        "is_valid": val.is_valid,
-        "validation_score": val.score,
-        "validation_notes": val.notes,
+        "is_valid": is_valid,
+        "validation_score": val_score,
+        "validation_notes": val_notes,
         "selector_used": selector_used,
         "cleaned_before_strip": cleaned_before_strip,
     }

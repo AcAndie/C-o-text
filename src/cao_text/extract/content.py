@@ -107,6 +107,7 @@ def extract_content(
     profile: SiteProfile | dict[str, Any] | None = None,
     *,
     min_chars: int = _MIN_CONTENT_CHARS,
+    source: str = "web",
 ) -> tuple[str | None, str | None, list[ImageRef], str | None]:
     """Trích xuất nội dung chương theo chuỗi chiến lược xác định (không AI):
 
@@ -196,5 +197,13 @@ def extract_content(
                 return text, f"fallback_list:{sel}", images, sel
         except Exception:
             continue
+
+    # 5. Body Fallback (chỉ kích hoạt cho EPUB/TXT theo §6.6, web giữ nguyên chuỗi fallback và AI)
+    if source in ("epub", "txt"):
+        body_tag = soup.find("body") or soup
+        if body_tag is not None:
+            text, images = _format_node(body_tag, profile, base_url=url)
+            if text and text.strip():
+                return text, "body_fallback", images, "body"
 
     return None, None, [], None

@@ -172,7 +172,7 @@ class AdsFilter:
         self._ads_db_file = (
             Path(ads_db_file)
             if ads_db_file is not None
-            else Path(get_settings().ads_keywords_file)
+            else Path(get_settings().ads_db_file)
         )
         self._keywords: set[str] = {
             kw.lower().strip()
@@ -227,7 +227,7 @@ class AdsFilter:
         db_path = (
             Path(ads_db_file)
             if ads_db_file is not None
-            else Path(get_settings().ads_keywords_file)
+            else Path(get_settings().ads_db_file)
         )
         global_kws: set[str] = set()
         domain_kws: set[str] = set()

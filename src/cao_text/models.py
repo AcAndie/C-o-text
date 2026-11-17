@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -133,6 +134,17 @@ class ImageRef:
 
 
 @dataclass
+class RawDocument:
+    """Hợp đồng dữ liệu thô giữa bộ đọc file (EPUB/TXT) và luồng xử lý trích xuất."""
+
+    chapter_index: int
+    html: str
+    source_url: str | None = None
+    source_path: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class CleanedChapter:
     """Hợp đồng dữ liệu chương đã làm sạch từ pipeline gửi cho các writer."""
 
@@ -233,3 +245,17 @@ class RunConfig:
             pattern=overrides.get("pattern", settings.pattern),
             apply=overrides.get("apply", settings.apply),
         )
+
+
+@dataclass
+class FileSpec:
+    """Đặc tả thông số thực thi cho luồng xử lý file đơn lẻ (EPUB/TXT)."""
+
+    input_path: str | Path
+    run_config: RunConfig = field(default_factory=RunConfig.create_for_mode)
+    input_type: Literal["epub", "txt"] | None = None
+    story_name: str | None = None
+    output_dir: str | Path | None = None
+    ai_provider: Any = None
+    pattern: str | None = None
+    inject_nav: bool | None = None
