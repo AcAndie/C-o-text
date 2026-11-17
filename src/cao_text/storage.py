@@ -12,18 +12,64 @@ Quy tắc:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
-import shutil
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from cao_text.models import SiteProfile, StoryState
 from cao_text.settings import get_settings
 
 logger = logging.getLogger(__name__)
+
+_HASH_SUFFIX_RE = re.compile(r"_[0-9a-f]{8}$")
+
+
+# ── Story Key & Output Dir Helpers ────────────────────────────────────────────
+
+def default_story_output_dir(url: str, base_output_dir: Path | str | None = None) -> str:
+    """Tạo đường dẫn thư mục output mặc định từ URL theo chuẩn v1 (<base>/<domain>_<slug>)."""
+    base = str(base_output_dir) if base_output_dir is not None else get_settings().paths.output_dir
+    p = urlparse(url)
+    domain = p.netloc.lower().replace("www.", "").replace(".", "_").replace(":", "_")
+    parts = [seg for seg in p.path.strip("/").split("/") if seg][:2]
+    slug = "_".join(parts) if parts else "unknown"
+    return os.path.join(base, f"{domain}_{slug}")
+
+
+def make_story_key(url: str, base_output_dir: Path | str | None = None) -> str:
+    """Sinh story_key duy nhất dạng <domain>_<slug>_<hash> tương thích ngược 100% với v1."""
+    out_dir = default_story_output_dir(url, base_output_dir)
+    p = urlparse(url)
+    domain = p.netloc.lower().replace(".", "_").replace(":", "_")
+    dir_hash = hashlib.md5(out_dir.encode("utf-8")).hexdigest()[:8]
+    base_slug = Path(out_dir).name
+    return f"{domain}_{base_slug}_{dir_hash}"
+
+
+def resolve_story_output_dir(
+    state: StoryState,
+    base_output_dir: Path | str | None = None,
+) -> Path:
+    """Xác định thư mục output cho truyện, ưu tiên giữ nguyên thư mục đã có để resume viết tiếp."""
+    if state.output_dir_final:
+        return Path(state.output_dir_final)
+
+    base = str(base_output_dir) if base_output_dir is not None else get_settings().paths.output_dir
+    if state.story_name_clean:
+        from cao_text.writers.obsidian import slugify_filename
+
+        story_slug = slugify_filename(state.story_name_clean, max_len=80)
+        resolved = os.path.join(base, story_slug)
+        state.output_dir_final = resolved
+        return Path(resolved)
+
+    return Path(default_story_output_dir(state.start_url, base))
 
 
 # ── Atomic Write Helpers ──────────────────────────────────────────────────────
@@ -233,7 +279,12 @@ class ProgressStore:
     def get_seen_path(self, story_key: str) -> Path:
         return self.get_story_dir(story_key) / "seen.jsonl"
 
-    async def load_state(self, story_key: str) -> StoryState | None:
+    async def load_state(
+        self,
+        story_key: str,
+        *,
+        start_url: str | None = None,
+    ) -> StoryState | None:
         """Nạp StoryState.
 
         Nếu chưa có cấu trúc v2, tự động tìm kiếm file tiến độ v1 cũ
@@ -245,6 +296,9 @@ class ProgressStore:
                 try:
                     text = await asyncio.to_thread(state_file.read_text, encoding="utf-8")
                     data = json.loads(text)
+                    if isinstance(data, dict):
+                        data.pop("all_visited_urls", None)
+                        data.pop("fingerprints", None)
                     return StoryState.model_validate(data)
                 except asyncio.CancelledError:
                     raise
@@ -253,18 +307,47 @@ class ProgressStore:
                     return None
 
             # Kiểm tra và tự động chuyển đổi file v1 cũ nếu có
-            migrated = await self._try_migrate_v1_progress(story_key)
+            migrated = await self._try_migrate_v1_progress(story_key, start_url=start_url)
             if migrated:
                 return migrated
 
             return None
 
+    async def load_or_create(
+        self,
+        start_url: str,
+        *,
+        story_key: str | None = None,
+        base_output_dir: Path | str | None = None,
+    ) -> StoryState:
+        """Nạp StoryState hiện có (tự migrate v1 nếu gặp) hoặc khởi tạo mới cho start_url."""
+        key = story_key or make_story_key(start_url, base_output_dir)
+        existing = await self.load_state(key, start_url=start_url)
+        if existing is not None:
+            if not existing.start_url:
+                existing.start_url = start_url
+            return existing
+        return StoryState(story_key=key, start_url=start_url)
+
     async def save_state(self, state: StoryState) -> None:
-        """Lưu StoryState nguyên tử xuống state.json."""
+        """Lưu StoryState nguyên tử xuống state.json (không bao giờ lưu danh sách URL/fingerprint)."""
         async with self._get_lock(state.story_key):
             state_file = self.get_state_path(state.story_key)
             state_file.parent.mkdir(parents=True, exist_ok=True)
-            await async_atomic_write_json(state_file, state.model_dump())
+            dumped = state.model_dump()
+            dumped.pop("all_visited_urls", None)
+            dumped.pop("fingerprints", None)
+            await async_atomic_write_json(state_file, dumped)
+
+    async def clear(self, story_key: str) -> None:
+        """Xóa tiến độ của một story_key (dùng khi học lại hoặc reset truyện)."""
+        async with self._get_lock(story_key):
+            for path in (self.get_state_path(story_key), self.get_seen_path(story_key)):
+                if path.exists():
+                    try:
+                        await asyncio.to_thread(path.unlink)
+                    except OSError as e:
+                        logger.warning("Không thể xóa %s: %s", path, e)
 
     async def record_seen(
         self,
@@ -292,90 +375,139 @@ class ProgressStore:
 
             await asyncio.to_thread(_append)
 
-    async def load_seen_urls(self, story_key: str) -> set[str]:
-        """Tải tập hợp các URL đã cào của story."""
+    async def load_seen(self, story_key: str) -> tuple[set[str], set[str]]:
+        """Tải đồng thời tập hợp (seen_urls, seen_fingerprints) chỉ trong 1 lần đọc seen.jsonl."""
         seen_file = self.get_seen_path(story_key)
         if not seen_file.exists():
-            return set()
+            return set(), set()
 
-        def _read() -> set[str]:
+        def _read() -> tuple[set[str], set[str]]:
             urls: set[str] = set()
-            try:
-                with open(seen_file, encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:
-                            try:
-                                item = json.loads(line)
-                                if "url" in item:
-                                    urls.add(item["url"])
-                            except json.JSONDecodeError:
-                                pass
-            except OSError as e:
-                logger.warning("Lỗi khi đọc %s: %s", seen_file, e)
-            return urls
-
-        return await asyncio.to_thread(_read)
-
-    async def load_fingerprints(self, story_key: str) -> set[str]:
-        """Tải tập hợp các fingerprint nội dung đã gặp của story."""
-        seen_file = self.get_seen_path(story_key)
-        if not seen_file.exists():
-            return set()
-
-        def _read() -> set[str]:
             fps: set[str] = set()
             try:
                 with open(seen_file, encoding="utf-8") as f:
                     for line in f:
                         line = line.strip()
-                        if line:
-                            try:
-                                item = json.loads(line)
-                                if item.get("fp"):
-                                    fps.add(item["fp"])
-                            except json.JSONDecodeError:
-                                pass
+                        if not line:
+                            continue
+                        try:
+                            item = json.loads(line)
+                            u = item.get("url")
+                            if u:
+                                urls.add(str(u))
+                            fp = item.get("fp")
+                            if fp:
+                                fps.add(str(fp))
+                        except json.JSONDecodeError:
+                            pass
             except OSError as e:
                 logger.warning("Lỗi khi đọc %s: %s", seen_file, e)
-            return fps
+            return urls, fps
 
         return await asyncio.to_thread(_read)
 
-    async def _try_migrate_v1_progress(self, story_key: str) -> StoryState | None:
+    async def load_seen_urls(self, story_key: str) -> set[str]:
+        """Tải tập hợp các URL đã cào của story."""
+        urls, _ = await self.load_seen(story_key)
+        return urls
+
+    async def load_fingerprints(self, story_key: str) -> set[str]:
+        """Tải tập hợp các fingerprint nội dung đã gặp của story."""
+        _, fps = await self.load_seen(story_key)
+        return fps
+
+    def _find_v1_progress_file(
+        self,
+        story_key: str,
+        start_url: str | None = None,
+    ) -> Path | None:
+        """Tìm file tiến độ v1 cũ khớp với story_key hoặc start_url."""
+        if not self.base_dir.exists():
+            return None
+
+        # 1. Khớp chính xác tên file <story_key>.json
+        exact_v1 = self.base_dir / f"{story_key}.json"
+        if exact_v1.exists() and exact_v1.is_file():
+            return exact_v1
+
+        v1_files = [
+            p
+            for p in sorted(self.base_dir.glob("*.json"))
+            if p.is_file() and not p.name.endswith(".v1.json")
+        ]
+        if not v1_files:
+            return None
+
+        # 2. Khớp chuỗi con trực tiếp story_key trong tên file
+        for p in v1_files:
+            if story_key in p.stem or p.stem in story_key:
+                return p
+
+        # 3. Khớp theo core slug (bỏ hậu tố hash 8 ký tự và tiền tố www_)
+        core_slug = _HASH_SUFFIX_RE.sub("", story_key).removeprefix("www_")
+        if len(core_slug) >= 6:
+            for p in v1_files:
+                if core_slug in p.stem:
+                    return p
+
+        # 4. Nếu có start_url, kiểm tra core_slug từ start_url hoặc start_url bên trong JSON
+        if start_url:
+            url_key = make_story_key(start_url)
+            url_core = _HASH_SUFFIX_RE.sub("", url_key).removeprefix("www_")
+            for p in v1_files:
+                if url_key == p.stem or (len(url_core) >= 6 and url_core in p.stem):
+                    return p
+
+            for p in v1_files:
+                try:
+                    raw = json.loads(p.read_text(encoding="utf-8"))
+                    if isinstance(raw, dict):
+                        if raw.get("start_url") == start_url:
+                            return p
+                        visited = raw.get("all_visited_urls") or []
+                        if start_url in visited:
+                            return p
+                except Exception:
+                    continue
+
+        return None
+
+    async def _try_migrate_v1_progress(
+        self,
+        story_key: str,
+        start_url: str | None = None,
+    ) -> StoryState | None:
         """Tìm và chuyển đổi file progress v1 (progress/*.json) cũ sang cấu trúc v2."""
         if not self.base_dir.exists():
             return None
 
-        # Tìm các file json ở root của progress/ khớp story_key
-        candidate_file: Path | None = None
-        exact_v1 = self.base_dir / f"{story_key}.json"
-        if exact_v1.exists() and exact_v1.is_file():
-            candidate_file = exact_v1
-        else:
-            for p in self.base_dir.glob("*.json"):
-                if p.name.endswith(".v1.json"):
-                    continue
-                if story_key in p.stem:
-                    candidate_file = p
-                    break
-
-        if not candidate_file or not candidate_file.is_file():
-            return None
-
         def _migrate() -> StoryState | None:
+            candidate_file = self._find_v1_progress_file(story_key, start_url=start_url)
+            if not candidate_file or not candidate_file.is_file():
+                return None
+
             try:
                 data = json.loads(candidate_file.read_text(encoding="utf-8"))
                 if not isinstance(data, dict):
                     return None
 
+                is_completed = bool(data.get("completed", False))
+                completed_at = data.get("completed_at")
+                if is_completed and not completed_at:
+                    try:
+                        mtime = candidate_file.stat().st_mtime
+                        completed_at = datetime.fromtimestamp(mtime, tz=UTC).isoformat()
+                    except OSError:
+                        completed_at = datetime.now(UTC).isoformat()
+
                 state = StoryState(
                     story_key=story_key,
-                    start_url=data.get("start_url") or "",
+                    start_url=data.get("start_url") or start_url or "",
                     current_url=data.get("current_url"),
                     chapter_count=int(data.get("chapter_count") or 0),
                     story_title=data.get("story_title"),
-                    completed=bool(data.get("completed", False)),
+                    completed=is_completed,
+                    completed_at=completed_at,
                     completed_at_url=data.get("completed_at_url"),
                     story_id=data.get("story_id"),
                     story_id_regex=data.get("story_id_regex"),
@@ -390,10 +522,13 @@ class ProgressStore:
                     output_dir_final=data.get("output_dir_final"),
                 )
 
-                # Ghi state.json
+                # Ghi state.json gọn nhẹ (không chứa all_visited_urls / fingerprints)
                 story_dir = self.get_story_dir(story_key)
                 story_dir.mkdir(parents=True, exist_ok=True)
-                atomic_write_json(self.get_state_path(story_key), state.model_dump())
+                dumped = state.model_dump()
+                dumped.pop("all_visited_urls", None)
+                dumped.pop("fingerprints", None)
+                atomic_write_json(self.get_state_path(story_key), dumped)
 
                 # Chuyển all_visited_urls và fingerprints sang seen.jsonl
                 seen_file = self.get_seen_path(story_key)
@@ -415,8 +550,7 @@ class ProgressStore:
 
                 # Đổi tên file cũ thành .v1.json làm backup
                 backup_path = candidate_file.with_name(candidate_file.stem + ".v1.json")
-                if not backup_path.exists():
-                    shutil.move(candidate_file, backup_path)
+                os.replace(candidate_file, backup_path)
                 logger.info("Đã chuyển đổi tiến độ v1 (%s) sang v2 (%s)", candidate_file.name, story_dir)
                 return state
             except Exception as e:

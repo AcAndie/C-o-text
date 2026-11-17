@@ -62,7 +62,7 @@ Code cũ (v1.2.1, ~13k dòng trong `src/`) vẫn chạy được và vẫn là b
 | 2 | Port phần lõi xác định (HTML, extract, writers, net) | ✅ Xong |
 | 3 | Lớp AI mới (provider, structured output, retry) | ✅ Xong |
 | 4 | Learning mới (1–3 AI call + kiểm chứng bằng code) | ✅ Xong |
-| 5 | Vòng lặp cào web mới + lưu tiến độ mới | ⬜ |
+| 5 | Vòng lặp cào web mới + lưu tiến độ mới | 🟨 Đang làm |
 | 6 | EPUB/TXT flow hợp nhất + sửa lỗi EPUB lớn | ⬜ |
 | 7 | CLI mới + chuyển hẳn sang code mới + xóa code cũ | ⬜ |
 | 8 | Backlog sau khi chuyển (tùy chọn) | ⬜ |
@@ -319,7 +319,7 @@ Luồng `learn_site(start_url)`:
 **DoD:** học được 2 site thật với ≤3 AI call, profile qua V1–V6; Webnovel ra `div.cha-words`/`div.cha-content` hoặc tương đương không dính UI.
 
 ### Phase 5 — Vòng lặp cào web mới
-- [ ] **5.1** `ProgressStore` mới mỗi truyện: `progress/<story_key>/state.json` (nhỏ: start_url, current_url, chapter_count, story meta, completed, completed_at…) + `progress/<story_key>/seen.jsonl` (append-only `{url, fp, ch}`), **không** ghi lại toàn bộ danh sách URL mỗi chương. Tự chuyển đổi file progress cũ `progress/<domain>_<slug>_<hash>.json` khi gặp (giữ file cũ làm backup `.v1.json`). Giữ nguyên thư mục output đã có để resume viết tiếp đúng chỗ.
+- [x] **5.1** `ProgressStore` mới mỗi truyện: `progress/<story_key>/state.json` (nhỏ: start_url, current_url, chapter_count, story meta, completed, completed_at…) + `progress/<story_key>/seen.jsonl` (append-only `{url, fp, ch}`), **không** ghi lại toàn bộ danh sách URL mỗi chương. Tự chuyển đổi file progress cũ `progress/<domain>_<slug>_<hash>.json` khi gặp (giữ file cũ làm backup `.v1.json`). Giữ nguyên thư mục output đã có để resume viết tiếp đúng chỗ.
 - [ ] **5.2** `web/session.py::ScrapeSession`: state gói trong object (thay 13 tham số), mỗi chương trả về `Outcome` enum (`WROTE`, `EMPTY`, `DUPLICATE`, `END`, `BLOCKED`, `RATE_LIMITED`, `ERROR`). Port **đủ mọi guard trong §6.2**.
 - [ ] **5.3** AI fallback tường minh: chỉ khi `PageResult` không có nội dung → `extract_content`; không có next → `classify_page`. Ghi `issues.md`.
 - [ ] **5.4** AdsFilter tích hợp: 2 pass (trước/sau `strip_nav_edges`), quét cạnh nghi vấn, cuối truyện xác minh bằng AI các dòng tần suất 3–9, tự thêm ≥ ngưỡng (§7.3), hậu xử lý file đã ghi.
@@ -492,3 +492,4 @@ User yêu cầu một mục ở đây → trả lời: *"Mục [X] đang nằm n
 | 2026-11-16 | Cài đặt `web/start.py`: phân loại URL index/chapter, tìm chương 1 qua `ClassificationStore` cache; fast-path Webnovel sort ID chương tự động (confidence=0.99); port các helper story metadata (`extract_story_title`, `build_story_id_regex`, `is_chapter_url`, `story_id_ok`) | Hoàn thành Task 4.4 |
 | 2026-11-16 | Chạy smoke test thực tế với Gemini thật trên 2 site RoyalRoad và Webnovel: đạt 1 AI call duy nhất cho mỗi site (mục tiêu <= 3 calls), vượt qua kiểm chứng V1–V6 ngay lần đầu; Webnovel ra đúng selector `div.cha-words` không dính UI rác | Hoàn thành Task 4.5, đạt 100% DoD Phase 4 |
 | 2026-11-17 | Rà soát & vá 4 điểm hổng Phase 4: (1) `web/start.py` giải nén đúng tuple `(status, html)` qua `fetch_page` / `pool.fetch` và hỗ trợ `pw_pool`; (2) đồng bộ khóa `{"found": bool, "selectors": [...]}` giữa `FormattingRulesSchema` và `MarkdownFormatter`; (3) tự động lọc bỏ `ads_keywords` trượt V6 và bắt buộc sửa/fallback khi `title_selector` trượt V3; (4) `SiteProfile.is_usable()` kiểm tra `profile_version >= 3` và nâng cấp `data/site_profiles.json` lên v3 (`div.cha-words` cho Webnovel) | Đảm bảo Phase 4 khép kín 100% trước khi sang Phase 5 |
+| 2026-11-17 | Hoàn thiện `ProgressStore` mới tại `src/cao_text/storage.py`: bổ sung `make_story_key`, `default_story_output_dir`, `resolve_story_output_dir` (bảo toàn `output_dir_final` khi resume), `load_or_create`, `load_seen` (1-pass), `clear`, loại bỏ triệt để mảng URL/fingerprint khỏi `state.json` và nâng cấp bộ tìm kiếm/chuyển đổi file progress v1 (`<domain>_<slug>_<hash>.json` -> `.v1.json`) | Hoàn thành Task 5.1 |

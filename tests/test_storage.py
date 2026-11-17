@@ -15,6 +15,9 @@ from cao_text.storage import (
     async_atomic_write_text,
     atomic_write_json,
     atomic_write_text,
+    default_story_output_dir,
+    make_story_key,
+    resolve_story_output_dir,
 )
 
 # ── Test Atomic Write ─────────────────────────────────────────────────────────
@@ -206,3 +209,88 @@ async def test_progress_store_auto_migrate_v1(tmp_path: Path) -> None:
     assert not v1_file.exists()
     backup_file = progress_dir / "royalroad_rock_falls_legacy_hash123.v1.json"
     assert backup_file.exists()
+
+
+async def test_progress_store_task_5_1_full_lifecycle_and_v1_url_migration(tmp_path: Path) -> None:
+    """Task 5.1: Kiểm tra make_story_key, state.json không lưu mảng URL, load_or_create, clear và giữ nguyên output_dir_final."""
+    progress_dir = tmp_path / "progress"
+    progress_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. make_story_key: URL index và URL chương của cùng 1 truyện phải sinh cùng story_key
+    rr_index = "https://www.royalroad.com/fiction/55418/rock-falls-everyone-dies"
+    rr_ch1 = "https://www.royalroad.com/fiction/55418/rock-falls-everyone-dies/chapter/1083016/chapter-1"
+    assert make_story_key(rr_index, "Vault/Novels") == make_story_key(rr_ch1, "Vault/Novels")
+
+    wn_index = "https://www.webnovel.com/book/30780541908206305"
+    wn_ch1 = "https://www.webnovel.com/book/30780541908206305/82625129275771249"
+    assert make_story_key(wn_index, "Vault/Novels") == make_story_key(wn_ch1, "Vault/Novels")
+
+    # 2. Giả lập file progress v1 thực tế với tên <domain>_<slug>_<hash>.json
+    v1_filename = "www_webnovel_com_webnovel_com_book_30780541908206305_fab0f1a8.json"
+    v1_path = progress_dir / v1_filename
+    v1_payload = {
+        "current_url": "https://www.webnovel.com/book/30780541908206305/83664006434312847",
+        "chapter_count": 2,
+        "story_title": None,
+        "all_visited_urls": [
+            "https://www.webnovel.com/book/30780541908206305/82625129275771249",
+            "https://www.webnovel.com/book/30780541908206305/82646343729871690",
+        ],
+        "fingerprints": ["12dab5c025c43a72", "7e0b5620b3c976fd"],
+        "story_id_regex": "/book/30780541908206305/",
+        "story_id_locked": True,
+        "completed": False,
+        "completed_at_url": None,
+        "start_url": wn_ch1,
+        "naming_done": True,
+        "story_name_clean": "Zero Fate Against the World (New Version)",
+        "chapter_keyword": "Chapter",
+        "has_chapter_subtitle": True,
+        "story_prefix_strip": "Zero Fate Against the World (New Version)",
+        "output_dir_final": "Vault/Novels\\Zero_Fate_Against_the_World_(New_Version)",
+        "last_title": "Chapter 2",
+        "last_scraped_url": "https://www.webnovel.com/book/30780541908206305/82646343729871690",
+    }
+    v1_path.write_text(json.dumps(v1_payload, ensure_ascii=False), encoding="utf-8")
+
+    store = ProgressStore(base_dir=progress_dir)
+
+    # Gọi load_or_create bằng URL index trong links.md (khác start_url chương 1 bên trong file)
+    state = await store.load_or_create(wn_index, base_output_dir="Vault/Novels")
+    assert state.chapter_count == 2
+    assert state.naming_done is True
+    assert state.output_dir_final == "Vault/Novels\\Zero_Fate_Against_the_World_(New_Version)"
+
+    # Giữ nguyên thư mục output đã có để resume viết tiếp đúng chỗ
+    resolved_dir = resolve_story_output_dir(state, base_output_dir="Vault/Novels")
+    assert resolved_dir == Path("Vault/Novels\\Zero_Fate_Against_the_World_(New_Version)")
+
+    # Kiểm tra state.json trên đĩa KHÔNG chứa all_visited_urls hay fingerprints
+    raw_state_on_disk = json.loads(store.get_state_path(state.story_key).read_text(encoding="utf-8"))
+    assert "all_visited_urls" not in raw_state_on_disk
+    assert "fingerprints" not in raw_state_on_disk
+
+    # Kiểm tra load_seen trả về cả (urls, fps) trong 1 lần đọc
+    urls, fps = await store.load_seen(state.story_key)
+    assert len(urls) == 2
+    assert wn_ch1 in urls
+    assert fps == {"12dab5c025c43a72", "7e0b5620b3c976fd"}
+
+    # Backup .v1.json đã được tạo
+    assert (progress_dir / "www_webnovel_com_webnovel_com_book_30780541908206305_fab0f1a8.v1.json").exists()
+
+    # 3. Kiểm tra clear() xóa sạch state.json và seen.jsonl
+    await store.clear(state.story_key)
+    assert not store.get_state_path(state.story_key).exists()
+    assert not store.get_seen_path(state.story_key).exists()
+
+    # 4. Kiểm tra resolve_story_output_dir cho truyện mới chưa có output_dir_final
+    fresh_state = await store.load_or_create("https://example.com/novel/my-story", base_output_dir="Vault/Novels")
+    assert fresh_state.chapter_count == 0
+    assert resolve_story_output_dir(fresh_state, "Vault/Novels") == Path(
+        default_story_output_dir("https://example.com/novel/my-story", "Vault/Novels")
+    )
+    fresh_state.story_name_clean = "My Awesome Story: Rise!"
+    named_dir = resolve_story_output_dir(fresh_state, "Vault/Novels")
+    assert named_dir.name == "My_Awesome_Story_Rise!"
+    assert fresh_state.output_dir_final is not None
