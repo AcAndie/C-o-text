@@ -861,7 +861,11 @@ class ScrapeSession:
             ):
                 try:
                     # Tạm dừng theo domain delay nếu không phải bản prefetched có sẵn
-                    if not first_step and current_url not in self.prefetched_map:
+                    # Áp dụng delay nếu là chương tiếp theo hoặc đang resume (chapter_count > 0)
+                    should_delay = (
+                        not first_step or self.state.chapter_count > 0
+                    ) and current_url not in self.prefetched_map
+                    if should_delay:
                         delay = get_delay(current_url)
                         if delay > 0:
                             await self.sleep_fn(delay)
@@ -869,6 +873,14 @@ class ScrapeSession:
 
                     step_res = await self.step(current_url)
                     outcome = step_res.outcome
+                    logger.info(
+                        "[%s] Step kết quả: %s (ch=%s, detail=%s, next=%s)",
+                        self.domain,
+                        outcome,
+                        step_res.chapter_num,
+                        step_res.detail,
+                        step_res.next_url,
+                    )
 
                     if outcome == Outcome.WROTE:
                         self.consecutive_empty = 0

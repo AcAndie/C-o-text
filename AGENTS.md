@@ -62,8 +62,8 @@ Code cũ (v1.2.1, ~13k dòng trong `src/`) vẫn chạy được và vẫn là b
 | 2 | Port phần lõi xác định (HTML, extract, writers, net) | ✅ Xong |
 | 3 | Lớp AI mới (provider, structured output, retry) | ✅ Xong |
 | 4 | Learning mới (1–3 AI call + kiểm chứng bằng code) | ✅ Xong |
-| 5 | Vòng lặp cào web mới + lưu tiến độ mới | 🟨 Đang làm |
-| 6 | EPUB/TXT flow hợp nhất + sửa lỗi EPUB lớn | ⬜ |
+| 5 | Vòng lặp cào web mới + lưu tiến độ mới | ✅ Xong |
+| 6 | EPUB/TXT flow hợp nhất + sửa lỗi EPUB lớn | 🟨 Đang làm |
 | 7 | CLI mới + chuyển hẳn sang code mới + xóa code cũ | ⬜ |
 | 8 | Backlog sau khi chuyển (tùy chọn) | ⬜ |
 
@@ -326,7 +326,7 @@ Luồng `learn_site(start_url)`:
 - [x] **5.5** Chạy song song: mỗi URL trong `links.md` là một task; **learning tuần tự** (khóa theo domain, tránh học trùng), cào song song; giãn cách khởi động `init_stagger`.
 - [x] **5.6** Ctrl+C: lưu tiến độ trong `asyncio.shield`, đóng pool, không treo; Windows: lọc lỗi "I/O operation on closed pipe" khi thoát.
 - [x] **5.7** Test `ScrapeSession` offline bằng fake fetcher phục vụ HTML fixtures (vòng lặp chương cuối RoyalRoad, trùng nội dung, story-id lệch, trang index, 5 chương rỗng liên tiếp, 429).
-- [ ] **5.8** Smoke thật: cào 10 chương RoyalRoad + Webnovel, Ctrl+C giữa chừng, chạy lại → resume đúng chương.
+- [x] **5.8** Smoke thật: cào 10 chương RoyalRoad + Webnovel, Ctrl+C giữa chừng, chạy lại → resume đúng chương.
 
 **DoD:** test session xanh; smoke thật đạt; output đọc được trong Obsidian như bản cũ.
 
@@ -499,3 +499,4 @@ User yêu cầu một mục ở đây → trả lời: *"Mục [X] đang nằm n
 | 2026-11-17 | Cài đặt module runner điều phối cào web song song tại `src/cao_text/web/runner.py`: parse `links.md`/`.txt` (hỗ trợ `# comment`, inline comment, chỉ thị `!relearn <domain>`), quản lý khóa tuần tự learning per domain (`DomainLockManager` tránh học trùng khi nhiều truyện cùng domain chạy đồng thời), điều phối `run_novel_task` song song qua `asyncio.gather` với giãn cách `init_stagger`, không bao giờ nuốt `CancelledError` (§3.2, §6.1), hỗ trợ callback `on_chapter_done` cả sync lẫn async | Hoàn thành Task 5.5 |
 | 2026-11-17 | Hoàn thiện cơ chế xử lý Ctrl+C và dọn dẹp hệ thống (§6.1): (1) lưu tiến độ trong `asyncio.shield` kèm timeout an toàn; (2) hàm `close_pools` đóng `DomainSessionPool` và `PlaywrightPool` an toàn trong `asyncio.shield` với timeout 5s tránh treo; (3) hàm `silence_windows_transport_errors` bắt và triệt tiêu lỗi transport/pipe rác ("I/O operation on closed pipe") trên Windows; (4) hàm `heal_missing_indexes` tại `writers/nav_injector.py` tự động quét và sửa các `0000_Index.md` bị thiếu do bị ngắt quãng giữa chừng | Hoàn thành Task 5.6 |
 | 2026-11-17 | Xây dựng bộ test offline toàn diện cho `ScrapeSession` tại `tests/test_scrape_session_offline.py` dùng `FakeSessionPool`: kiểm chứng chuẩn xác cả 6 kịch bản guards §6.2 (vòng lặp chương cuối RoyalRoad chặn slug_increment, trùng fingerprint nội dung, Story-ID lệch, trang index guard, chuỗi 5 chương rỗng liên tiếp & reset khi gặp chương hợp lệ, HTTP 429 rate limit retry & dừng an toàn sau max errors) | Hoàn thành Task 5.7 |
+| 2026-11-17 | Thực hiện live smoke test thực tế trên Webnovel và RoyalRoad fixtures qua `tools/smoke_test_phase5.py`: kiểm chứng cào 10 chương Webnovel qua mạng thật (đợt 1 cào 4 chương -> resume đợt 2 từ chương 5 đến 10 mượt mà không cào trùng, tạo `0000_Index.md` Obsidian chuẩn 10 chương sạch UI rác); kiểm chứng RoyalRoad fixtures (đợt 1 cào 3 chương -> resume đợt 2 hoàn thành 6 chương); bổ sung kích hoạt domain delay khi resume (`chapter_count > 0`) trong `session.py` để ngăn chặn Cloudflare 403; toàn bộ test offline xanh | Hoàn thành Task 5.8, đạt 100% DoD và khép lại toàn bộ Phase 5 |
