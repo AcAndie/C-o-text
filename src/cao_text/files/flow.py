@@ -285,15 +285,16 @@ async def run_file_flow(
         if n_ok % 25 == 0:
             logger.info("   ... %d chapters written", n_ok)
 
-    # 8. Hậu xử lý AdsFilter cuối file
+    # 8. Hậu xử lý AdsFilter cuối file (§6.4 & §7.3)
     auto_threshold = compute_auto_threshold(total_chapters=n_ok)
     candidates, _ = ads_filter.get_candidates_by_frequency(
         auto_threshold=auto_threshold,
         min_count=auto_threshold,
         max_results=50,
+        total_chapters=n_ok,
     )
     if candidates:
-        added = ads_filter.apply_verified(candidates)
+        added = ads_filter.apply_verified(candidates, is_auto=True)
         ads_filter.save()
         removed = AdsFilter.post_process_directory(candidates, str(out_dir))
         logger.info(
