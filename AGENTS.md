@@ -63,7 +63,7 @@ Code cũ (v1.2.1, ~13k dòng trong `src/`) vẫn chạy được và vẫn là b
 | 3 | Lớp AI mới (provider, structured output, retry) | ✅ Xong |
 | 4 | Learning mới (1–3 AI call + kiểm chứng bằng code) | ✅ Xong |
 | 5 | Vòng lặp cào web mới + lưu tiến độ mới | ✅ Xong |
-| 6 | EPUB/TXT flow hợp nhất + sửa lỗi EPUB lớn | 🟨 Đang làm |
+| 6 | EPUB/TXT flow hợp nhất + sửa lỗi EPUB lớn | ✅ Xong |
 | 7 | CLI mới + chuyển hẳn sang code mới + xóa code cũ | ⬜ |
 | 8 | Backlog sau khi chuyển (tùy chọn) | ⬜ |
 
@@ -339,7 +339,7 @@ Luồng `learn_site(start_url)`:
   - Cache theo SHA256 file (định dạng cache mới, có version).
 - [x] **6.3** `files/txt.py`: chỉ đọc UTF-8 (báo lỗi rõ ràng, hướng dẫn convert); DB pattern ở `files/txt_cases.json`; AI fallback kiểm chứng trên 3 đoạn 80 dòng giữa file trước khi lưu pattern mới.
 - [x] **6.4** AdsFilter cho file lớn (§7.3): ngưỡng tự xóa = `max(10, ceil(0.03 × số chương))`; không tự xóa dòng ngắn kiểu thoại/chuyển cảnh (bắt đầu bằng dấu ngoặc kép, kết thúc bằng `:`, < 25 ký tự) trừ khi có dấu hiệu URL/watermark.
-- [ ] **6.5** Golden EPUB/TXT so với v1 (diff có chủ đích ở EPUB lớn → §3.5) + test EPUB lớn không còn dồn chương vào một file.
+- [x] **6.5** Golden EPUB/TXT so với v1 (diff có chủ đích ở EPUB lớn → §3.5) + test EPUB lớn không còn dồn chương vào một file.
 
 **DoD:** golden file-flow khớp/đã duyệt; EPUB 1500 chương tách đúng.
 
@@ -504,3 +504,4 @@ User yêu cầu một mục ở đây → trả lời: *"Mục [X] đang nằm n
 | 2026-11-17 | Cài đặt `files/epub_plan.py` và `files/epub.py::read_epub_documents` khắc phục triệt để lỗi §7.3 cho EPUB lớn (>300 doc): (1) mặc định lập kế hoạch bằng Rule-based (TOC map, gộp trang divider Part/Level/Book vào chương sau qua `merge_dividers`); (2) AI chỉ sinh quy tắc tổng quát (`EpubRulesOutput` gồm regex, keywords, hrefs) dựa trên mẫu đầu/giữa/cuối + toàn bộ tiêu đề TOC thay vì liệt kê doc_id; (3) kiểm chứng an toàn code thuần `verify_epub_plan` (chặn trần > 5× trung vị doc); (4) cache SHA256 an toàn `version: 2` trong `data/epub_analyses.json` bảo toàn `legacy_v1`; (5) kiểm thử thành công trên EPUB lớn 1631 chương | Hoàn thành Task 6.2 |
 | 2026-11-17 | Hoàn thiện module `files/txt.py` và cập nhật `files/epub.py`: (1) chỉ đọc UTF-8, bắt lỗi `UnicodeDecodeError` báo lỗi rõ ràng kèm hướng dẫn chuyển đổi qua Notepad/PowerShell/iconv (§6.6); (2) DB pattern `txt_cases.json` trong package kèm fallback `data/txt_cases.json`; (3) hàm `detect_pattern_regex` chấm điểm trong 100 dòng đầu; (4) AI fallback gọi `prompt_txt_pattern` -> `TxtPatternOutput`, kiểm chứng trên 3 đoạn 80 dòng ở giữa file (`verify_ai_pattern`) trước khi lưu mẫu mới bằng atomic write; (5) cập nhật `files/epub.py` bỏ hoàn toàn phụ thuộc vào `src/ingest/txt.py` | Hoàn thành Task 6.3 |
 | 2026-11-17 | Củng cố `AdsFilter` và tích hợp `flow.py` cho file lớn (§6.4 & §7.3): (1) ngưỡng tự động scale theo số chương `max(10, ceil(0.03 * số chương))`; (2) bảo vệ dòng thoại / chuyển cảnh ngắn (`is_likely_dialogue_or_scene_break`: bắt đầu bằng ngoặc kép/gạch đầu dòng, kết thúc bằng `:`, hoặc < 25 ký tự) không bị xóa nhầm, trừ khi có URL/watermark domain; (3) `flow.py` truyền `total_chapters=n_ok` và `is_auto=True` vào `apply_verified`; (4) kiểm thử mô phỏng bộ 1500 chương không xóa nhầm "Hàn Tuyệt nói:" | Hoàn thành Task 6.4 |
+| 2026-11-17 | Kiểm chứng toàn diện Golden EPUB/TXT và hoàn tất Phase 6: (1) `run_file_flow` đạt 100% test pass khớp tuyệt đối trên toàn bộ synthetic fixtures (2 EPUB + 2 TXT × 3 modes) và local EPUB fixtures (Ready Player One, Around the World in 80 Days); (2) kiểm thử thành công trên EPUB lớn 1631 chương (`Dinh_Cap_Khi_Van_1631_chaps.epub`) tách trọn vẹn 1626 chương trong 292s, không bị dồn file (§7.3); (3) 298/298 test offline toàn hệ thống xanh 100% | Hoàn thành Task 6.5, đạt 100% DoD Phase 6 |

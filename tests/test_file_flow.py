@@ -138,3 +138,84 @@ async def test_run_file_flow_invalid_type(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Không hỗ trợ xử lý file"):
         await run_file_flow(dummy)
+
+
+# ── Test run_file_flow với EPUB Local (Small & Large, Task 6.5) ───────────────
+
+FIXTURES_LOCAL_ROOT = PROJECT_ROOT / "tests" / "fixtures_local"
+GOLDEN_LOCAL_ROOT = PROJECT_ROOT / "tests" / "golden_local"
+
+
+@pytest.mark.skipif(
+    not (FIXTURES_LOCAL_ROOT / "epub").exists(),
+    reason="Không có tests/fixtures_local/epub",
+)
+@pytest.mark.parametrize("epub_stem", ["Ready_Player_One", "Around_the_World_in_Eighty_Days"])
+@pytest.mark.parametrize("mode", ["obsidian", "translate", "raw"])
+async def test_run_file_flow_epub_local_small(epub_stem: str, mode: str) -> None:
+    epub_path = FIXTURES_LOCAL_ROOT / "epub" / f"{epub_stem}.epub"
+    expected_dir = GOLDEN_LOCAL_ROOT / "epub" / epub_stem / mode
+
+    if not epub_path.exists():
+        pytest.skip(f"Thiếu file EPUB local: {epub_path}")
+    if not expected_dir.exists():
+        pytest.skip(f"Thiếu golden EPUB local: {expected_dir}")
+
+    with tempfile.TemporaryDirectory() as td:
+        cfg = RunConfig.create_for_mode(mode, output_dir=td)  # type: ignore[arg-type]
+        spec = FileSpec(
+            input_path=epub_path,
+            run_config=cfg,
+            input_type="epub",
+        )
+        count = await run_file_flow(spec)
+        assert count > 0
+
+        subdirs = [p for p in Path(td).iterdir() if p.is_dir()]
+        assert subdirs, "run_file_flow không tạo thư mục đầu ra"
+        actual_dir = subdirs[0]
+
+        assert_dir_contents_match(
+            actual_dir,
+            expected_dir,
+            is_synthetic=False,
+            min_ratio=0.99,
+            update_golden=False,
+        )
+
+
+@pytest.mark.skipif(
+    not (FIXTURES_LOCAL_ROOT / "epub" / "Dinh_Cap_Khi_Van_1631_chaps.epub").exists(),
+    reason="Thiếu file EPUB lớn 1631 chaps",
+)
+async def test_run_file_flow_epub_local_large(run_slow: bool) -> None:
+    if not run_slow:
+        pytest.skip("Chạy kèm flag '--run-slow' để kiểm tra bộ EPUB 1631 chương (~60s)")
+
+    epub_path = FIXTURES_LOCAL_ROOT / "epub" / "Dinh_Cap_Khi_Van_1631_chaps.epub"
+    expected_dir = GOLDEN_LOCAL_ROOT / "epub" / "Dinh_Cap_Khi_Van_1631_chaps" / "obsidian"
+
+    with tempfile.TemporaryDirectory() as td:
+        cfg = RunConfig.create_for_mode("obsidian", output_dir=td)
+        cfg.download_images = False
+        spec = FileSpec(
+            input_path=epub_path,
+            run_config=cfg,
+            input_type="epub",
+        )
+        count = await run_file_flow(spec)
+        # Kiểm tra DoD Task 6.5: tách đúng >= 1500 chương, không dồn chương
+        assert count >= 1500, f"Số chương tạo ra ({count}) phải >= 1500"
+
+        subdirs = [p for p in Path(td).iterdir() if p.is_dir()]
+        assert subdirs, "run_file_flow không tạo thư mục đầu ra"
+        actual_dir = subdirs[0]
+
+        assert_dir_contents_match(
+            actual_dir,
+            expected_dir,
+            is_synthetic=False,
+            min_ratio=0.99,
+            update_golden=False,
+        )
+
