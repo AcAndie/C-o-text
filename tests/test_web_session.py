@@ -7,10 +7,20 @@ from typing import Any
 import pytest
 
 from cao_text.ai.fake import FakeProvider
-from cao_text.ai.schemas import ExtractedContentOutput, PageClassificationOutput
+from cao_text.ai.schemas import (
+    ExtractedContentOutput,
+    PageClassificationOutput,
+    VerifyAdsOutput,
+)
+from cao_text.html.ads import (
+    AdsFilter,
+    compute_auto_threshold,
+    is_likely_dialogue_or_scene_break,
+    is_valid_ads_keyword,
+)
 from cao_text.log import IssueReporter
 from cao_text.models import RunConfig, SiteProfile
-from cao_text.storage import ProgressStore
+from cao_text.storage import ProfileStore, ProgressStore
 from cao_text.web.session import (
     Outcome,
     ScrapeSession,
@@ -362,4 +372,123 @@ async def test_scrape_session_ai_fallbacks_task_5_3(tmp_path: Path) -> None:
     issues_md = issues_path.read_text(encoding="utf-8")
     assert "recovered via AI extract_content fallback" in issues_md
     assert "recovered via AI classify_page fallback" in issues_md
+
+
+def test_ads_filter_validation_and_threshold_rules() -> None:
+    """Task 5.4 & §6.5, §7.3: Kiểm tra quy tắc từ khóa quảng cáo, ngưỡng scale theo số chương và bảo vệ thoại ngắn."""
+    assert is_valid_ads_keyword("Support the author on Patreon today", story_title="My Novel") is True
+    assert is_valid_ads_keyword("short") is False
+    assert is_valid_ads_keyword("<script>alert(1)</script>") is False
+    assert is_valid_ads_keyword("# Chapter 1") is False
+    assert is_valid_ads_keyword("https://example.com/ad") is False
+    assert is_valid_ads_keyword("Next Chapter") is False
+    assert is_valid_ads_keyword("login") is False
+    assert is_valid_ads_keyword("My Novel", story_title="My Novel") is False
+
+    # Ngưỡng §7.3: max(10, ceil(0.03 * total_chapters))
+    assert compute_auto_threshold(20) == 10
+    assert compute_auto_threshold(1500) == 45
+
+    # Bảo vệ câu thoại ngắn / chuyển cảnh (§7.3)
+    assert is_likely_dialogue_or_scene_break("Hàn Tuyệt nói:") is True
+    assert is_likely_dialogue_or_scene_break("Cùng lúc đó.") is True
+    assert is_likely_dialogue_or_scene_break('"Chạy mau!"') is True
+    # Nếu có dấu hiệu watermark/URL thì không bảo vệ
+    assert is_likely_dialogue_or_scene_break("Read on royalroad.com:") is False
+
+
+@pytest.mark.asyncio
+async def test_scrape_session_ads_filter_two_pass_and_finalize_task_5_4(tmp_path: Path) -> None:
+    """Task 5.4: AdsFilter 2-pass (trước/sau strip_nav_edges), quét cạnh, AI xác minh nhóm 3-9 và hậu xử lý file đã ghi."""
+    pages: dict[str, tuple[int, str]] = {}
+    ad_edge_1 = "Support the author by reading on Royal Road"
+    nav_edge = "Previous Chapter | Next Chapter"
+    ad_edge_2 = "Read the original on Royal Road"
+    suspect_ad = "Join our community group for early access chapters today"
+    safe_dialogue = "Hàn Tuyệt trầm giọng nói:"
+
+    for i in range(1, 5):
+        u = f"https://www.royalroad.com/fiction/500/chapter/{i}"
+        nxt = f"https://www.royalroad.com/fiction/500/chapter/{i + 1}" if i < 4 else None
+        nxt_link = f'<a class="btn-next" rel="next" href="{nxt}">Next</a>' if nxt else ""
+        pages[u] = (
+            200,
+            f"""<!DOCTYPE html>
+            <html>
+            <head><title>Chapter {i} | Immortal Path | Royal Road</title></head>
+            <body>
+                <h1 class="chap-title">Chapter {i}: Trial {i}</h1>
+                <div class="chapter-content">
+                    <p>{ad_edge_1}</p>
+                    <p>{nav_edge}</p>
+                    <p>{ad_edge_2}</p>
+                    <p>{safe_dialogue}</p>
+                    <p>Unique narrative prose for chapter {i} describing the cultivation journey in detail.</p>
+                    <p>Another long paragraph of authentic story content for chapter {i} to pass validation.</p>
+                    <p>Third paragraph of deep worldbuilding and character progression in chapter {i}.</p>
+                    <p>Fourth paragraph concluding the dramatic scene of chapter {i} with suspense.</p>
+                    <p>{suspect_ad}</p>
+                    <p>{nav_edge}</p>
+                </div>
+                {nxt_link}
+            </body>
+            </html>
+            """,
+        )
+
+    ads_db_path = tmp_path / "ads_keywords.json"
+    ads_filter = AdsFilter.load("www.royalroad.com", ads_db_file=ads_db_path)
+
+    fake_ai = FakeProvider()
+    fake_ai.set_response(
+        VerifyAdsOutput,
+        VerifyAdsOutput(
+            ad_lines=[suspect_ad],
+            safe_lines=[safe_dialogue],
+            reasoning="Confirmed community promo line as ad; kept character dialogue safe.",
+        ),
+    )
+
+    profile = _default_profile("www.royalroad.com")
+    profile_store = ProfileStore(tmp_path / "site_profiles.json")
+    progress_store = ProgressStore(base_dir=tmp_path / "progress")
+    out_root = tmp_path / "output"
+    run_cfg = RunConfig.create_for_mode("raw", str(out_root))
+
+    session = ScrapeSession(
+        start_url="https://www.royalroad.com/fiction/500/chapter/1",
+        profile=profile,
+        pool=FakePool(pages),
+        progress_store=progress_store,
+        profile_store=profile_store,
+        ai_provider=fake_ai,
+        ads_filter=ads_filter,
+        run_config=run_cfg,
+        sleep_fn=_noop_sleep,
+    )
+
+    state = await session.run()
+    assert state.chapter_count == 4
+    assert state.completed is True
+
+    # Kiểm tra các file chương đã ghi trên đĩa:
+    # 1. Cả ad_edge_1, nav_edge (nhờ 2-pass!), và ad_edge_2 đều đã bị xóa ngay lúc cào
+    # 2. Dòng suspect_ad (xuất hiện 4 lần -> nhóm 3-9) đã được AI xác nhận và hậu xử lý xóa khỏi cả 4 file!
+    # 3. Câu thoại safe_dialogue ("Hàn Tuyệt trầm giọng nói:") vẫn còn nguyên vẹn!
+    txt_files = sorted(session.output_dir.glob("*.txt"))
+    assert len(txt_files) == 4
+    for tf in txt_files:
+        text = tf.read_text(encoding="utf-8")
+        assert ad_edge_1.lower() not in text.lower()
+        assert nav_edge.lower() not in text.lower()
+        assert ad_edge_2.lower() not in text.lower()
+        assert suspect_ad.lower() not in text.lower()
+        assert safe_dialogue in text
+
+    # Kiểm tra từ khóa mới đã được lưu vào ProfileStore và ads_keywords.json
+    saved_prof = await profile_store.get("www.royalroad.com")
+    assert saved_prof is not None
+    assert suspect_ad.lower() in saved_prof.ads_keywords_learned
+    assert ads_db_path.exists()
+
 

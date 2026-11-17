@@ -294,7 +294,12 @@ class ScrapeSession:
             found = ai_out.next_chapter_url
             if found:
                 resolved = urljoin(url, found)
-                if resolved != url:
+                if (
+                    resolved != url
+                    and urlparse(resolved).netloc.lower() == self.domain
+                    and resolved not in self.visited_urls
+                    and story_id_ok(resolved, self.state.story_id_regex)
+                ):
                     return resolved
         except asyncio.CancelledError:
             raise
@@ -387,6 +392,14 @@ class ScrapeSession:
                 or self.domain
             )
             self.issue_reporter.set_story_label(label)
+
+        if self.ads_filter is not None:
+            if hasattr(self.ads_filter, "set_story_title"):
+                self.ads_filter.set_story_title(
+                    self.state.story_name_clean or self.state.story_title
+                )
+            if hasattr(self.ads_filter, "inject_from_profile"):
+                self.ads_filter.inject_from_profile(self.profile)
 
         await self.progress_store.save_state(self.state)
         self._initialized = True
@@ -626,7 +639,14 @@ class ScrapeSession:
 
         # ── Bước 3: AdsFilter 2-pass & strip_nav_edges & Title deduplication ─
         if self.ads_filter is not None and hasattr(self.ads_filter, "filter"):
-            content = self.ads_filter.filter(content, chapter_url=url)
+            # Nếu có bản trước khi strip_nav_edges từ process_page, dùng nó cho Pass 1
+            # để bắt quảng cáo che khuất dòng điều hướng ở rìa chương
+            base_for_ads = (
+                page_res.diagnostics.get("cleaned_before_strip")
+                if page_res.content_md is not None
+                else None
+            ) or content
+            content = self.ads_filter.filter(base_for_ads, chapter_url=url)
 
         stripped = await asyncio.to_thread(strip_nav_edges, content)
         if stripped and len(stripped.strip()) >= 100:
@@ -703,6 +723,8 @@ class ScrapeSession:
                 candidate_st = extract_story_title(title_tag.get_text(strip=True))
                 if candidate_st:
                     self.state.story_title = candidate_st
+                    if self.ads_filter is not None and hasattr(self.ads_filter, "set_story_title"):
+                        self.ads_filter.set_story_title(candidate_st)
 
         # ── Bước 5: Image stage & Ghi file chương ────────────────────────────
         chapter_num = self.state.chapter_count + 1
@@ -830,6 +852,7 @@ class ScrapeSession:
             return self.state
 
         first_step = True
+        cancelled = False
         try:
             while (
                 current_url
@@ -924,6 +947,7 @@ class ScrapeSession:
                             await self.sleep_fn(self.timeout_backoff_base)
 
                 except asyncio.CancelledError:
+                    cancelled = True
                     try:
                         await asyncio.wait_for(
                             asyncio.shield(self.progress_store.save_state(self.state)),
@@ -953,6 +977,24 @@ class ScrapeSession:
                     )
                 except Exception as e:
                     logger.warning("[%s] Chèn nav và index thất bại: %s", self.domain, e)
+
+            if self.ads_filter is not None and hasattr(self.ads_filter, "finalize"):
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(
+                            self.ads_filter.finalize(
+                                ai_provider=self.ai_provider,
+                                profile=self.profile,
+                                profile_store=self.profile_store,
+                                output_dir=self.output_dir,
+                                total_chapters=self.state.chapter_count,
+                                cancelled=cancelled,
+                            )
+                        ),
+                        timeout=30.0,
+                    )
+                except Exception as e:
+                    logger.warning("[%s] Hoàn tất AdsFilter thất bại: %s", self.domain, e)
 
         return self.state
 

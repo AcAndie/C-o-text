@@ -99,8 +99,10 @@ def process_page(
     raw_content, content_method, images, selector_used = extract_content(soup, url, profile)
 
     content_md: str | None = None
+    cleaned_before_strip: str | None = None
     if raw_content:
         cleaned = clean_extracted_content(raw_content)
+        cleaned_before_strip = cleaned
         stripped = strip_nav_edges(cleaned)
         if stripped and len(stripped.strip()) >= 100:
             content_md = stripped
@@ -132,6 +134,7 @@ def process_page(
         "validation_score": val.score,
         "validation_notes": val.notes,
         "selector_used": selector_used,
+        "cleaned_before_strip": cleaned_before_strip,
     }
 
     return PageResult(
