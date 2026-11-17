@@ -315,3 +315,60 @@ async def test_resolve_start_url() -> None:
     html_chap = "<html><head><title>Chapter 1</title></head><body><h1>Chapter 1</h1></body></html>"
     final_chap, _ = await resolve_start_url(chap_url, prefetched_html=html_chap, force=True)
     assert final_chap == chap_url
+
+
+@pytest.mark.asyncio
+async def test_classify_url_with_pool_tuple_return() -> None:
+    """Kiểm tra classify_url và Webnovel fast-path hoạt động chuẩn khi gọi qua pool.fetch trả về (status, html)."""
+
+    class DummyPool:
+        def __init__(self, pages: dict[str, tuple[int, str]]) -> None:
+            self.pages = pages
+
+        async def fetch(self, url: str, timeout: float | None = None, referer: str | None = None) -> tuple[int, str]:
+            return self.pages.get(url, (404, ""))
+
+    book_id = "1234567890123"
+    book_url = f"https://www.webnovel.com/book/{book_id}"
+    wn_html = f"""
+    <html>
+    <head><title>Pool Story - Webnovel</title></head>
+    <body>
+        <a href="/book/{book_id}/9000000000002">Ch 2</a>
+        <a href="/book/{book_id}/9000000000001">Ch 1</a>
+    </body>
+    </html>
+    """
+    generic_url = "https://example.com/novel/pool-test"
+    generic_html = """
+    <html>
+    <head><title>Pool Novel</title></head>
+    <body>
+        <h1>Pool Novel</h1>
+        <a href="/novel/pool-test/chapter-1">Start Reading</a>
+    </body>
+    </html>
+    """
+    pool = DummyPool({
+        book_url: (200, wn_html),
+        generic_url: (200, generic_html),
+    })
+
+    with tempfile.TemporaryDirectory() as td:
+        store = ClassificationStore(Path(td) / "cache.json")
+
+        # 1. Webnovel fast-path qua pool (không truyền prefetched_html)
+        wn_res = await classify_url(book_url, pool=pool, cache_store=store, force=True)  # type: ignore[arg-type]
+        assert wn_res.page_type == "index"
+        assert wn_res.first_chapter_url == f"https://www.webnovel.com/book/{book_id}/9000000000001"
+        assert wn_res.confidence == 0.99
+
+        # 2. Generic URL qua pool (không truyền prefetched_html)
+        gen_url, gen_res = await resolve_start_url(
+            generic_url,
+            pool=pool,  # type: ignore[arg-type]
+            cache_store=store,
+            force=True,
+        )
+        assert gen_res.page_type == "index"
+        assert gen_url == "https://example.com/novel/pool-test/chapter-1"

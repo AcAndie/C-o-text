@@ -257,6 +257,41 @@ async def test_learn_site_auto_save_profile_store() -> None:
         assert loaded.profile_version == 3
 
 
+@pytest.mark.asyncio
+async def test_learn_site_strips_invalid_v6_ads_keywords_and_repairs_v3_title() -> None:
+    """V6 tự động lọc bỏ từ khóa rác ảo giác (<2 mẫu) và V3 kích hoạt sửa khi title_selector sai."""
+    samples = _make_samples(4)
+    fake_ai = FakeProvider()
+    fake_ai.enqueue_responses([
+        SiteAnalysisOutput(
+            content_selector="div.story-content",
+            title_selector="h1.non-existent-title",
+            next_selector="a.next-btn",
+            nav_type="selector",
+            ads_keywords=[
+                "brave adventurers ventured deep",  # Xuất hiện ở cả 4 mẫu -> hợp lệ
+                "Hallucinated single line never in HTML",  # Không xuất hiện -> phải bị V6 lọc bỏ
+            ],
+        ),
+        SiteRepairOutput(
+            title_selector="h1.chapter-title",
+            reasoning="Fixed hallucinated title selector to h1.chapter-title",
+        ),
+    ])
+
+    result = await learn_site(
+        start_url="https://example.com/novel/ch1",
+        ai_provider=fake_ai,
+        prefetched_samples=samples,
+        auto_save=False,
+    )
+
+    assert result.ai_calls_count == 2
+    assert result.verification.passed is True
+    assert result.profile.title_selector == "h1.chapter-title"
+    assert result.profile.ads_keywords_learned == ["brave adventurers ventured deep"]
+
+
 # ── Integration with Real Web Fixtures ────────────────────────────────────────
 
 

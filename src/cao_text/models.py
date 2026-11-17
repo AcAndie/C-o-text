@@ -33,9 +33,9 @@ class FormattingRules(BaseModel):
     bold_italic: bool = True
     hr_dividers: bool = True
     image_alt_strategy: str = "skip"  # skip | preserve | fallback_to_filename
-    system_box: dict[str, Any] = Field(default_factory=dict)
-    hidden_text: dict[str, Any] = Field(default_factory=dict)
-    author_note: dict[str, Any] = Field(default_factory=dict)
+    system_box: dict[str, Any] = Field(default_factory=lambda: {"found": False, "selectors": []})
+    hidden_text: dict[str, Any] = Field(default_factory=lambda: {"found": False, "selectors": []})
+    author_note: dict[str, Any] = Field(default_factory=lambda: {"found": False, "selectors": []})
 
 
 class SiteProfile(BaseModel):
@@ -73,9 +73,9 @@ class SiteProfile(BaseModel):
     uncertain_fields: list[str] = Field(default_factory=list)
     notes: str | None = None
 
-    def is_usable(self, min_confidence: float = 0.3) -> bool:
-        """Kiểm tra profile có đủ tin cậy để cào tiếp hay cần học lại."""
-        return self.confidence >= min_confidence
+    def is_usable(self, min_confidence: float = 0.3, min_version: int = 3) -> bool:
+        """Kiểm tra profile có đủ tin cậy và đúng phiên bản (v3) để dùng tiếp hay cần học lại."""
+        return self.profile_version >= min_version and self.confidence >= min_confidence
 
 
 # ── StoryState (Pydantic) ─────────────────────────────────────────────────────

@@ -60,7 +60,8 @@ def test_site_analysis_schema_valid() -> None:
     assert fmt.tables is True
     assert fmt.bold_italic is True
     assert fmt.hr_dividers is True
-    assert fmt.system_box == {"enabled": True, "selector": "div.system-alert"}
+    assert fmt.system_box == {"found": True, "selectors": ["div.system-alert"]}
+    assert fmt.author_note == {"found": False, "selectors": []}
 
     # Thiếu content_selector -> lỗi
     with pytest.raises(ValidationError):

@@ -33,7 +33,7 @@ from cao_text.ai.schemas import PageClassificationOutput
 from cao_text.ai.skeleton import compress_dom_to_skeleton
 from cao_text.extract.nav import RE_CHAP_KW, RE_CHAP_URL, detect_page_type
 from cao_text.models import SiteProfile
-from cao_text.net.http import DomainSessionPool
+from cao_text.net.http import DomainSessionPool, fetch_page
 from cao_text.settings import get_settings
 from cao_text.storage import atomic_write_json
 
@@ -218,11 +218,28 @@ class ClassificationStore:
         return self._cache
 
 
-# ── Webnovel Fast-Path ───────────────────────────────────────────────────────
+# ── Fetch Helper & Webnovel Fast-Path ────────────────────────────────────────
+
+async def _fetch_html(
+    url: str,
+    pool: Any,
+    pw_pool: Any = None,
+) -> tuple[int, str]:
+    """Tải HTML qua fetch_page (hỗ trợ Cloudflare fallback sang pw_pool) hoặc pool.fetch."""
+    if hasattr(pool, "is_cf_domain"):
+        return await fetch_page(url, pool, pw_pool=pw_pool)
+    res = await pool.fetch(url)
+    if isinstance(res, tuple) and len(res) == 2:
+        return int(res[0]), str(res[1] or "")
+    status = getattr(res, "status_code", 200)
+    text = getattr(res, "text", "") or ""
+    return int(status), str(text)
+
 
 async def _resolve_webnovel_fastpath(
     url: str,
     pool: DomainSessionPool | None,
+    pw_pool: Any = None,
     prefetched_html: str | None = None,
 ) -> PageClassificationOutput | None:
     """Fast-path cho Webnovel.com: ID chương là số nguyên tăng dần -> ID nhỏ nhất là chương 1.
@@ -250,9 +267,9 @@ async def _resolve_webnovel_fastpath(
     # Nếu chưa có HTML hoặc HTML prefetched không có IDs -> fetch trang book_url
     if not ids and pool is not None:
         try:
-            resp = await pool.fetch(book_url)
-            if resp.status_code < 400 and resp.text:
-                html = resp.text
+            status, fetched_html = await _fetch_html(book_url, pool, pw_pool=pw_pool)
+            if status < 400 and fetched_html:
+                html = fetched_html
                 ids = re.findall(rf"/book/{book_id}/(\d{{10,}})", html)
         except asyncio.CancelledError:
             raise
@@ -370,7 +387,12 @@ async def classify_url(
             return cached
 
     # 2. Fast-path Webnovel
-    wn_res = await _resolve_webnovel_fastpath(url, pool, prefetched_html=prefetched_html)
+    wn_res = await _resolve_webnovel_fastpath(
+        url,
+        pool,
+        pw_pool=pw_pool,
+        prefetched_html=prefetched_html,
+    )
     if wn_res:
         logger.info("[URLClassifier] Webnovel fast-path: %s -> ch1=%s", url, wn_res.first_chapter_url)
         await store.set(url, wn_res)
@@ -380,9 +402,9 @@ async def classify_url(
     html = prefetched_html
     if html is None and pool is not None:
         try:
-            resp = await pool.fetch(url)
-            if resp.status_code < 400 and resp.text:
-                html = resp.text
+            status, fetched_html = await _fetch_html(url, pool, pw_pool=pw_pool)
+            if status < 400 and fetched_html:
+                html = fetched_html
         except asyncio.CancelledError:
             raise
         except Exception as e:

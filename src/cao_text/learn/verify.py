@@ -660,8 +660,8 @@ def verify_site_profile(
 
     # V3 (tiêu đề) và V6 (ads keywords)
     if not res_v3.passed:
-        # Nếu tiêu đề bị trùng lặp (site logo) -> lỗi nghiêm trọng
-        if "không thay đổi" in res_v3.message.lower():
+        # Nếu title_selector được chỉ định tường minh mà sai (< 80% mẫu) hoặc tiêu đề bị trùng lặp (site logo) -> lỗi nghiêm trọng
+        if (title_selector and str(title_selector).strip()) or "không thay đổi" in res_v3.message.lower():
             errors.append(f"[V3] {res_v3.message}")
         else:
             warnings.append(f"[V3] {res_v3.message}")

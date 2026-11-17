@@ -302,9 +302,9 @@ class MarkdownFormatter:
             ("author_note", "> 📝 "),
         ):
             rule = self.rules.get(key)
-            if not isinstance(rule, dict) or not rule.get("found"):
+            if not isinstance(rule, dict) or not (rule.get("found") or rule.get("enabled")):
                 continue
-            selectors = rule.get("selectors") or []
+            selectors = rule.get("selectors") or ([rule["selector"]] if rule.get("selector") else [])
             for sel in selectors:
                 try:
                     if node.select_one(sel) or (node.parent and node == node.parent.select_one(sel)):

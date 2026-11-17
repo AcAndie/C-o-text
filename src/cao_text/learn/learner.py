@@ -255,6 +255,16 @@ async def learn_site(
 
     # ── Bước 4: Kiểm chứng bằng code V1–V6 ────────────────────────────────────
     v_res = verify_site_profile(candidate_profile_dict, chapters, soups=soups)
+    if not v_res.v6.passed:
+        invalid_kws = v_res.v6.details.get("invalid_keywords", [])
+        ads_keywords = list(v_res.v6.details.get("valid_keywords", []))
+        candidate_profile_dict["ads_keywords"] = ads_keywords
+        logger.warning(
+            "[%s] V6 loại bỏ %d ads_keywords không xuất hiện đủ ≥2 mẫu: %s",
+            domain,
+            len(invalid_kws),
+            invalid_kws,
+        )
     logger.info("[%s] Kết quả kiểm chứng ban đầu: passed=%s", domain, v_res.passed)
 
     # ── Bước 5: Sai -> AI call #2/#3 repair_site ──────────────────────────────
@@ -287,8 +297,8 @@ async def learn_site(
             if repair_out.content_selector:
                 content_selector = repair_out.content_selector
                 candidate_profile_dict["content_selector"] = content_selector
-            if repair_out.title_selector:
-                title_selector = repair_out.title_selector
+            if repair_out.title_selector is not None:
+                title_selector = repair_out.title_selector or None
                 candidate_profile_dict["title_selector"] = title_selector
             if repair_out.next_selector:
                 next_selector = repair_out.next_selector
@@ -310,6 +320,23 @@ async def learn_site(
             if v_res.passed:
                 logger.info("[%s] Đã sửa lỗi thành công ở vòng %d!", domain, round_idx)
                 break
+
+        # Nếu chỉ còn V3 (title_selector) lỗi trong khi V1, V2, V4, V5 đã đạt -> fallback riêng title_selector
+        if (
+            not v_res.passed
+            and v_res.v1.passed
+            and v_res.v2.passed
+            and v_res.v4.passed
+            and v_res.v5.passed
+            and not v_res.v3.passed
+        ):
+            title_selector = candidates.best_title_selector
+            candidate_profile_dict["title_selector"] = title_selector
+            v_res = verify_site_profile(candidate_profile_dict, chapters, soups=soups)
+            if not v_res.passed:
+                title_selector = None
+                candidate_profile_dict["title_selector"] = None
+                v_res = verify_site_profile(candidate_profile_dict, chapters, soups=soups)
 
         # Nếu sau tối đa các vòng sửa lỗi mà vẫn thất bại -> fallback về ứng viên heuristic bước 2
         if not v_res.passed:

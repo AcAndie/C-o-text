@@ -40,9 +40,15 @@ class FormattingRulesSchema(BaseModel):
             image_alt_strategy=self.image_alt_strategy,
         )
         if self.system_box_selector:
-            rules.system_box = {"enabled": True, "selector": self.system_box_selector}
+            rules.system_box = {
+                "found": True,
+                "selectors": [self.system_box_selector],
+            }
         if self.author_note_selector:
-            rules.author_note = {"enabled": True, "selector": self.author_note_selector}
+            rules.author_note = {
+                "found": True,
+                "selectors": [self.author_note_selector],
+            }
         return rules
 
 

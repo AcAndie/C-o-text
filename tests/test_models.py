@@ -37,17 +37,27 @@ def test_site_profile_defaults_and_roundtrip() -> None:
 
 
 def test_site_profile_loads_legacy_v2_profiles() -> None:
-    """Kiểm tra SiteProfile nạp mượt mà các profile v2 hiện có trong data/site_profiles.json."""
+    """Kiểm tra SiteProfile nạp mượt mà profile trong data/site_profiles.json và phát hiện v2 cần học lại."""
     profiles_file = PROJECT_ROOT / "data" / "site_profiles.json"
-    if not profiles_file.exists():
-        return
+    if profiles_file.exists():
+        raw_data = json.loads(profiles_file.read_text(encoding="utf-8"))
+        for domain, raw_profile in raw_data.items():
+            profile = SiteProfile.model_validate(raw_profile)
+            assert profile.domain == domain
+            assert profile.content_selector is not None
+            assert profile.formatting_rules.bold_italic is True
+            assert profile.profile_version == 3
+            assert profile.is_usable() is True
 
-    raw_data = json.loads(profiles_file.read_text(encoding="utf-8"))
-    for domain, raw_profile in raw_data.items():
-        profile = SiteProfile.model_validate(raw_profile)
-        assert profile.domain == domain
-        assert profile.content_selector is not None
-        assert profile.formatting_rules.bold_italic is True
+    # Profile v2 cũ phải có is_usable() == False để buộc học lại lên v3
+    legacy_v2 = SiteProfile.model_validate({
+        "domain": "legacy.com",
+        "confidence": 0.95,
+        "profile_version": 2,
+        "content_selector": "div.old",
+    })
+    assert legacy_v2.profile_version == 2
+    assert legacy_v2.is_usable() is False
 
 
 def test_story_state_lifecycle() -> None:
