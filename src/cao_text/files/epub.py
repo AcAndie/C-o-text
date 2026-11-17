@@ -58,13 +58,13 @@ async def _try_no_toc_split(
     ai_provider: LLMProvider | None = None,
 ) -> list[tuple[int, str, str]] | None:
     """Tách chương tự động cho sách EPUB không có mục lục (No-TOC fallback theo §6.6)."""
-    from ingest.txt import detect_pattern_regex, split_into_chapters
+    from cao_text.files.txt import detect_pattern_regex, split_into_chapters
 
     case = detect_pattern_regex(body_text)
     if case is None and ai_provider is not None:
         try:
-            from ingest.txt import detect_pattern
-            case = await detect_pattern(body_text, ai_limiter=None)
+            from cao_text.files.txt import detect_pattern
+            case = await detect_pattern(body_text, ai_provider=ai_provider)
         except Exception as e:
             logger.warning("[EPUB no-TOC] AI pattern detect failed: %s", e)
             return None
@@ -109,7 +109,7 @@ async def read_epub_documents(
                     "  [EPUB] 📖 No-TOC EPUB → pattern-split %d chapters",
                     len(split_chapters),
                 )
-                from ingest.txt import _build_chapter_html
+                from cao_text.files.txt import _build_chapter_html
                 for idx, title, body in split_chapters:
                     meta = dict(base_meta)
                     meta["kind"] = "chapter"
