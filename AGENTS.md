@@ -64,7 +64,7 @@ Code cũ (v1.2.1, ~13k dòng trong `src/`) vẫn chạy được và vẫn là b
 | 4 | Learning mới (1–3 AI call + kiểm chứng bằng code) | ✅ Xong |
 | 5 | Vòng lặp cào web mới + lưu tiến độ mới | ✅ Xong |
 | 6 | EPUB/TXT flow hợp nhất + sửa lỗi EPUB lớn | ✅ Xong |
-| 7 | CLI mới + chuyển hẳn sang code mới + xóa code cũ | ⬜ |
+| 7 | CLI mới + chuyển hẳn sang code mới + xóa code cũ | 🟨 |
 | 8 | Backlog sau khi chuyển (tùy chọn) | ⬜ |
 
 Ký hiệu: ⬜ chưa làm · 🟨 đang làm · ✅ xong. **AI phải cập nhật bảng này.**
@@ -344,8 +344,8 @@ Luồng `learn_site(start_url)`:
 **DoD:** golden file-flow khớp/đã duyệt; EPUB 1500 chương tách đúng.
 
 ### Phase 7 — CLI mới & chuyển hẳn
-- [ ] **7.1** `cli.py` giữ nguyên hành vi: input mặc định là `links_file` trong config; đọc `links.md`/`.txt` (comment `#`, dòng trống, `!relearn <domain>`); input là `.epub`/`.txt` đơn lẻ; tự xử lý EPUB inbox (manifest SHA256 `data/processed_epubs.json`); tự sửa `0000_Index.md` bị thiếu khi khởi động.
-- [ ] **7.2** Đủ cờ CLI cũ: `--output-mode`, `--output-dir`, `--max-pw-instances`, `--per-host-concurrency`, `--fast-learning`, `--no-validation`, `--bulk-relearn`, `--pattern`, `--apply` (bulk-relearn mặc định dry-run, cần gõ xác nhận).
+- [x] **7.1** `cli.py` giữ nguyên hành vi: input mặc định là `links_file` trong config; đọc `links.md`/`.txt` (comment `#`, dòng trống, `!relearn <domain>`); input là `.epub`/`.txt` đơn lẻ; tự xử lý EPUB inbox (manifest SHA256 `data/processed_epubs.json`); tự sửa `0000_Index.md` bị thiếu khi khởi động.
+- [x] **7.2** Đủ cờ CLI cũ: `--output-mode`, `--output-dir`, `--max-pw-instances`, `--per-host-concurrency`, `--fast-learning`, `--no-validation`, `--bulk-relearn`, `--pattern`, `--apply` (bulk-relearn mặc định dry-run, cần gõ xác nhận).
 - [ ] **7.3** `main.py` thành shim gọi `cao_text.cli`. Chạy đầy đủ: 1 site web, 1 EPUB inbox, 1 TXT, cả 3 output mode.
 - [ ] **7.4** Hỏi user → xóa code cũ (`src/ai`, `src/core`, `src/ingest`, `src/learning`, `src/pipeline`, `src/utils`, `src/writers`, `src/tools`, `src/config.py`), `requirements.txt`, `tools/make_golden_v1.py`, `tests/test_golden_v1.py`. Golden giữ lại làm regression test cho v2.
 - [ ] **7.5** Cập nhật `README.md`, `Vault/_Scraper/README.md`, `config.toml.example`, `docs/CHANGELOG.md` (v2.0.0). Cập nhật §2/§4 của file này cho trạng thái mới.
@@ -505,3 +505,5 @@ User yêu cầu một mục ở đây → trả lời: *"Mục [X] đang nằm n
 | 2026-11-17 | Hoàn thiện module `files/txt.py` và cập nhật `files/epub.py`: (1) chỉ đọc UTF-8, bắt lỗi `UnicodeDecodeError` báo lỗi rõ ràng kèm hướng dẫn chuyển đổi qua Notepad/PowerShell/iconv (§6.6); (2) DB pattern `txt_cases.json` trong package kèm fallback `data/txt_cases.json`; (3) hàm `detect_pattern_regex` chấm điểm trong 100 dòng đầu; (4) AI fallback gọi `prompt_txt_pattern` -> `TxtPatternOutput`, kiểm chứng trên 3 đoạn 80 dòng ở giữa file (`verify_ai_pattern`) trước khi lưu mẫu mới bằng atomic write; (5) cập nhật `files/epub.py` bỏ hoàn toàn phụ thuộc vào `src/ingest/txt.py` | Hoàn thành Task 6.3 |
 | 2026-11-17 | Củng cố `AdsFilter` và tích hợp `flow.py` cho file lớn (§6.4 & §7.3): (1) ngưỡng tự động scale theo số chương `max(10, ceil(0.03 * số chương))`; (2) bảo vệ dòng thoại / chuyển cảnh ngắn (`is_likely_dialogue_or_scene_break`: bắt đầu bằng ngoặc kép/gạch đầu dòng, kết thúc bằng `:`, hoặc < 25 ký tự) không bị xóa nhầm, trừ khi có URL/watermark domain; (3) `flow.py` truyền `total_chapters=n_ok` và `is_auto=True` vào `apply_verified`; (4) kiểm thử mô phỏng bộ 1500 chương không xóa nhầm "Hàn Tuyệt nói:" | Hoàn thành Task 6.4 |
 | 2026-11-17 | Kiểm chứng toàn diện Golden EPUB/TXT và hoàn tất Phase 6: (1) `run_file_flow` đạt 100% test pass khớp tuyệt đối trên toàn bộ synthetic fixtures (2 EPUB + 2 TXT × 3 modes) và local EPUB fixtures (Ready Player One, Around the World in 80 Days); (2) kiểm thử thành công trên EPUB lớn 1631 chương (`Dinh_Cap_Khi_Van_1631_chaps.epub`) tách trọn vẹn 1626 chương trong 292s, không bị dồn file (§7.3); (3) 298/298 test offline toàn hệ thống xanh 100% | Hoàn thành Task 6.5, đạt 100% DoD Phase 6 |
+| 2026-11-17 | Cài đặt `files/inbox.py` và `cli.py` cho Phase 7: (1) `inbox.py` quản lý EPUB inbox với manifest SHA256 (`data/processed_epubs.json`), tự động quét và bóc tách file mới qua `run_file_flow` trước khi cào web, bỏ qua file đã xử lý; (2) `cli.py` hỗ trợ trọn vẹn 3 nguồn input (links file, file đơn lẻ .epub/.txt, inbox tự động), cơ chế tự động sửa `0000_Index.md` bị thiếu (`heal_missing_indexes`), hỗ trợ chạy đơn truyện / đa truyện song song an toàn | Hoàn thành Task 7.1 |
+| 2026-11-17 | Hỗ trợ đầy đủ cờ CLI cũ tại `cli.py`: `--output-mode`, `--output-dir`, `--max-pw-instances`, `--per-host-concurrency`, `--fast-learning`, `--no-validation`, `--bulk-relearn`, `--pattern`, `--apply` (bulk-relearn mặc định dry-run an toàn, yêu cầu gõ chuỗi xác nhận trước khi xóa profile và relearn); bổ sung 11 kiểm thử unit/integration bao quát 100% tại `tests/test_cli.py` | Hoàn thành Task 7.2 |
