@@ -4,11 +4,13 @@ from __future__ import annotations
 from cao_text.web.runner import (
     DomainLockManager,
     apply_relearn,
+    close_pools,
     is_valid_url,
     normalize_domain,
     parse_links,
     run_novel_task,
     run_web_tasks,
+    silence_windows_transport_errors,
 )
 from cao_text.web.session import Outcome, ScrapeSession
 from cao_text.web.start import (
@@ -26,6 +28,7 @@ __all__ = [
     "ScrapeSession",
     "apply_relearn",
     "classify_url",
+    "close_pools",
     "is_chapter_url",
     "is_valid_url",
     "normalize_domain",
@@ -33,5 +36,6 @@ __all__ = [
     "resolve_start_url",
     "run_novel_task",
     "run_web_tasks",
+    "silence_windows_transport_errors",
     "story_id_ok",
 ]

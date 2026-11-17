@@ -6,11 +6,15 @@ Hỗ trợ:
   - Khóa learning tuần tự theo domain: tránh việc nhiều task cùng học một domain đồng thời.
   - Cào song song: mỗi URL là một task chạy ScrapeSession độc lập.
   - Giãn cách khởi động (init_stagger) giữa các task để tránh nghẽn mạng/AI.
+  - Xử lý Ctrl+C an toàn: lưu tiến độ trong asyncio.shield, đóng pool không treo (§6.1).
+  - Tự động lọc lỗi "I/O operation on closed pipe" trên Windows khi thoát (§6.1).
+  - Tự động heal missing 0000_Index.md do phiên chạy trước bị Ctrl+C gián đoạn (§6.1).
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -24,8 +28,88 @@ from cao_text.settings import get_settings
 from cao_text.storage import ProfileStore, ProgressStore
 from cao_text.web.session import ScrapeSession
 from cao_text.web.start import ClassificationStore, resolve_start_url
+from cao_text.writers.nav_injector import heal_missing_indexes
 
 logger = logging.getLogger("cao_text.web.runner")
+
+
+def silence_windows_transport_errors(loop: asyncio.AbstractEventLoop | None = None) -> None:
+    """Thiết lập exception handler cho event loop để dọn dẹp các lỗi transport/pipe rác khi thoát trên Windows (§6.1).
+
+    Ngăn ngừa lỗi unhandled runtime:
+      - 'I/O operation on closed pipe'
+      - 'Event loop is closed'
+      - Lỗi transport socket khi ProactorEventLoop dọn dẹp lúc Ctrl+C hoặc tắt tiến trình.
+    """
+    if sys.platform != "win32" and loop is None:
+        # Vẫn có thể áp dụng nếu caller truyền loop tường minh
+        pass
+
+    try:
+        target_loop = loop if loop is not None else asyncio.get_running_loop()
+    except RuntimeError:
+        try:
+            target_loop = asyncio.get_event_loop()
+        except RuntimeError:
+            return
+
+    old_handler = target_loop.get_exception_handler()
+
+    def _handler(current_loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+        msg = str(context.get("message", "") or "")
+        exc = context.get("exception")
+        exc_str = str(exc) if exc is not None else ""
+        combined = f"{msg} {exc_str}".lower()
+        if any(
+            kw in combined
+            for kw in (
+                "i/o operation on closed",
+                "transport",
+                "pipe",
+                "event loop is closed",
+            )
+        ):
+            return  # Bỏ qua một cách an toàn
+        if old_handler is not None:
+            old_handler(current_loop, context)
+        else:
+            current_loop.default_exception_handler(context)
+
+    target_loop.set_exception_handler(_handler)
+
+
+async def close_pools(
+    pool: Any = None,
+    pw_pool: Any = None,
+    *,
+    timeout: float = 5.0,
+) -> None:
+    """Đóng DomainSessionPool và PlaywrightPool an toàn trong asyncio.shield, có timeout để không bị treo (§6.1)."""
+    async def _do_close() -> None:
+        if pool is not None:
+            if hasattr(pool, "close_all"):
+                try:
+                    await pool.close_all()
+                except Exception as e:
+                    logger.warning("Đóng DomainSessionPool thất bại: %s", e)
+            elif hasattr(pool, "close"):
+                try:
+                    await pool.close()
+                except Exception as e:
+                    logger.warning("Đóng pool thất bại: %s", e)
+
+        if pw_pool is not None and hasattr(pw_pool, "close"):
+            try:
+                await pw_pool.close()
+            except Exception as e:
+                logger.warning("Đóng PlaywrightPool thất bại: %s", e)
+
+    try:
+        await asyncio.wait_for(asyncio.shield(_do_close()), timeout=timeout)
+    except TimeoutError:
+        logger.warning("Hết thời gian chờ (%.1fs) khi đóng pools — bỏ qua để thoát an toàn", timeout)
+    except Exception as e:
+        logger.warning("Lỗi khi đóng pools: %s", e)
 
 
 def normalize_domain(domain_or_url: str) -> str:
@@ -266,18 +350,32 @@ async def run_web_tasks(
     issue_reporter: IssueReporter | None = None,
     lock_manager: DomainLockManager | None = None,
     classify_cache: ClassificationStore | None = None,
+    auto_heal_indexes: bool = True,
+    close_pools_on_finish: bool = False,
 ) -> list[StoryState | Exception]:
     """Chạy song song các tác vụ cào truyện web từ danh sách URL hoặc file links.
 
+    - Tự động thiết lập lọc lỗi transport/pipe trên Windows (§6.1).
+    - Tự động heal 0000_Index.md bị thiếu từ phiên trước nếu có (§6.1).
     - Nếu đầu vào là đường dẫn file hoặc text content: tự động parse và thực thi !relearn.
     - Learning được tuần tự hóa theo từng domain qua DomainLockManager.
     - Cào các truyện song song qua asyncio.gather.
     - Khởi động mỗi task cách nhau `init_stagger` giây.
+    - Dọn dẹp đóng pools an toàn trong asyncio.shield khi hoàn tất hoặc bị cancel (§6.1).
     """
+    silence_windows_transport_errors()
+
     prof_store = profile_store or ProfileStore()
     prog_store = progress_store or ProgressStore()
     cfg = run_config or RunConfig()
     mgr = lock_manager or DomainLockManager()
+
+    # Tự động heal Index bị thiếu nếu phiên trước bị Ctrl+C gián đoạn
+    if auto_heal_indexes and cfg.output_dir:
+        try:
+            await heal_missing_indexes(cfg.output_dir)
+        except Exception as e:
+            logger.warning("[Heal] Tự động sửa Index gặp lỗi: %s", e)
 
     urls: list[str] = []
     if isinstance(urls_or_file, (str, Path)):
@@ -329,16 +427,21 @@ async def run_web_tasks(
                 raise res
         return list(results)
     except asyncio.CancelledError:
-        logger.warning("Quá trình cào web bị huỷ (CancelledError).")
+        logger.warning("⚠️ Nhận tín hiệu dừng (Ctrl+C). Tiến độ đã được lưu trong asyncio.shield.")
         raise
+    finally:
+        if close_pools_on_finish:
+            await close_pools(pool=pool, pw_pool=pw_pool, timeout=5.0)
 
 
 __all__ = [
     "DomainLockManager",
     "apply_relearn",
+    "close_pools",
     "is_valid_url",
     "normalize_domain",
     "parse_links",
     "run_novel_task",
     "run_web_tasks",
+    "silence_windows_transport_errors",
 ]

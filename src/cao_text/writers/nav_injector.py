@@ -11,6 +11,7 @@ Chức năng:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import datetime
@@ -232,4 +233,43 @@ def inject_nav_and_index(
 
 inject_nav_links = inject_nav_and_index
 
-__all__ = ["inject_nav_and_index", "inject_nav_links", "INDEX_FILENAME"]
+
+async def heal_missing_indexes(output_root: str | Path) -> int:
+    """Quét output_root, regenerate 0000_Index.md cho mỗi story folder có chapters nhưng thiếu Index.
+
+    Idempotent — chỉ chạy khi folder có chapter nhưng chưa có index.
+    Khắc phục trường hợp Ctrl+C giữa scrape làm gián đoạn dọn dẹp cuối phiên (§6.1).
+    """
+    root = Path(output_root)
+    if not root.is_dir():
+        return 0
+
+    healed = 0
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir():
+            continue
+        chapter_files = [
+            f for f in entry.iterdir()
+            if f.is_file() and f.suffix == ".md" and f.name != INDEX_FILENAME
+        ]
+        if not chapter_files:
+            continue
+        idx_path = entry / INDEX_FILENAME
+        if idx_path.exists():
+            continue
+
+        story_name = entry.name.replace("_", " ")
+        try:
+            _n_nav, idx_written = await asyncio.to_thread(
+                inject_nav_and_index, entry, story_name
+            )
+            if idx_written:
+                healed += 1
+                logger.info("[Heal] Đã tái tạo index cho %s", entry.name)
+        except Exception as e:
+            logger.warning("[Heal] Tái tạo index cho %s thất bại: %s", entry.name, e)
+
+    return healed
+
+
+__all__ = ["INDEX_FILENAME", "heal_missing_indexes", "inject_nav_and_index", "inject_nav_links"]

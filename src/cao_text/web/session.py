@@ -974,8 +974,11 @@ class ScrapeSession:
                         or self.state.story_title
                         or self.domain
                     )
-                    await asyncio.shield(
-                        asyncio.to_thread(inject_nav_and_index, self.output_dir, story_display)
+                    await asyncio.wait_for(
+                        asyncio.shield(
+                            asyncio.to_thread(inject_nav_and_index, self.output_dir, story_display)
+                        ),
+                        timeout=5.0,
                     )
                 except Exception as e:
                     logger.warning("[%s] Chèn nav và index thất bại: %s", self.domain, e)

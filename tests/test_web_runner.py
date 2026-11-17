@@ -1,4 +1,4 @@
-"""tests/test_web_runner.py — Unit test cho điều phối cào web song song, khóa learning và init_stagger (Task 5.5)."""
+"""tests/test_web_runner.py — Unit test cho điều phối cào web song song, khóa learning, init_stagger và bảo vệ Ctrl+C (Task 5.5 + 5.6)."""
 from __future__ import annotations
 
 import asyncio
@@ -14,12 +14,16 @@ from cao_text.storage import ProfileStore, ProgressStore
 from cao_text.web.runner import (
     DomainLockManager,
     apply_relearn,
+    close_pools,
     is_valid_url,
     normalize_domain,
     parse_links,
     run_novel_task,
     run_web_tasks,
+    silence_windows_transport_errors,
 )
+from cao_text.web.session import ScrapeSession
+from cao_text.writers.nav_injector import heal_missing_indexes
 
 
 def test_normalize_domain() -> None:
@@ -268,3 +272,158 @@ async def test_run_web_tasks_cancelled(tmp_path: Path) -> None:
             init_stagger=1.0,
             sleep_fn=fake_sleep,
         )
+
+
+# ── Task 5.6: Test bộ lọc Windows, đóng pool và Index Auto-Heal ───────────────
+
+
+def test_silence_windows_transport_errors() -> None:
+    """Kiểm tra handler bắt lỗi transport/pipe trên Windows mà không làm crash."""
+    loop = asyncio.new_event_loop()
+    try:
+        delegated = []
+
+        def custom_handler(_l: Any, context: dict[str, Any]) -> None:
+            delegated.append(context)
+
+        loop.set_exception_handler(custom_handler)
+        silence_windows_transport_errors(loop)
+
+        active_handler = loop.get_exception_handler()
+        assert active_handler is not None
+
+        # 1. Lỗi transport/pipe -> bị lọc bỏ (không delegate)
+        pipe_context = {
+            "message": "Fatal write error on pipe transport",
+            "exception": RuntimeError("I/O operation on closed pipe"),
+        }
+        active_handler(loop, pipe_context)
+        assert len(delegated) == 0
+
+        # 2. Lỗi thực sự -> được delegate bình thường
+        real_context = {
+            "message": "Real unhandled error",
+            "exception": ValueError("critical failure"),
+        }
+        active_handler(loop, real_context)
+        assert len(delegated) == 1
+        assert delegated[0]["exception"].args[0] == "critical failure"
+    finally:
+        loop.close()
+
+
+@pytest.mark.asyncio
+async def test_close_pools_normal_and_timeout() -> None:
+    """Xác nhận đóng pool an toàn và không treo khi timeout."""
+    pool = AsyncMock()
+    pw_pool = AsyncMock()
+
+    # 1. Đóng bình thường
+    await close_pools(pool, pw_pool, timeout=2.0)
+    pool.close_all.assert_awaited_once()
+    pw_pool.close.assert_awaited_once()
+
+    # 2. Đóng bị treo (giả lập await vô tận) -> thoát an toàn sau timeout
+    hanging_pool = AsyncMock()
+
+    async def hanging_close() -> None:
+        await asyncio.sleep(10.0)
+
+    hanging_pool.close_all.side_effect = hanging_close
+    await close_pools(hanging_pool, None, timeout=0.05)
+
+
+@pytest.mark.asyncio
+async def test_run_web_tasks_ctrl_c_and_pool_cleanup(tmp_path: Path) -> None:
+    """Khi bị Ctrl+C: re-raise CancelledError và vẫn đóng pools trong finally."""
+    prof_store = ProfileStore(tmp_path / "site_profiles.json")
+    pool = AsyncMock()
+    pool.is_cf_domain = lambda _d: False
+    pw_pool = AsyncMock()
+
+    async def cancel_sleep(d: float) -> None:
+        raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_web_tasks(
+            ["https://example.com/novel/1", "https://example.com/novel/2"],
+            pool=pool,
+            pw_pool=pw_pool,
+            profile_store=prof_store,
+            init_stagger=1.0,
+            sleep_fn=cancel_sleep,
+            close_pools_on_finish=True,
+        )
+
+    # Đảm bảo pool được đóng ngay cả khi tác vụ bị cancel
+    pool.close_all.assert_awaited_once()
+    pw_pool.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_heal_missing_indexes(tmp_path: Path) -> None:
+    """Khắc phục hệ quả Ctrl+C: tự động regenerate 0000_Index.md bị thiếu."""
+    novels_dir = tmp_path / "Novels"
+    novels_dir.mkdir()
+
+    # Folder 1: Có chapter nhưng thiếu Index
+    story1 = novels_dir / "Story_One"
+    story1.mkdir()
+    (story1 / "0001_Chap_1.md").write_text("---\ntitle: Chap 1\n---\nNội dung chương 1", encoding="utf-8")
+    (story1 / "0002_Chap_2.md").write_text("---\ntitle: Chap 2\n---\nNội dung chương 2", encoding="utf-8")
+
+    # Folder 2: Đã có Index
+    story2 = novels_dir / "Story_Two"
+    story2.mkdir()
+    (story2 / "0001_Chap_1.md").write_text("---\ntitle: Chap 1\n---\nNội dung", encoding="utf-8")
+    (story2 / "0000_Index.md").write_text("# Existing Index", encoding="utf-8")
+
+    # Folder 3: Folder rỗng không có chương
+    story3 = novels_dir / "Empty_Story"
+    story3.mkdir()
+
+    healed_count = await heal_missing_indexes(novels_dir)
+    assert healed_count == 1
+
+    # Story 1 đã được tạo index
+    idx1 = story1 / "0000_Index.md"
+    assert idx1.exists()
+    content1 = idx1.read_text(encoding="utf-8")
+    assert "Story One" in content1
+    assert "0001_Chap_1.md" in content1
+    assert "0002_Chap_2.md" in content1
+
+    # Story 2 không bị ghi đè
+    idx2 = story2 / "0000_Index.md"
+    assert idx2.read_text(encoding="utf-8") == "# Existing Index"
+
+
+@pytest.mark.asyncio
+async def test_scrape_session_ctrl_c_saves_progress_shield(tmp_path: Path) -> None:
+    """Xác nhận khi Ctrl+C giữa vòng lặp, progress_store.save_state được bảo vệ bằng shield."""
+    prog_store = ProgressStore(tmp_path / "progress")
+    prof_store = ProfileStore(tmp_path / "site_profiles.json")
+    profile = SiteProfile(
+        domain="example.org",
+        profile_version=3,
+        content_selector="div.content",
+    )
+    await prof_store.save(profile)
+
+    session = ScrapeSession(
+        start_url="https://example.org/ch1",
+        profile=profile,
+        pool=object(),
+        progress_store=prog_store,
+        profile_store=prof_store,
+    )
+
+    # Giả lập step() ném CancelledError
+    with patch.object(session, "step", AsyncMock(side_effect=asyncio.CancelledError)):
+        with pytest.raises(asyncio.CancelledError):
+            await session.run()
+
+    # Trạng thái đã được lưu xuống disk trong asyncio.shield
+    saved_state = await prog_store.load_state(session.story_key)
+    assert saved_state is not None
+    assert saved_state.start_url == "https://example.org/ch1"
