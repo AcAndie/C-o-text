@@ -120,9 +120,9 @@ def apply_cli_overrides(args: argparse.Namespace, settings: Settings) -> None:
     if args.output_dir is not None:
         settings.paths.output_dir = args.output_dir
     if args.max_pw_instances is not None:
-        settings.scraper.max_pw_instances = args.max_pw_instances
+        settings.scraper.playwright_concurrency = args.max_pw_instances
     if args.per_host_concurrency is not None:
-        settings.http.per_host_concurrency = args.per_host_concurrency
+        settings.scraper.per_host_concurrency = args.per_host_concurrency
     if args.fast_learning:
         settings.learning.fast_learning = True
     if args.no_validation:
@@ -314,11 +314,11 @@ async def async_main(argv: Sequence[str] | None = None) -> int:
     write_session_header(len(urls))
 
     pool = DomainSessionPool(
-        per_host_concurrency=settings.http.per_host_concurrency,
-        default_timeout=settings.http.default_timeout,
+        per_host_concurrency=settings.scraper.per_host_concurrency,
+        default_timeout=settings.http.request_timeout,
     )
     pw_pool = PlaywrightPool(
-        max_concurrency=settings.scraper.max_pw_instances,
+        max_concurrency=settings.scraper.playwright_concurrency,
     )
 
     total_chapters_done = 0

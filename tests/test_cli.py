@@ -73,8 +73,8 @@ def test_apply_cli_overrides() -> None:
 
     assert settings.output.mode == "raw"
     assert settings.paths.output_dir == "test_vault"
-    assert settings.scraper.max_pw_instances == 3
-    assert settings.http.per_host_concurrency == 2
+    assert settings.scraper.playwright_concurrency == 3
+    assert settings.scraper.per_host_concurrency == 2
     assert settings.learning.fast_learning is True
     assert settings.learning.no_validation is True
 
