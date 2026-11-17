@@ -875,7 +875,9 @@ class ScrapeSession:
                         self.consecutive_errors = 0
                         self.consecutive_timeouts = 0
                         if self.on_chapter_done is not None:
-                            await self.on_chapter_done()
+                            cb_res = self.on_chapter_done()
+                            if asyncio.iscoroutine(cb_res) or hasattr(cb_res, "__await__"):
+                                await cb_res
                         current_url = step_res.next_url
 
                     elif outcome == Outcome.DUPLICATE:
