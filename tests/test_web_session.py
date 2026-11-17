@@ -6,6 +6,8 @@ from typing import Any
 
 import pytest
 
+from cao_text.ai.fake import FakeProvider
+from cao_text.ai.schemas import ExtractedContentOutput, PageClassificationOutput
 from cao_text.log import IssueReporter
 from cao_text.models import RunConfig, SiteProfile
 from cao_text.storage import ProgressStore
@@ -258,3 +260,106 @@ async def test_scrape_session_guards_empty_streak_429_blocked_and_index(tmp_path
     assert empty_state.chapter_count == 0
     assert empty_session.consecutive_empty == 5
     assert any(i.issue_type == "EMPTY_STREAK" for i in reporter.issues)
+
+
+@pytest.mark.asyncio
+async def test_scrape_session_ai_fallbacks_task_5_3(tmp_path: Path) -> None:
+    """Task 5.3: AI fallback tường minh chỉ gọi khi thiếu content (extract_content) hoặc thiếu next (classify_page), ghi issues.md."""
+    ch1_url = "https://example.com/fiction/300/chapter/1"
+    ch2_url = "https://example.com/fiction/300/chapter/2"
+    ch3_url = "https://example.com/fiction/300/chapter/3"
+
+    # Chương 1: có đủ content nhưng thiếu nút next chuẩn (chỉ có link lạ không khớp heuristic)
+    ch1_html = """<!DOCTYPE html>
+    <html>
+    <head><title>Chapter 1 | Mystic Novel</title></head>
+    <body>
+        <h1 class="chap-title">Chapter 1: The Portal</h1>
+        <div class="chapter-content">
+            <p>""" + ("Valid prose for chapter one with rich narrative details. " * 8) + """</p>
+            <p>""" + ("More paragraphs of story text to pass all validation checks. " * 8) + """</p>
+        </div>
+        <div class="weird-nav"><a href="/fiction/300/chapter/2">Proceed Forward</a></div>
+    </body>
+    </html>
+    """
+
+    # Chương 2: Đổi cấu trúc DOM khiến selector div.chapter-content không khớp (PageResult rỗng),
+    # nhưng văn bản thật nằm trong thẻ <custom-story> -> cần AI extract_content cứu!
+    full_ch2_paragraph = "This is a very long paragraph inside a custom tag that exceeds 80 chars easily so skeleton truncation would have destroyed it if used."
+    ch2_html = f"""<!DOCTYPE html>
+    <html>
+    <head><title>Chapter 2 | Mystic Novel</title></head>
+    <body>
+        <h1>Chapter 2: Hidden Realm</h1>
+        <custom-story>{full_ch2_paragraph}</custom-story>
+        <a class="btn-next" rel="next" href="{ch3_url}">Next Chapter</a>
+    </body>
+    </html>
+    """
+
+    # Chương 3: Đầy đủ content, chương cuối (không có next)
+    ch3_html = _make_chapter_html("Chapter 3: Finale", "Final chapter prose text " * 12, None)
+
+    pool = FakePool({
+        ch1_url: (200, ch1_html),
+        ch2_url: (200, ch2_html),
+        ch3_url: (200, ch3_html),
+    })
+
+    fake_ai = FakeProvider()
+    # Cấu hình classify_page cho Ch1 (tìm next_chapter_url -> ch2_url) và Ch3 (chương cuối -> None, dù có first_chapter_url cũng không nhảy lùi)
+    fake_ai.enqueue_responses([
+        PageClassificationOutput(
+            page_type="chapter",
+            next_chapter_url="/fiction/300/chapter/2",
+            first_chapter_url="/fiction/300/chapter/1",
+            confidence=0.9,
+        ),
+        ExtractedContentOutput(
+            title="Chapter 2: Hidden Realm",
+            content_text=(full_ch2_paragraph + "\n\n") * 3,
+            next_url=ch3_url,
+        ),
+        PageClassificationOutput(
+            page_type="chapter",
+            next_chapter_url=None,
+            first_chapter_url="/fiction/300/chapter/1",
+            confidence=0.9,
+        ),
+    ])
+
+    issues_path = tmp_path / "issues.md"
+    reporter = IssueReporter(domain="example.com", story_label="Mystic Novel", issues_file=issues_path)
+    progress_store = ProgressStore(base_dir=tmp_path / "progress")
+    run_cfg = RunConfig.create_for_mode("obsidian", str(tmp_path / "out"))
+
+    session = ScrapeSession(
+        start_url=ch1_url,
+        profile=_default_profile(),
+        pool=pool,
+        progress_store=progress_store,
+        ai_provider=fake_ai,
+        issue_reporter=reporter,
+        run_config=run_cfg,
+        sleep_fn=_noop_sleep,
+    )
+
+    state = await session.run()
+    assert state.chapter_count == 3
+    assert state.completed is True
+    assert state.completed_at_url == ch3_url
+
+    # Kiểm tra prompt gửi cho AI extract_content ở Ch2 phải chứa toàn bộ câu dài >80 ký tự (không bị skeleton cắt ngắn)
+    extract_calls = [c for c in fake_ai.calls if c.schema is ExtractedContentOutput]
+    assert len(extract_calls) == 1
+    assert full_ch2_paragraph in extract_calls[0].prompt
+
+    # Kiểm tra issues.md đã ghi nhận cả CONTENT_SUSPICIOUS (AI extract_content) và NEXT_URL_MISSING (AI classify_page)
+    issue_types = [i.issue_type for i in reporter.issues]
+    assert "CONTENT_SUSPICIOUS" in issue_types
+    assert "NEXT_URL_MISSING" in issue_types
+    issues_md = issues_path.read_text(encoding="utf-8")
+    assert "recovered via AI extract_content fallback" in issues_md
+    assert "recovered via AI classify_page fallback" in issues_md
+

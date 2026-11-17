@@ -18,13 +18,14 @@ from cao_text.ai.prompts import prompt_classify_page, prompt_extract_content
 from cao_text.ai.provider import LLMProvider
 from cao_text.ai.schemas import ExtractedContentOutput, PageClassificationOutput
 from cao_text.ai.skeleton import compress_dom_to_skeleton
-from cao_text.extract.nav import RE_CHAP_KW, RE_CHAP_URL, find_next_url
+from cao_text.extract.nav import RE_CHAP_KW, RE_CHAP_URL, RE_NEXT_BTN, find_next_url
 from cao_text.extract.page import process_page
 from cao_text.html.cleaner import (
     clean_extracted_content,
     strip_duplicate_title_header,
     strip_nav_edges,
 )
+from cao_text.html.filter import prepare_soup
 from cao_text.images.stage import apply_image_stage
 from cao_text.images.web import WebImageFetcher
 from cao_text.log import IssueReporter
@@ -118,6 +119,30 @@ def is_junk_page(html: str, status: int = 200) -> bool:
         return True
     sample = html[:2000]
     return any(pattern.search(sample) for pattern in _JUNK_PATTERNS)
+
+
+def _prepare_extract_fragment(html: str, url: str, max_chars: int = 25000) -> str:
+    """Chuẩn bị văn bản sạch đầy đủ kèm gợi ý link điều hướng để gửi cho prompt_extract_content."""
+    soup = prepare_soup(html)
+    nav_hints: list[str] = []
+    for tag_name in ("link", "a"):
+        for el in soup.find_all(tag_name, href=True):
+            href = el.get("href", "")
+            if not href or href.startswith("#"):
+                continue
+            full_href = urljoin(url, href)
+            rel = el.get("rel") or []
+            if isinstance(rel, str):
+                rel = [rel]
+            text = el.get_text(strip=True)
+            if "next" in rel or RE_NEXT_BTN.search(text) or RE_CHAP_URL.search(full_href):
+                nav_hints.append(f"{text or '[rel=next]'} -> {full_href}")
+
+    body_text = soup.get_text(separator="\n\n", strip=True)[:max_chars]
+    if nav_hints:
+        hints_block = "\n".join(nav_hints[:15])
+        return f"{body_text}\n\n=== NAVIGATION LINKS ===\n{hints_block}"
+    return body_text
 
 
 # ── ScrapeSession ─────────────────────────────────────────────────────────────
@@ -221,16 +246,17 @@ class ScrapeSession:
         return status, html
 
     async def _ai_extract_content(self, html: str, url: str) -> ExtractedContentOutput | None:
-        """Task 5.3: AI fallback trích xuất nội dung khi PageResult rỗng."""
+        """Task 5.3: AI fallback trích xuất nội dung chỉ khi PageResult không có nội dung."""
         if self.ai_provider is None:
             return None
         try:
-            skeleton = await asyncio.to_thread(compress_dom_to_skeleton, html, max_chars=8000)
-            prompt = prompt_extract_content(skeleton, url)
+            fragment = await asyncio.to_thread(_prepare_extract_fragment, html, url)
+            prompt = prompt_extract_content(fragment, url)
             out = await self.ai_provider.generate(prompt, ExtractedContentOutput)
             if out and out.content_text and len(out.content_text.strip()) >= 100:
                 if out.next_url:
-                    out.next_url = urljoin(url, out.next_url)
+                    resolved_next = urljoin(url, out.next_url)
+                    out.next_url = resolved_next if resolved_next != url else None
                 return out
         except asyncio.CancelledError:
             raise
@@ -239,7 +265,7 @@ class ScrapeSession:
         return None
 
     async def _ai_find_next_url(self, html: str, soup: BeautifulSoup | None, url: str) -> str | None:
-        """Task 5.3: AI fallback tìm next_url qua classify_page khi heuristic không tìm thấy."""
+        """Task 5.3: AI fallback tìm next_url qua classify_page chỉ khi PageResult không có next."""
         if self.ai_provider is None:
             return None
         try:
@@ -247,16 +273,29 @@ class ScrapeSession:
             skeleton = await asyncio.to_thread(compress_dom_to_skeleton, html)
             candidates: list[str] = []
             for a in parsed_soup.find_all("a", href=True):
+                href = a.get("href", "")
+                if not href or href.startswith("#"):
+                    continue
                 text = a.get_text(strip=True)
-                full_href = urljoin(url, a["href"])
-                if RE_CHAP_URL.search(full_href) or RE_CHAP_KW.search(text):
+                full_href = urljoin(url, href)
+                rel = a.get("rel") or []
+                if isinstance(rel, str):
+                    rel = [rel]
+                if (
+                    "next" in rel
+                    or RE_NEXT_BTN.search(text)
+                    or RE_CHAP_URL.search(full_href)
+                    or RE_CHAP_KW.search(text)
+                ):
                     candidates.append(f"{text} -> {full_href}")
 
             prompt = prompt_classify_page(skeleton, url, candidates[:30])
             ai_out = await self.ai_provider.generate(prompt, PageClassificationOutput)
-            found = ai_out.next_chapter_url or ai_out.first_chapter_url
+            found = ai_out.next_chapter_url
             if found:
-                return urljoin(url, found)
+                resolved = urljoin(url, found)
+                if resolved != url:
+                    return resolved
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -537,16 +576,28 @@ class ScrapeSession:
                     )
 
         if not content or len(content.strip()) < 100:
-            if page_res.selector_used is None and self.issue_reporter:
+            if self.issue_reporter:
+                detail_msg = (
+                    "PageResult and AI extract_content fallback returned <100 chars"
+                    if self.ai_provider is not None
+                    else "pipeline returned 0 chars"
+                )
                 self.issue_reporter.report(
                     "CONTENT_SUSPICIOUS",
                     url,
-                    detail="pipeline returned 0 chars",
+                    detail=detail_msg,
                     chapter_num=ch_hint,
                 )
 
             if not next_url:
                 next_url = await self._ai_find_next_url(html, None, url)
+                if next_url and self.issue_reporter:
+                    self.issue_reporter.report(
+                        "NEXT_URL_MISSING",
+                        url,
+                        detail=f"Empty-content chapter; recovered next_url via AI classify_page -> {next_url}",
+                        chapter_num=ch_hint,
+                    )
             if not next_url and self.issue_reporter:
                 self.issue_reporter.report(
                     "NEXT_URL_MISSING",
@@ -702,6 +753,13 @@ class ScrapeSession:
         # ── Bước 6: Tìm & kiểm tra next_url cho chương kế tiếp ───────────────
         if not next_url:
             next_url = await self._ai_find_next_url(html, None, url)
+            if next_url and self.issue_reporter:
+                self.issue_reporter.report(
+                    "NEXT_URL_MISSING",
+                    url,
+                    detail=f"PageResult next_url missing; recovered via AI classify_page fallback -> {next_url}",
+                    chapter_num=chapter_num,
+                )
 
         if not next_url:
             if self.issue_reporter:
