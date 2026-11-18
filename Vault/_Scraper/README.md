@@ -20,7 +20,7 @@ Mở terminal (Windows Terminal hoặc PowerShell), gõ:
 
 ```bash
 cd "C:\Users\FPT MONG CAI\Desktop\Small Project\Cào text"
-py -m pip install -r requirements.txt
+py -m pip install -e .
 py -m playwright install chromium
 ```
 
@@ -79,7 +79,7 @@ py main.py
 
 Truyện sẽ tự cào vào `Vault/Novels/{tên_truyện}/`. Mỗi chương 1 file `.md`. Mở trong Obsidian xem ngay.
 
-**Lần đầu cào site mới** mất ~3 phút để AI học cấu trúc. Lần sau cào lập tức.
+**Lần đầu cào site mới** mất ~30 giây (1–3 AI calls) để AI học và kiểm chứng cấu trúc. Lần sau cào lập tức.
 
 **Dừng giữa chừng:** `Ctrl+C` trong terminal. Lần chạy sau tự resume từ chương đang dở.
 
@@ -124,7 +124,7 @@ Vault/                              ← bạn đang ở đây
 │   ├── Rock_falls,_everyone_dies/
 │   │   ├── 0001_Prologue.md
 │   │   ├── 0002_Chapter_1.md
-│   │   └── _Index.md               ← mục lục tự sinh
+│   │   └── 0000_Index.md           ← mục lục tự sinh
 │   └── ...
 └── _Scraper/
     ├── links.md                    ← danh sách URL cào

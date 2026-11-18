@@ -52,8 +52,8 @@
 
 ## 2. Trạng thái hiện tại
 
-**Dự án đang ở giai đoạn: VIẾT LẠI CÓ CHỌN LỌC (v1.2.1 → v2.0.0).**
-Code cũ (v1.2.1, ~13k dòng trong `src/`) vẫn chạy được và vẫn là bản user đang dùng cho đến khi xong Phase 7.
+**Dự án đã hoàn tất viết lại v2.0.0 (`src/cao_text/`).**
+Code cũ v1 đã được xóa sạch ở Phase 7.4 (lịch sử vẫn lưu trong git). Toàn bộ hoạt động hiện chạy trên package chuẩn `cao_text`.
 
 | Phase | Tên | Trạng thái |
 |---|---|---|
@@ -64,12 +64,12 @@ Code cũ (v1.2.1, ~13k dòng trong `src/`) vẫn chạy được và vẫn là b
 | 4 | Learning mới (1–3 AI call + kiểm chứng bằng code) | ✅ Xong |
 | 5 | Vòng lặp cào web mới + lưu tiến độ mới | ✅ Xong |
 | 6 | EPUB/TXT flow hợp nhất + sửa lỗi EPUB lớn | ✅ Xong |
-| 7 | CLI mới + chuyển hẳn sang code mới + xóa code cũ | 🟨 |
+| 7 | CLI mới + chuyển hẳn sang code mới + xóa code cũ | ✅ Xong |
 | 8 | Backlog sau khi chuyển (tùy chọn) | ⬜ |
 
 Ký hiệu: ⬜ chưa làm · 🟨 đang làm · ✅ xong. **AI phải cập nhật bảng này.**
 
-**Nhánh git:** làm toàn bộ trên nhánh `rewrite-v2`. Chỉ merge vào `main` khi xong Phase 7 và user đồng ý.
+**Nhánh git:** đã hoàn thành trên `rewrite-v2` và merge vào `main`.
 
 ---
 
@@ -157,34 +157,38 @@ src/cao_text/
   ai/
     provider.py                # Protocol LLMProvider + lỗi chuẩn hóa (RateLimited, Transient, Fatal)
     gemini.py                  # GeminiProvider: key pool, rate limiter, retry, fallback model
+    fake.py                    # FakeProvider dùng cho test offline 100%
     schemas.py                 # pydantic models cho output AI
     prompts.py                 # prompt ngắn, mỗi prompt một hàm
     skeleton.py                # nén HTML thành "DOM skeleton" gửi cho AI
   learn/
     candidates.py              # tìm ứng viên content/title/next bằng heuristic (không AI)
-    verify.py                  # kiểm chứng profile trên các chương mẫu
+    verify.py                  # kiểm chứng profile trên các chương mẫu (V1–V6)
     learner.py                 # learn_site(): fetch mẫu → AI phân tích → verify → AI sửa → lưu
   web/
     start.py                   # phân loại URL (index/chapter), tìm chương 1 (gồm fast-path Webnovel)
     session.py                 # ScrapeSession: vòng lặp cào, các guard, resume
+    runner.py                  # điều phối cào web song song, khóa learning theo domain, xử lý Ctrl+C
   files/
     epub_plan.py               # lập kế hoạch chương EPUB (rule + AI-rule)
     epub.py txt.py             # đọc EPUB/TXT → RawDocument
     txt_cases.json             # DB pattern TXT (commit vào repo)
     flow.py                    # run_file_flow(spec) dùng chung EPUB/TXT
+    inbox.py                   # tự động quét và bóc tách EPUB inbox (manifest SHA256)
   images/
     stage.py                   # apply_image_stage dùng chung web/epub
     web.py epub.py             # ImageFetchStrategy
   writers/                     # obsidian.py translation.py raw.py nav_injector.py factory.py (port)
 tests/
-  conftest.py                  # option --update-golden, helper so sánh
+  conftest.py                  # option --update-golden, --run-slow, helper so sánh
   fixtures/                    # dữ liệu tổng hợp nhỏ, COMMIT được (txt mẫu, epub tự tạo, html mẫu tự viết)
   fixtures_local/              # HTML/EPUB thật, GITIGNORE (bản quyền); test tự skip nếu thiếu
   golden/                      # output kỳ vọng (cho fixtures commit được) — commit
   golden_local/                # output kỳ vọng cho fixtures_local — gitignore
 tools/
   record_fixtures.py           # tải HTML N chương liên tiếp của 1 truyện → fixtures_local
-  make_golden_v1.py            # chạy CODE CŨ offline trên fixtures → golden (chỉ dùng ở Phase 0)
+  smoke_test_phase5.py         # smoke test thực tế cho vòng lặp cào & resume
+  verify_phase7_3.py           # kiểm chứng tích hợp toàn diện CLI (TXT, EPUB, Inbox, Web)
 ```
 
 ### 4.2 Luồng dữ liệu
@@ -348,8 +352,8 @@ Luồng `learn_site(start_url)`:
 - [x] **7.2** Đủ cờ CLI cũ: `--output-mode`, `--output-dir`, `--max-pw-instances`, `--per-host-concurrency`, `--fast-learning`, `--no-validation`, `--bulk-relearn`, `--pattern`, `--apply` (bulk-relearn mặc định dry-run, cần gõ xác nhận).
 - [x] **7.3** `main.py` thành shim gọi `cao_text.cli`. Chạy đầy đủ: 1 site web, 1 EPUB inbox, 1 TXT, cả 3 output mode.
 - [x] **7.4** Hỏi user → xóa code cũ (`src/ai`, `src/core`, `src/ingest`, `src/learning`, `src/pipeline`, `src/utils`, `src/writers`, `src/tools`, `src/config.py`), `requirements.txt`, `tools/make_golden_v1.py`, `tests/test_golden_v1.py`. Golden giữ lại làm regression test cho v2.
-- [ ] **7.5** Cập nhật `README.md`, `Vault/_Scraper/README.md`, `config.toml.example`, `docs/CHANGELOG.md` (v2.0.0). Cập nhật §2/§4 của file này cho trạng thái mới.
-- [ ] **7.6** Hỏi user → merge `rewrite-v2` vào `main`.
+- [x] **7.5** Cập nhật `README.md`, `Vault/_Scraper/README.md`, `config.toml.example`, `docs/CHANGELOG.md` (v2.0.0). Cập nhật §2/§4 của file này cho trạng thái mới.
+- [x] **7.6** Hỏi user → merge `rewrite-v2` vào `main`.
 
 **DoD:** user dùng bản mới hằng ngày không cần code cũ; dòng code `src/` giảm còn khoảng 7–8k.
 
@@ -425,13 +429,13 @@ Mỗi dòng dưới đây là một lỗi đã từng xảy ra trong thực tế
 | # | Lỗi | Xử lý ở |
 |---|---|---|
 | 7.1 | Mỗi lần chạy đều gửi request kiểm tra lại mọi truyện đã hoàn thành (50 truyện → chậm 20–60s). Hướng: `--check-new`, `--skip-check-after-days 90`, `!recheck`, trường `completed_at` | Phase 8 |
-| 7.2 | Lint nhỏ: import thừa `learning/phase.py`, f-string không placeholder `ai/agents.py` | Tự hết khi xóa code cũ (Phase 7) |
-| 7.3 | **EPUB lớn (>300 doc):** AI liệt kê từng doc → chạm trần token ở ~doc 830 → 669 doc còn lại dồn vào một file `0830_*.md`. **AdsFilter** tự xóa nhầm câu thoại ngắn ("Hàn Tuyệt nói:", "Cùng lúc đó.") trong bộ 1300–1600 chương vì ngưỡng cố định 10 | Phase 6.2, 6.4 |
-| 7.4 | **Webnovel dính UI:** AI học `div.cha-page` (quá rộng) → dính Notes/Vote/Power Ranking cuối chương, khối thông tin sách ở chương 1, số comment dính cuối đoạn. Đúng phải là `div.cha-words`/`div.cha-content` | Phase 2.9 + Phase 4 (V2) |
-| 7.5 | **RoyalRoad lọt câu chống trộm** (câu chữ đổi mỗi chương) ẩn bằng CSS trong thẻ `<style>`; code cũ xóa `<style>` trước khi đọc CSS | Phase 2.8 |
-| 7.6 | `src/tools/snapshot_baseline.py` hỏng (kiểm `config.py` ở root trong khi file nằm ở `src/`) và cào live nên không tái lập được | Thay bằng Phase 0.3/0.7 |
-| 7.7 | `data/txt_cases.json` bị xóa nhầm ở commit `e3d9152` → TXT flow crash `FileNotFoundError` | Phase 0.2 |
-| 7.8 | Model mặc định `gemini-2.0-flash` / fallback `gemini-2.0-flash-lite` đã lỗi thời | Phase 3.1 |
+| 7.2 | Lint nhỏ: import thừa `learning/phase.py`, f-string không placeholder `ai/agents.py` | ✅ Xong (Phase 7.4) |
+| 7.3 | **EPUB lớn (>300 doc):** AI liệt kê từng doc → chạm trần token ở ~doc 830 → 669 doc còn lại dồn vào một file `0830_*.md`. **AdsFilter** tự xóa nhầm câu thoại ngắn ("Hàn Tuyệt nói:", "Cùng lúc đó.") trong bộ 1300–1600 chương vì ngưỡng cố định 10 | ✅ Xong (Phase 6.2, 6.4) |
+| 7.4 | **Webnovel dính UI:** AI học `div.cha-page` (quá rộng) → dính Notes/Vote/Power Ranking cuối chương, khối thông tin sách ở chương 1, số comment dính cuối đoạn. Đúng phải là `div.cha-words`/`div.cha-content` | ✅ Xong (Phase 2.9 + Phase 4) |
+| 7.5 | **RoyalRoad lọt câu chống trộm** (câu chữ đổi mỗi chương) ẩn bằng CSS trong thẻ `<style>`; code cũ xóa `<style>` trước khi đọc CSS | ✅ Xong (Phase 2.8) |
+| 7.6 | `src/tools/snapshot_baseline.py` hỏng (kiểm `config.py` ở root trong khi file nằm ở `src/`) và cào live nên không tái lập được | ✅ Xong (Phase 0.3/0.7) |
+| 7.7 | `data/txt_cases.json` bị xóa nhầm ở commit `e3d9152` → TXT flow crash `FileNotFoundError` | ✅ Xong (Phase 0.2 & 6.3) |
+| 7.8 | Model mặc định `gemini-2.0-flash` / fallback `gemini-2.0-flash-lite` đã lỗi thời | ✅ Xong (Phase 3.1) |
 
 ---
 
@@ -509,3 +513,5 @@ User yêu cầu một mục ở đây → trả lời: *"Mục [X] đang nằm n
 | 2026-11-17 | Hỗ trợ đầy đủ cờ CLI cũ tại `cli.py`: `--output-mode`, `--output-dir`, `--max-pw-instances`, `--per-host-concurrency`, `--fast-learning`, `--no-validation`, `--bulk-relearn`, `--pattern`, `--apply` (bulk-relearn mặc định dry-run an toàn, yêu cầu gõ chuỗi xác nhận trước khi xóa profile và relearn); bổ sung 11 kiểm thử unit/integration bao quát 100% tại `tests/test_cli.py` | Hoàn thành Task 7.2 |
 | 2026-11-17 | Chuyển đổi `main.py` thành entrypoint shim gọi `cao_text.cli:main`; kiểm chứng tích hợp toàn diện qua `tools/verify_phase7_3.py`: chạy đầy đủ TXT (3 modes), EPUB (3 modes), EPUB inbox tự động và cào Webnovel qua mạng thật mượt mà; tinh chỉnh chuẩn xác mapping cấu hình scraper/http trong `cli.py` | Hoàn thành Task 7.3 |
 | 2026-11-18 | Sau khi được user đồng ý (§3.4), xóa toàn bộ mã nguồn cũ v1 (`src/ai`, `src/core`, `src/ingest`, `src/learning`, `src/pipeline`, `src/utils`, `src/writers`, `src/tools`, `src/config.py`), `requirements.txt`, `tools/make_golden_v1.py`, `tests/test_golden_v1.py`; cập nhật `tools/record_fixtures.py` và `tests/conftest.py` sang dùng hoàn toàn package `cao_text`; giữ nguyên golden baselines làm regression test cho v2 (285/285 test pass 100%) | Hoàn thành Task 7.4 |
+| 2026-11-18 | Cập nhật đồng bộ toàn bộ tài liệu lên `v2.0.0`: `README.md`, `Vault/_Scraper/README.md`, `config.toml.example`, `docs/CHANGELOG.md` và cập nhật trạng thái §2/§4/§7 trong `AGENTS.md` | Hoàn thành Task 7.5 |
+| 2026-11-18 | Theo yêu cầu của user, merge nhánh `rewrite-v2` vào `main`, hoàn tất trọn vẹn quá trình viết lại có chọn lọc Cào Text v2.0.0 (Phase 0 → Phase 7) | Hoàn thành Task 7.6, đạt 100% DoD Phase 7 |

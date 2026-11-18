@@ -4,6 +4,30 @@ All notable changes to Cào Text. Format based on [Keep a Changelog](https://kee
 
 ---
 
+## [2.0.0] — 2026-11-18
+
+Selective architectural rewrite into a clean, modular, 100% offline-tested package (`src/cao_text/`), eliminating ~15,000 lines of legacy v1 code while preserving all battle-tested domain heuristics and solving long-standing backlog issues.
+
+### Added
+- **Clean Package Architecture (`src/cao_text/`)** — Replaced `requirements.txt` with `pyproject.toml` (`pip install -e .[dev]`). Separated pure synchronous extraction (`extract/page.py::process_page`) from network (`net/`), AI (`ai/`), storage (`storage.py`), and CLI (`cli.py`).
+- **New AI Layer (`cao_text/ai/`)** — `LLMProvider` protocol with Pydantic v2 structured output (`schemas.py`), `GeminiProvider` (multi-key round-robin pool, 60s rate-limit cooldown, token-bucket rate limiter with cancel rollback, automatic fallback from `gemini-3.8-flash` to `gemini-2.5-flash`), DOM skeleton compression (`skeleton.py`), and `FakeProvider` for 100% offline testing.
+- **Code-Verified Site Learning (`cao_text/learn/`)** — Reduced learning phase from 8+ AI calls to **1–3 AI calls**: heuristic candidate discovery (`candidates.py`) → AI analysis → 6-rule deterministic verification `V1–V6` (`verify.py`) → targeted AI repair loop (up to 2 retries) → `SiteProfile` v3 persistence.
+- **New Progress Store (`progress/<story_key>/`)** — Split progress into compact `state.json` and append-only `seen.jsonl` (`{url, fp, ch}`), eliminating $O(N^2)$ full-list rewrites on every chapter; automatic migration from v1 `.json` progress files with `.v1.json` backup.
+- **Unified File Flow (`cao_text/files/flow.py`)** — Merged EPUB and TXT pipelines into `run_file_flow(spec)`, sharing `apply_image_stage`, `AdsFilter`, writer factory, and navigation injection.
+- **Comprehensive Offline Test Suite (`tests/`)** — 285 unit, integration, and golden regression tests covering HTML filtering, extraction, learning, scrape session guards, EPUB/TXT flows, and CLI.
+
+### Fixed
+- **Large EPUB (>300 docs) token exhaustion & chapter bunching (§7.3)** — `files/epub_plan.py` prioritizes deterministic TOC + divider merging; when AI is needed, AI returns general rules (`EpubRulesOutput`: regex/keywords) instead of enumerating every document ID, verified against median chapter length (`<= 5x`). Successfully splits 1,600+ chapter EPUBs without bunching.
+- **AdsFilter false-positive dialogue deletion on large novels (§7.3)** — Scaled auto-learn threshold dynamically to `max(10, ceil(0.03 * total_chapters))` and added `is_likely_dialogue_or_scene_break` guard to protect short dialogue lines (`"Hàn Tuyệt nói:"`, lines ending with `:`, starting with quotes/dashes, or `< 25` chars).
+- **RoyalRoad `<style>`-hidden anti-piracy watermarks (§7.5)** — `html/filter.py` parses `<style>` blocks before removal to strip elements matching classes/IDs with `display:none`, `visibility:hidden`, `opacity:0`, `font-size:0`, or `speak:never`.
+- **Webnovel UI noise & overly broad selector (§7.4)** — Added Webnovel UI selectors (`.cha-hd`, `.cha-foot`, `.para-comment`, `.j_bottom_comment_area`, `anno > sup`...) to `KNOWN_NOISE_SELECTORS` and penalized outer page wrappers (`div.cha-page`) in candidate scoring & verification V2 in favor of `div.cha-words`.
+- **Restored `txt_cases.json` (§7.7)** — Bundled inside `src/cao_text/files/txt_cases.json` with strict UTF-8 error reporting and 3-segment mid-file AI regex verification.
+
+### Removed
+- Removed all legacy v1 modules (`src/ai`, `src/core`, `src/ingest`, `src/learning`, `src/pipeline`, `src/utils`, `src/writers`, `src/tools`, `src/config.py`), `requirements.txt`, `tools/make_golden_v1.py`, and `tests/test_golden_v1.py`.
+
+---
+
 ## [1.2.1] — 2026-05-19 → 2026-11-09
 
 AI hallucination hardening, Ctrl+C resilience, and scrape loop / navigation termination fixes.
