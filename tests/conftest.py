@@ -54,6 +54,8 @@ def _isolate_ads_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     chép bản sao sang tmp_path để AdsFilter đọc đúng dữ liệu gốc nhưng mọi
     lệnh save() trong lúc test chỉ ghi vào file tạm, không làm bẩn dữ liệu user.
     """
+    from cao_text.settings import Settings
+
     real_ads = PROJECT_ROOT / "data" / "ads_keywords.json"
     tmp_ads = tmp_path / "ads_keywords.json"
     if real_ads.exists():
@@ -61,8 +63,7 @@ def _isolate_ads_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     else:
         tmp_ads.write_text("{}\n", encoding="utf-8")
 
-    monkeypatch.setattr("config.ADS_DB_FILE", str(tmp_ads), raising=False)
-    monkeypatch.setattr("utils.ads_filter.ADS_DB_FILE", str(tmp_ads), raising=False)
+    monkeypatch.setattr(Settings, "ads_db_file", property(lambda self: str(tmp_ads)))
 
 
 def format_diff(actual: str, expected: str, fromfile: str = "actual", tofile: str = "expected", max_lines: int = 40) -> str:

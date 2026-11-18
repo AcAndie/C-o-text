@@ -31,15 +31,15 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from bs4 import BeautifulSoup  # noqa: E402
 
-from config import PROFILES_FILE, get_delay  # noqa: E402
-from core.fetch import fetch_page  # noqa: E402
-from core.navigator import find_next_url  # noqa: E402
-from core.session_pool import DomainSessionPool, PlaywrightPool  # noqa: E402
-from utils.file_io import load_profiles  # noqa: E402
+from cao_text.extract.nav import find_next_url  # noqa: E402
+from cao_text.net.browser import PlaywrightPool  # noqa: E402
+from cao_text.net.http import DomainSessionPool, fetch_page, get_delay  # noqa: E402
+from cao_text.storage import ProfileStore  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 FIXTURES_WEB_ROOT = PROJECT_ROOT / "tests" / "fixtures_local" / "web"
+PROFILES_FILE = "data/site_profiles.json"
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -141,12 +141,9 @@ async def record_story_fixtures(
     target_dir = out_root / parsed_domain / slug
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    profiles: dict[str, Any] = {}
-    profiles_path = PROJECT_ROOT / PROFILES_FILE
-    if profiles_path.exists():
-        profiles = await load_profiles()
-
-    profile: dict[str, Any] = dict(profiles.get(parsed_domain) or {})
+    store = ProfileStore(PROJECT_ROOT / PROFILES_FILE)
+    prof_obj = await store.get(parsed_domain)
+    profile: dict[str, Any] = prof_obj.model_dump(mode="json") if prof_obj else {}
     if not profile:
         # Thử fallback bỏ/thêm www.
         alt_domain = (
@@ -154,8 +151,9 @@ async def record_story_fixtures(
             if parsed_domain.startswith("www.")
             else f"www.{parsed_domain}"
         )
-        profile = dict(profiles.get(alt_domain) or {})
-        if profile:
+        alt_obj = await store.get(alt_domain)
+        if alt_obj:
+            profile = alt_obj.model_dump(mode="json")
             logger.info("Dùng profile từ domain tương đương: %s", alt_domain)
 
     if not profile:
@@ -240,7 +238,7 @@ async def record_story_fixtures(
             visited_urls.add(current_url)
 
             soup = await asyncio.to_thread(BeautifulSoup, html, "lxml")
-            next_url = await asyncio.to_thread(
+            next_url, _nav_method = await asyncio.to_thread(
                 find_next_url,
                 soup,
                 current_url,
